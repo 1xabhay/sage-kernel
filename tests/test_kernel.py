@@ -308,5 +308,31 @@ class RepeatGuard(unittest.TestCase):
         self.assertEqual(len(prompts), 3)
 
 
+class Remembering(unittest.TestCase):
+    def test_a_name_outlives_the_window_and_a_restart(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path, prompts = Path(directory.name) / "k.sqlite3", []
+        queue = [json.dumps({"reply": "Hi Juno!", "remember": "Their name is Juno."})]
+        queue += [json.dumps({"reply": f"Reply number {n}."}) for n in range(11)]
+
+        def decide(prompt, heard):
+            prompts.append(prompt)
+            return queue.pop(0)
+        for n, text in enumerate(["My name is Juno."] + [f"Line {n}." for n in range(10)]):
+            if n in (0, 10):  # the last exchange after a restart
+                kernel = Kernel(Journal(path), decide)
+                kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
+            kernel.event("reachy", {"kind": "submitted", "turn_id": f"r{n}", "text": text})
+            deadline = time.monotonic() + 5
+            while kernel.state.turn.status == "active" and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertIn("- Their name is Juno.", prompts[-1].system)
+        self.assertNotIn("Juno", json.dumps(prompts[-1].context))
+        with closing(sqlite3.connect(path)) as connection:
+            self.assertEqual(connection.execute("SELECT body, target FROM journal WHERE kind = 'remember'").fetchall(),
+                             [('{"fact": "Their name is Juno."}', None)])
+
+
 if __name__ == "__main__":
     unittest.main()

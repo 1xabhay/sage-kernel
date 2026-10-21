@@ -445,8 +445,9 @@ class Conformance(unittest.TestCase):
         formats = [request.get("format") for request in self.provider.requests]
         self.assertEqual(len(formats), 3)
         self.assertEqual(formats[0], formats[2])  # identical on every turn of a device
-        self.assertEqual(list(formats[0]["properties"]), ["reply", "emote"])  # reply first, its tools, nothing else
-        self.assertEqual(list(formats[1]["properties"]), ["reply"])  # mock declared no tools
+        # Reply first, its tools, then the kernel's memory; nothing else.
+        self.assertEqual(list(formats[0]["properties"]), ["reply", "emote", "remember", "forget"])
+        self.assertEqual(list(formats[1]["properties"]), ["reply", "remember", "forget"])  # mock declared no tools
         self.assertEqual(formats[0]["properties"]["reply"]["type"], "string")
         self.assertIn(json.dumps(EMOTE["inputSchema"], sort_keys=True)[1:-1],
                       json.dumps(formats[0]["properties"]["emote"], sort_keys=True))

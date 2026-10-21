@@ -137,12 +137,12 @@ class Authorization(unittest.TestCase):
 
     def test_the_model_answers_in_a_reply_first_format_of_its_device_tools(self):
         schema = manifest.format_schema(TOOLS)
-        self.assertEqual(list(schema["properties"]), ["reply", "emote"])
+        self.assertEqual(list(schema["properties"]), ["reply", "emote", "remember", "forget"])
         # Brevity is decoded, not asked for; no pattern, so digits stay speakable.
         self.assertEqual(schema["properties"]["reply"], {"type": "string", "maxLength": 160})
         self.assertEqual(schema["properties"]["emote"], EMOTE["inputSchema"])
         self.assertEqual((schema["required"], schema["additionalProperties"]), (["reply"], False))
-        self.assertEqual(list(manifest.format_schema(())["properties"]), ["reply"])
+        self.assertEqual(list(manifest.format_schema(())["properties"]), ["reply", "remember", "forget"])
 
     def test_labels_are_the_declared_names_that_are_not_words(self):
         tools = (EMOTE, {"name": "look", "inputSchema": {"type": "object", "properties": {
@@ -319,7 +319,8 @@ class Provenance(unittest.TestCase):
         self.assertTrue(system.startswith(policy.PERSONA + "\n\n" + policy.EXAMPLES))
         examples = [json.loads(line.split(" -> ", 1)[1]) for line in policy.EXAMPLES.splitlines()[1:]]
         self.assertTrue(2 <= len(examples) <= 4)
-        self.assertTrue(all(list(example) == ["reply"] for example in examples))  # reply first, nothing else
+        self.assertTrue(all(list(example)[0] == "reply" for example in examples))  # reply first
+        self.assertEqual([key for example in examples for key in example if key != "reply"], ["remember"])
         self.assertLess(len(policy.PERSONA), 700)
 
     def test_the_prompt_keeps_a_short_window_of_exchanges(self):
@@ -360,10 +361,53 @@ class Provenance(unittest.TestCase):
         self.assertEqual(body_notes(state), [("(your body could not do emote: interrupted; could not do wave: "
                                               "unavailable (this body has no such tool; use only the tools it lists))")])
         self.assertTrue(policy.repeats(policy.recent_replies(state, "reachy"), "I'm curious! You said hello."))
+        self.assertEqual(state.facts, ())  # from before remember
 
     def test_the_checkpoint_round_trips(self):
-        state, _ = answered(asked("Feel happy"), output("Yay!", emote={"name": "cheerful1"}, wave={}))
+        state, _ = answered(asked("Feel happy"), output("Yay!", emote={"name": "cheerful1"}, wave={}, remember="Likes tea."))
+        self.assertEqual(state.facts, ("Likes tea.",))
         self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+
+
+class Memory(unittest.TestCase):
+    """Short stable facts the model keeps with remember and drops with forget, as Pollen's conversation app does."""
+
+    def test_a_remembered_fact_is_journaled_and_stays_in_the_fixed_prefix_past_the_window(self):
+        state, rows = answered(asked("My name is Juno."), output("Hi Juno!", remember="Their name is Juno."))
+        self.assertIn(("remember", None), kinds(rows))  # journaled, delivered to no device
+        for index in range(policy.WINDOW + 4):
+            state, _ = answered(asked(f"line {index}", turn_id=f"r{index}", state=state), output(f"Reply {index}."))
+        self.assertNotIn("My name is Juno.", [x.user for x in state.exchanges])
+        prompt = policy.compile_prompt(asked("What's my name?", turn_id="rx", state=state), "reachy", MANIFEST)
+        self.assertTrue(prompt.system.endswith("\n- Their name is Juno."), prompt.system)
+        self.assertNotIn("Juno", json.dumps(prompt.context))
+
+    def test_facts_are_capped_deduplicated_and_kept_in_the_order_they_were_learned(self):
+        state = Companion()
+        for index in range(policy.MAX_FACTS + 2):
+            state, _ = answered(asked(turn_id=f"r{index}", state=state), output("Okay.", remember=f"Fact  {index}. "))
+        state, _ = answered(asked(turn_id="again", state=state), output("Okay.", remember="fact 5."))
+        self.assertEqual(state.facts, tuple(f"Fact {i}." for i in range(2, policy.MAX_FACTS + 2)))
+
+    def test_forget_drops_every_fact_holding_its_words_and_a_blank_one_drops_nothing(self):
+        state, _ = answered(asked(), output("Okay.", remember="Has a dog named Mochi."))
+        state, _ = answered(asked(turn_id="r2", state=state), output("Okay.", remember="Likes tea."))
+        state, rows = answered(asked(turn_id="r3", state=state), output("Done.", forget="mochi"))
+        self.assertEqual((state.facts, ("forget", None) in kinds(rows)), (("Likes tea.",), True))
+        state, rows = answered(asked(turn_id="r4", state=state), output("Hm.", forget=" "))
+        self.assertEqual((state.facts, ("forget", None) in kinds(rows)), (("Likes tea.",), False))
+        self.assertEqual(body_notes(state), [])
+
+    def test_the_model_sees_its_own_remember_in_its_past_answers(self):
+        state, _ = answered(asked("I'm Juno."), output("Hi Juno!", remember="Their name is Juno."))
+        assistant = policy.compile_prompt(asked(turn_id="r2", state=state), "reachy", MANIFEST).context[1]
+        self.assertEqual(json.loads(assistant["content"]), {"reply": "Hi Juno!", "remember": "Their name is Juno."})
+
+    def test_a_device_tool_named_remember_is_the_device_s(self):
+        own = {"name": "remember", "inputSchema": {"type": "object"}}
+        self.assertEqual(manifest.format_schema((own,))["properties"]["remember"], own["inputSchema"])
+        state, rows = answered(asked(), output("Okay.", remember={}), tools=(own,))
+        self.assertEqual((state.facts, ("remember", "reachy") in kinds(rows)), ((), True))
 
 
 class Repeats(unittest.TestCase):

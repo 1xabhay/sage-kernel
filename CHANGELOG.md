@@ -9,6 +9,15 @@ and every protocol change is listed under **Protocol**.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-21
+
+### Added
+
+- Remembered facts, as Pollen's Reachy Mini conversation app does it: the model
+  may add `remember` or `forget` to its answer; facts are journaled, kept in the
+  checkpoint (up to 20, 120 characters each) and rendered at the end of the fixed
+  prompt prefix, so a name outlives the history window and a restart.
+
 ### Removed
 
 - Guards that an eval ablation on qwen3:4b-instruct showed do nothing measurable:
@@ -50,5 +59,6 @@ The first public release, with device protocol v1 in Draft.
 - Apache-2.0 license, README, CONTRIBUTING, SECURITY, Code of Conduct
   (Contributor Covenant 3.0), issue and pull request templates.
 
-[Unreleased]: https://github.com/1xabhay/sage-kernel/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/1xabhay/sage-kernel/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/1xabhay/sage-kernel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/1xabhay/sage-kernel/releases/tag/v0.1.0

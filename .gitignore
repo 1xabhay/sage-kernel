@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+.local/
+.backups/
+dist/
+# Live robot conversations (the owner's own speech): evals read them first when present, never commit them.
+evals/local/

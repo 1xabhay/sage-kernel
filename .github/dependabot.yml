@@ -1,0 +1,11 @@
+# Pull requests for new action and base-image releases; both are pinned by digest, so updates are explicit.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

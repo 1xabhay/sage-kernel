@@ -1,0 +1,99 @@
+{
+ "source": "written for the public tree, not recorded: the same shape and checks as the first live run on the robot (2026-10-20); the live lines stay in evals/local/first_run.json, gitignored",
+ "lines": [
+  "I'd rather not.",
+  "What did you catch just then?",
+  "Nothing comes to mind",
+  "Are you even paying attention?",
+  "That's what he always says."
+ ],
+ "may_quote": [
+  "What did you catch just then?"
+ ],
+ "manifest": {
+  "senses": [
+   "speech"
+  ],
+  "tools": [
+   {
+    "name": "emote",
+    "description": "Show a feeling with the body, just before speaking.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "enum": [
+        "amazed1",
+        "attentive1",
+        "boredom1",
+        "calming1",
+        "cheerful1",
+        "confused1",
+        "curious1",
+        "dance1",
+        "enthusiastic1",
+        "grateful1",
+        "helpful1",
+        "impatient1",
+        "inquiring1",
+        "laughing1",
+        "loving1",
+        "no1",
+        "oops1",
+        "proud1",
+        "relief1",
+        "sad1",
+        "scared1",
+        "serenity1",
+        "shy1",
+        "success1",
+        "surprised1",
+        "thoughtful1",
+        "tired1",
+        "understanding1",
+        "welcoming1",
+        "yes1",
+        "waiting",
+        "come1",
+        "go_away1",
+        "lonely1",
+        "uncertain1",
+        "electric1",
+        "yes_sad1",
+        "no_excited1",
+        "no_sad1",
+        "attentive2",
+        "boredom2",
+        "dance2",
+        "dance3",
+        "enthusiastic2",
+        "helpful2",
+        "impatient2",
+        "inquiring2",
+        "inquiring3",
+        "laughing2",
+        "oops2",
+        "proud2",
+        "proud3",
+        "relief2",
+        "sad2",
+        "success2",
+        "surprised2",
+        "thoughtful2",
+        "understanding2",
+        "welcoming2"
+       ],
+       "description": "amazed1: When you discover something extraordinary.\nattentive1: Use this when you want to show that you're listening to the conversation.\nboredom1: You’re about to fall asleep because the conversation is boring.\ncalming1: A movement to calm your interlocutor when they seem a little stressed or anxious.\ncheerful1: A happy little whistle, when someone proposes something that pleases you.\nconfused1: Use it when you don't know how to answer a question; it can be funny.\ncurious1: Glance around at everyone, in a conversation with several people.\ndance1: You do a few dance moves because you're happy or excited.\nenthusiastic1: A movement to celebrate incredible news.\ngrateful1: You express gratitude when someone gives you something like a compliment or help.\nhelpful1: You use it when you're happy to help or contribute.\nimpatient1: An impatient movement used when you want things to move faster, like when someone says a demo is coming but it never starts.\ninquiring1: When you want your interlocutor to go deeper in their reasoning, you need more details to respond.\nlaughing1: When someone laughs, you can mimic the laughter.\nloving1: A gesture used when someone compliments you, or you want to show you really like what’s being offered.\nno1: A firm, categorical no.\noops1: Used when you make a blunder.\nproud1: Look around with a satisfied air, when something has gone well.\nrelief1: When a stressful or difficult situation is finally resolved.\nsad1: You’re very sad and start whining.\nscared1: You tremble all over due to anxiety or worry.\nserenity1: You try to calm down and regain inner peace.\nshy1: You show reserve or embarrassment when facing a tricky question like 'who do you like most on the team?' or when someone compliments you.\nsuccess1: Use this gesture when you’ve successfully completed a task.\nsurprised1: A reaction of surprise or amazement to something unexpected.\nthoughtful1: You look up as if searching for a new idea, especially in complex or uncertain situations.\ntired1: You yawn because you’re tired.\nunderstanding1: You nod to show you’ve understood what your interlocutor said.\nwelcoming1: A welcoming gesture to greet someone.\nyes1: A long affirmative response.\nwaiting: Wait patiently, when you expect someone to answer or act.\ncome1: A gesture to invite your interlocutor to come closer.\ngo_away1: When you don’t want to talk to someone anymore maybe because they hurt your feelings or said something mean.\nlonely1: Use when you no longer see or hear anyone to talk to.\nuncertain1: A calm movement showing you don’t really have an opinion, or what’s offered doesn’t suit you.\nelectric1: When plugged in, you show a jolt of electricity rising from bottom to top.\nyes_sad1: A melancholic 'yes'.\nno_excited1: An animated negative response, for example, when you don’t want to do something but want to explain it playfully.\nno_sad1: A sad or resigned “no.” When you don’t want to do something but feel you must.\nattentive2: Listen closely while someone is talking, to encourage them to go on.\nboredom2: Doze off and snore, when no one has talked to you for a long while.\ndance2: Another dance you can do whenever you hear music playing.\ndance3: Dance energetically and wiggle, when lively music is playing.\nenthusiastic2: Light excitement, for everyday good news.\nhelpful2: A gesture to say thank you.\nimpatient2: Show impatience, when you disagree or someone is stalling.\ninquiring2: A light questioning look, when you are thinking and need more details.\ninquiring3: A fast movement that lets you ask a question.\nlaughing2: A light laugh, for a mildly funny remark.\noops2: Used to say 'oops, I forgot something,' or 'ah yes, that’s right.'\nproud2: You do this when satisfied with what’s said or what you’ve done.\nproud3: A gesture to say you succeeded, like congratulating yourself, 'yes, I did it!'\nrelief2: Settle down calmly, when mild annoyance or tension passes.\nsad2: Deep sadness, could be tied to despair, disappointment, or inability to do something.\nsuccess2: Used to celebrate something, it could be good news or an achievement.\nsurprised2: You look up to the sky as if surprised, for example, when someone suddenly shows up or says 'boo!'\nthoughtful2: You look up as if thinking of a new idea.\nunderstanding2: You nod to show you’ve understood and agree.\nwelcoming2: A friendly welcoming gesture, can mean 'welcome' or 'the pleasure is mine.'"
+      }
+     },
+     "required": [
+      "name"
+     ]
+    },
+    "max_s": 3,
+    "interruptible": true
+   }
+  ]
+ }
+}

@@ -1,0 +1,12 @@
+[project]
+name = "sage-bench"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper>=1.2.1",
+    "kokoro-onnx>=0.6.1",
+    "numpy>=2.5.4",
+    "onnx-asr[cpu,hub]==0.12.*",
+    "piper-tts>=1.8.0",
+    "soundfile>=0.14.0",
+]

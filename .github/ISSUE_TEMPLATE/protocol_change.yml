@@ -1,0 +1,29 @@
+name: Protocol change proposal
+description: Propose a change to the device protocol (docs/PROTOCOL.md) or the conformance suite.
+labels: [protocol]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What a kernel or device cannot do today, with a concrete case.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: The wording you would add to docs/PROTOCOL.md, and the conformance test that would check it.
+    validations:
+      required: true
+  - type: dropdown
+    id: compatibility
+    attributes:
+      label: Compatibility
+      description: See "Status and versioning" in docs/PROTOCOL.md.
+      options:
+        - Clarification only (every conforming kernel and device still conforms)
+        - Breaking (needs a new protocol version once v1 is stable)
+        - Not sure
+    validations:
+      required: true

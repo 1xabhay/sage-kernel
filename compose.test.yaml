@@ -1,0 +1,22 @@
+name: sage-kernel-test
+
+# Test services only: their own compose project, their own image, and no volumes, so a test run
+# (or a down of this project) can never touch the live kernel's journal volume.
+
+services:
+  conformance:
+    image: sage-kernel-test:0.1.0
+    build: .
+    command: ["python", "-m", "unittest", "discover", "-s", "conformance", "-v"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    pids_limit: 256
+    mem_limit: 1g
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+

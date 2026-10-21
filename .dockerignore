@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.env.*
+.backups
+evals/local
+bench
+**/.venv
+**/.local
+**/__pycache__

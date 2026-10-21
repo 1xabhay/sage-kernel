@@ -1,0 +1,27 @@
+[project]
+name = "sage-kernel"
+version = "0.1.0"
+description = "A minimal, model-independent kernel for always-on agents"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+# Standard library only, adapters included (owner, 2026-10-20: the openai SDK stack was dropped).
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/1xabhay/sage-kernel"
+Issues = "https://github.com/1xabhay/sage-kernel/issues"
+Changelog = "https://github.com/1xabhay/sage-kernel/blob/main/CHANGELOG.md"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# Malformed input is a ValueError whatever its JSON type.
+ignore = ["TRY004"]
+
+[tool.ruff.lint.per-file-ignores]
+# The suite keeps the kernel's stderr in a file it reads after a failure.
+"conformance/*" = ["SIM115"]

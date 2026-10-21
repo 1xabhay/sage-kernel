@@ -1,0 +1,50 @@
+name: sage-kernel
+
+# The live kernel only. Tests run from compose.test.yaml, a separate project with no volumes, so
+# nothing a test does can reach kernel-data; only make up and make down touch this project.
+
+services:
+  kernel:
+    image: sage-kernel:0.1.0
+    build: .
+    restart: unless-stopped
+    environment:
+      SAGE_DEVICES: ${SAGE_DEVICES:-}
+      # Ollama's base URL (native /api/chat). The live model answers turns; the background one is not used yet.
+      SAGE_MODEL_URL: ${SAGE_MODEL_URL:-http://host.docker.internal:11434}
+      SAGE_MODEL: ${SAGE_MODEL:-qwen3:1.7b}
+      SAGE_BACKGROUND_MODEL: ${SAGE_BACKGROUND_MODEL:-qwen2.5:7b}
+      SAGE_FRESH_SECONDS: ${SAGE_FRESH_SECONDS:-10}
+      SAGE_REPEAT_FALLBACK: ${SAGE_REPEAT_FALLBACK:-0}
+      SAGE_GREET_AFTER_ABSENT_S: ${SAGE_GREET_AFTER_ABSENT_S:-300}
+      SAGE_GREET_ON_START: ${SAGE_GREET_ON_START:-1}
+      SAGE_NUDGE_AFTER_IDLE_S: ${SAGE_NUDGE_AFTER_IDLE_S:-600}
+      SAGE_NUDGE_GAP_S: ${SAGE_NUDGE_GAP_S:-900}
+      SAGE_NUDGES_PER_HOUR: ${SAGE_NUDGES_PER_HOUR:-3}
+      SAGE_ENGAGED_S: ${SAGE_ENGAGED_S:-60}
+      SAGE_QUIET_S: ${SAGE_QUIET_S:-1800}
+    # 8765/8766 belong to the previous kernel while it runs.
+    ports:
+      - "127.0.0.1:8776:8766"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - kernel-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8766), 2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+    # Sealed: only /data persists, /tmp lives in memory, nothing else is writable.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    pids_limit: 128
+    mem_limit: 512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  kernel-data:

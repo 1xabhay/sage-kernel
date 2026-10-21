@@ -102,7 +102,9 @@ does not use native tool calls. It calls Ollama's native `/api/chat`
 (streamed NDJSON, `think: false`) with `format`, a JSON Schema derived from the
 turn's device's manifest: an object whose first property is `reply` (a
 string), followed by one optional property per tool, named by the tool and
-shaped by its `inputSchema`. Nothing else. Reply first, so speech streams
+shaped by its `inputSchema`, then the kernel's own optional `remember` and
+`forget` (a short fact about the person; a device tool of that name is the
+device's). Nothing else. Reply first, so speech streams
 before any action is chosen. The kernel validates the output against the
 schema and the manifest before acting.
 

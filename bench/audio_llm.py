@@ -155,6 +155,15 @@ PET = ("You are Sage, a small robot pet on a desk, listening through your microp
        "Answer as JSON. \"heard\": the exact words the person said to you (empty if nobody spoke to you). "
        "\"addressed_to_me\": true only if someone is talking to you, false for lyrics, TV or background talk. "
        "\"reply\": what you say aloud, one or two short warm sentences in your own words (empty if not addressed).")
+V2 = os.environ.get("PROMPTS") == "v2"  # one fair retry: say English, forbid invented words, drop the name
+if V2:
+    ASR = "Transcribe the English speech in this audio exactly, word for word. Output only the transcript."
+    PET = ("You are a small robot pet on a desk, listening through your microphone. The audio may hold a person "
+           "talking to you, and also music, singing, a TV or other people in the background. Answer as JSON. "
+           "\"heard\": only the English words actually spoken to you in this audio, never invented or guessed; empty "
+           "if unclear or if nobody spoke to you. \"addressed_to_me\": true only if a person is talking to you; false "
+           "for song lyrics, TV, radio or talk not meant for you. \"reply\": what you say aloud, one or two short "
+           "warm sentences (empty if not addressed).")
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["heard", "addressed_to_me", "reply"],
           "properties": {"heard": {"type": "string"}, "addressed_to_me": {"type": "boolean"},
                          "reply": {"type": "string"}}}
@@ -225,9 +234,9 @@ def run_gemma(model, clips=None):
                 rows.append({"id": c["id"], "mode": mode, "out": text, "ttft_s": ttft, "total_s": total,
                              "dur": round(len(a) / RATE, 2)})
         mem_after = memory(proc.pid)
-        save(f"gemma-{model}", rows)
+        save(f"gemma-{model}{'-v2' if V2 else ''}", rows)
         json.dump({"load_s": load_s, "mem_warm": mem, "mem_after": mem_after},
-                  open(os.path.join(OUT, f"gemma-{model}-meta.json"), "w"))
+                  open(os.path.join(OUT, f"gemma-{model}{'-v2' if V2 else ''}-meta.json"), "w"))
     finally:
         proc.terminate()
         proc.wait()
@@ -252,15 +261,13 @@ def coresident(model, qwen="qwen3:4b-instruct"):
             _, ttft, total = ask(load(c), "pet")
             t0 = time.perf_counter()
             ollama("/api/generate", {"model": qwen, "prompt": "Say hi in five words.", "stream": False,
-                                     "keep_alive": "10m", "options": {"num_predict": 20}})
+                                     "keep_alive": -1, "options": {"num_predict": 20}})
             q.append({"gemma_ttft_s": ttft, "gemma_total_s": total, "qwen_s": round(time.perf_counter() - t0, 3)})
         out.update(calls=q, ollama_ps=ollama("/api/ps")["models"], gemma_mem=memory(proc.pid), swap_after=swap(),
                    vm_stat=subprocess.run(["memory_pressure", "-Q"], capture_output=True, text=True).stdout.strip())
     finally:
         proc.terminate()
         proc.wait()
-        if qwen not in before:
-            ollama("/api/generate", {"model": qwen, "keep_alive": 0})
     json.dump(out, open(os.path.join(OUT, f"coresident-{model}.json"), "w"), indent=1, default=str)
 
 
@@ -288,8 +295,8 @@ def report(show=False):
     print("WER by category (synthetic; ref = the foreground line)")
     tables = {"parakeet": {i: r["hyp"] for i, r in pk.items()}}
     gem = {}
-    for f in sorted(glob.glob(os.path.join(OUT, "gemma-E?B.jsonl"))):
-        m = os.path.basename(f)[6:9]
+    for f in sorted(glob.glob(os.path.join(OUT, "gemma-E?B*.jsonl"))):
+        m = os.path.basename(f)[6:-6]
         rows = list(map(json.loads, open(f)))
         gem[m] = rows
         tables[f"{m} asr"] = {r["id"]: r["out"] for r in rows if r["mode"] == "asr"}

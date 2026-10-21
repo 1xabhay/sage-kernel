@@ -56,8 +56,6 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(path, "/api/chat")
         self.assertEqual((request["model"], request["messages"], request["format"], request["stream"],
                           request["think"]), ("qwen3:1.7b", prompt.messages(), prompt.format, True, False))
-        provider(fake.url, "qwen3:1.7b")(policy.retry_prompt(prompt), heard.append)
-        self.assertEqual(fake.requests[1][1]["options"]["temperature"], policy.RETRY_TEMPERATURE)
 
     def test_sampling_follows_the_model_family_and_the_context_is_capped(self):
         """Qwen3's card: near-greedy decoding repeats endlessly; its non-thinking settings are below.

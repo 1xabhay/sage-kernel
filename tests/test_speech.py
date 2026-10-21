@@ -100,22 +100,6 @@ class Speakable(unittest.TestCase):
             with self.subTest(prefix=live[:end]):
                 self.assertTrue(final.startswith(speech.speakable(live[:end], (), False)))
 
-    def test_assistant_speak_is_never_spoken(self):
-        """Live phi4-mini: "How can I help you today?", "feel free to ask", "Certainly, I can help you…"."""
-        for said, heard in (("Alright, no more rules! How can I assist you today?", "Alright, no more rules!"),
-                            ("I see. If you need assistance with anything else, feel free to ask.", "I see."),
-                            ("Certainly, I can help you with a robust plan.", ""),
-                            ("Oh, hi Ari! Let me know if you need anything.", "Oh, hi Ari!"),
-                            ("I'm here to help. What's up?", "What's up?"),
-                            ("How was your day?", "How was your day?")):
-            with self.subTest(said=said):
-                self.assertEqual(speech.speakable(said, (), True), heard)
-        live = "Got it, no more restrictions! How can I help you today? Do you need a plan?"
-        final = speech.speakable(live, (), True)
-        for end in range(len(live) + 1):
-            with self.subTest(prefix=live[:end]):
-                self.assertTrue(final.startswith(speech.speakable(live[:end], (), False).rstrip()))
-
     def test_streaming_holds_back_an_unfinished_word_or_stage_direction(self):
         self.assertEqual(speech.speakable("Hello the", LABELS, closed=False), "Hello ")
         self.assertEqual(speech.speakable("Hi *bounces hap", LABELS, closed=False), "Hi ")

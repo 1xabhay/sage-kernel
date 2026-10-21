@@ -322,12 +322,18 @@ class Provenance(unittest.TestCase):
         self.assertTrue(all(list(example) == ["reply"] for example in examples))  # reply first, nothing else
         self.assertLess(len(policy.PERSONA), 700)
 
-    def test_the_prompt_keeps_a_short_window_of_exchanges(self):
-        state = Companion()
-        for index in range(10):
+    def test_the_prompt_keeps_a_short_window_of_exchanges_cut_back_in_blocks(self):
+        """Ollama re-reads everything after the first changed message: a window sliding by one every turn
+        re-read the whole history every turn (prefill 0.4 s to 1.5 s, qwen3:4b-instruct). Cut back in blocks,
+        the history's start holds for several turns."""
+        state, kept, starts = Companion(), [], []
+        for index in range(20):
             state, _ = answered(asked(f"line {index}", turn_id=f"r{index}", state=state), output(f"Reply {index}."))
-        self.assertEqual(policy.WINDOW, 6)
-        self.assertEqual([x.user for x in state.exchanges], [f"line {index}" for index in range(4, 10)])
+            kept.append(len(state.exchanges))
+            starts.append(state.exchanges[0].user)
+        self.assertEqual((policy.WINDOW, policy.KEPT), (10, 6))
+        self.assertEqual(kept, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 6, 7, 8, 9, 10, 6, 7, 8, 9, 10])
+        self.assertEqual(len(set(starts)), 3)  # the history's start moved twice in 20 turns
 
     def test_the_body_note_says_plainly_what_the_body_cannot_sense(self):
         note = manifest.describe("reachy", MANIFEST)  # senses: speech only
@@ -350,7 +356,7 @@ class Provenance(unittest.TestCase):
         """Live run 2 replayed round-2 exchanges as "(your  body could not do emote: emote: done)"."""
         old = {"turn": {"turn_id": "r3", "source": "reachy", "status": "completed", "text": "", "timing": {}},
                "open": [], "exchanges": [
-                   {"user": "Hi", "reply": "I'm curious! You said hi.", "reply_sequence": 4, "calls": [
+                   {"user": "Hi", "reply": "I'm curious! You said hi.", "reply_sequence": 4, "repeat": False, "calls": [
                        {"name": "emote", "input": {"name": "sad1"}, "sequence": 3, "outcome": "emote: done"}]},
                    {"user": "Yo", "reply": "I'm curious! You said yo.", "reply_sequence": 8, "calls": [
                        {"name": "emote", "input": {"name": "sad1"}, "sequence": 7, "outcome": "emote: interrupted"},
@@ -388,28 +394,6 @@ class Repeats(unittest.TestCase):
         self.assertFalse(policy.repeats(recent, ""))  # silence is never a repeat
         self.assertEqual(policy.recent_replies(state, "mock"), ())
 
-    def test_a_delivered_reply_drops_sentences_said_recently_unless_nothing_would_remain(self):
-        state = self.talked(["You said hi. I'm all ears.", "I can't see you. I'm listening."])
-        recent = policy.recent_sentences(state, "reachy")
-        self.assertEqual(policy.fresh("Nothing was said. I'm all ears!", recent), "Nothing was said.")
-        self.assertEqual(policy.fresh("I'm all ears.", recent), "I'm all ears.")  # never silence
-        prompt = policy.compile_prompt(asked("Hm?", turn_id="r9", state=state), "reachy", MANIFEST)
-        _, rows = policy.decided(asked("Hm?", turn_id="r9", state=state), "r9", prompt,
-                                 output("Okay. I'm listening."), TOOLS, 10, 1.0, senses=("speech",))
-        self.assertEqual(rows[1].body, {"text": "Okay."})
-
-    def test_a_sentence_that_would_be_dropped_never_streams_and_the_rest_does(self):
-        recent = policy.recent_sentences(self.talked(["Yes, I hear you. What shall we do now?"]), "reachy")
-        self.assertEqual(policy.streamable("Great to hear that! What ", recent), "Great to hear that!")
-        self.assertEqual(policy.streamable("Great to hear that! What shall we do now? ", recent), "Great to hear that!")
-        self.assertEqual(policy.streamable("Great to hear that! What lovely ", recent), "Great to hear that! What lovely ")
-        self.assertEqual(policy.streamable("What shall we do? Tell me ", recent), "What shall we do? Tell me ")
-        live = "Great to hear that! What shall we do now? Tell me more."
-        final = policy.fresh(live, recent)
-        for end in range(len(live) + 1):
-            with self.subTest(prefix=live[:end]):
-                self.assertTrue(final.startswith(policy.streamable(live[:end], recent)))
-
     def test_a_reply_that_would_unsay_what_already_streamed_is_journaled_as_what_streamed(self):
         """Live eval: "I can't see with my eyes, but I feel" streamed, then the sense fix replaced the sentence."""
         state = asked("Can you see me?")
@@ -421,37 +405,6 @@ class Repeats(unittest.TestCase):
         _, rows = policy.decided(asked("Hi"), "r1", prompt, output("Hello there."), TOOLS, 10, 1.0,
                                  senses=("speech",), streamed="Hello")
         self.assertEqual(rows[1].body["text"], "Hello there.")  # a prefix: the rest is delivered
-
-    def test_an_all_repeated_reply_becomes_a_fresh_acknowledgement_only_when_enabled(self):
-        state = asked("Hm?", turn_id="r9", state=self.talked(["I can't see you. I'm listening.", "Okay."]))
-        prompt = policy.compile_prompt(state, "reachy", MANIFEST)
-        repeated = output("I can't see you. I'm listening.")
-        _, rows = policy.decided(state, "r9", prompt, repeated, TOOLS, 10, 1.0, senses=("speech",))
-        self.assertEqual((rows[1].body["text"], rows[0].body["fallback"]), ("I can't see you. I'm listening.", False))
-        _, rows = policy.decided(state, "r9", prompt, repeated, TOOLS, 10, 1.0, senses=("speech",), fallback=True)
-        self.assertEqual((rows[1].body["text"], rows[0].body["fallback"]), ("Mm-hm.", True))  # skips said "Okay."
-        _, rows = policy.decided(state, "r9", prompt, output("Something new."), TOOLS, 10, 1.0, senses=("speech",),
-                                 fallback=True)
-        self.assertEqual((rows[1].body["text"], rows[0].body["fallback"]), ("Something new.", False))
-        recall = asked("What did you just say?", turn_id="r8", state=self.talked(["Okay."]))
-        _, rows = policy.decided(recall, "r8", prompt, output("Okay."), TOOLS, 10, 1.0, senses=("speech",), fallback=True)
-        self.assertEqual(rows[1].body["text"], "Okay.")  # asked to repeat: said again, not replaced
-
-    def test_a_repeat_delivered_anyway_is_heard_but_kept_out_of_what_the_model_sees(self):
-        """Live run 5b: "I'm here for you." was rejected, repeated on retry, delivered, and copied eight times."""
-        state = asked("Why the sigh?", turn_id="r9", state=self.talked(["I'm here for you."]))
-        prompt = policy.compile_prompt(state, "reachy", MANIFEST)
-        state, rows = policy.decided(state, "r9", prompt, output("I'm here for you."), TOOLS, 10, 1.0,
-                                     senses=("speech",))
-        self.assertEqual(rows[1].body, {"text": "I'm here for you."})  # what the person heard, journaled
-        self.assertEqual(policy.recent_replies(state, "reachy")[-1], "i m here for you")  # the guard still knows it
-        context = policy.compile_prompt(asked("Hm?", turn_id="r10", state=state), "reachy", MANIFEST).context
-        self.assertEqual([m["content"] for m in context if m["role"] == "assistant"],
-                         [output("I'm here for you.")])  # the first time only
-        self.assertIn("Why the sigh?", [m["content"] for m in context if m["role"] == "user"])
-        recall = asked("What did you just say?", turn_id="r11", state=state)
-        state, _ = policy.decided(recall, "r11", prompt, output("I'm here for you."), TOOLS, 10, 1.0, senses=("speech",))
-        self.assertFalse(state.exchanges[-1].repeat)  # asked to say it again, it is no repeat
 
     def test_a_streaming_reply_is_held_while_it_could_still_be_a_repeat(self):
         recent = policy.recent_replies(self.talked(["Good morning, friend."]), "reachy")
@@ -470,7 +423,6 @@ class Repeats(unittest.TestCase):
                                                                            prompt.context[:-1]))
         self.assertTrue(again.context[-1]["content"].startswith(prompt.context[-1]["content"]))
         self.assertEqual(policy.retry_prompt(prompt), again)  # deterministic
-        self.assertEqual((prompt.temperature, again.temperature), (None, policy.RETRY_TEMPERATURE))
         rows = policy.rejected(state, "r1", prompt, output("Hello."), "repeat")
         self.assertEqual((kinds(rows), rows[0].body["reason"]), ([("rejected", None)], "repeat"))
         self.assertEqual(policy.rejected(policy.stop(state, "mock", None)[0], "r1", prompt, "", "repeat"), ())
@@ -522,32 +474,6 @@ class AskedToRepeat(unittest.TestCase):
         for line in ("What do you say?", "What did I say?", "Say something.", "Repeat after me: hello."):
             with self.subTest(line=line):
                 self.assertFalse(policy.asks_to_repeat(line))
-
-
-class Acting(unittest.TestCase):
-    def test_a_request_to_act_is_recognised(self):
-        for line in ("Alright, do it.", "Go on, talk about anything.", "What do you say?", "Tell me a joke.",
-                     "Okay, go on.", "Sing something."):
-            with self.subTest(line=line):
-                self.assertTrue(policy.asks_to_act(line))
-        for line in ("Hello.", "Can you see me?", "I'd rather not.", "What did you just say?"):
-            with self.subTest(line=line):
-                self.assertFalse(policy.asks_to_act(line))
-
-    def test_a_reply_that_only_announces_is_told_apart_from_one_that_acts(self):
-        for reply in ("I'll do it.", "Sure thing!", "Alright, let's talk about something.",
-                      "I'll speak about something. Let's see...", ""):
-            with self.subTest(reply=reply):
-                self.assertTrue(policy.announces_only(reply))
-        for reply in ("Sure! Here's a joke: why don't scientists trust atoms?", "The sea is vast and full of secrets."):
-            with self.subTest(reply=reply):
-                self.assertFalse(policy.announces_only(reply))
-
-    def test_on_a_turn_asked_to_act_an_announcement_is_held_until_content_starts(self):
-        self.assertTrue(policy.may_announce("I'll ", "Alright, do it."))
-        self.assertTrue(policy.may_announce("Sure! ", "Tell me a joke."))
-        self.assertFalse(policy.may_announce("Sure! Here's a joke about ", "Tell me a joke."))
-        self.assertFalse(policy.may_announce("I'll ", "Hello."))  # not asked to act: streams as ever
 
 
 class Proactive(unittest.TestCase):

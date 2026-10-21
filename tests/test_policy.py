@@ -319,7 +319,7 @@ class Provenance(unittest.TestCase):
         self.assertTrue(system.startswith(policy.PERSONA + "\n\n" + policy.EXAMPLES))
         examples = [json.loads(line.split(" -> ", 1)[1]) for line in policy.EXAMPLES.splitlines()[1:]]
         self.assertTrue(2 <= len(examples) <= 4)
-        self.assertTrue(all(list(example)[0] == "reply" for example in examples))  # reply first
+        self.assertTrue(all(next(iter(example)) == "reply" for example in examples))  # reply first
         self.assertEqual([key for example in examples for key in example if key != "reply"], ["remember"])
         self.assertLess(len(policy.PERSONA), 700)
 

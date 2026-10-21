@@ -9,6 +9,9 @@ MAX_TOOLS = 64
 # Senses a body may have; any it does not declare is stated as missing, so the model never claims it.
 SENSES = {"vision": "see", "speech": "hear", "touch": "feel touch"}
 MAX_REPLY = 160  # characters: one or two short spoken sentences, enforced by the decoder
+MAX_FACT = 120  # characters of one remembered fact
+# The kernel's own answer fields, after the device's tools; a device tool of the same name is the device's.
+MEMORY = {"remember": {"type": "string", "maxLength": MAX_FACT}, "forget": {"type": "string", "maxLength": MAX_FACT}}
 TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
 
 
@@ -47,9 +50,11 @@ def check_manifest(manifest) -> dict:
 
 
 def format_schema(tools) -> dict:
-    """The Ollama `format` the model answers in: the reply first, then one optional property per tool."""
+    """The Ollama `format` the model answers in: the reply first, one optional property per tool, then MEMORY."""
+    own = {tool["name"]: tool["inputSchema"] for tool in tools}
     return {"type": "object",
-            "properties": {"reply": {"type": "string", "maxLength": MAX_REPLY}, **{tool["name"]: tool["inputSchema"] for tool in tools}},
+            "properties": {"reply": {"type": "string", "maxLength": MAX_REPLY}, **own,
+                           **{name: schema for name, schema in MEMORY.items() if name not in own}},
             "required": ["reply"], "additionalProperties": False}
 
 

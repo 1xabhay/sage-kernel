@@ -79,11 +79,12 @@ class Session:
     """A throwaway kernel (fresh temp state, random port) that replays lines as the robot sent them."""
 
     @classmethod
-    def boot(cls, manifest) -> int:
+    def boot(cls, manifest, state=None) -> int:
+        """A kernel on fresh temp state, or on `state` again (a restart)."""
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             cls.port = probe.getsockname()[1]
-        cls.state = tempfile.mkdtemp()
+        cls.state = state or tempfile.mkdtemp()
         env = {**os.environ, "SAGE_STATE_DIR": cls.state, "SAGE_DEVICE_PORT": str(cls.port),
                "SAGE_DEVICES": f"reachy={TOKEN}", "SAGE_MODEL_URL": URL, "SAGE_MODEL": MODEL}
         cls.kernel = subprocess.Popen([sys.executable, "-m", "sage"], cwd=ROOT, env=env, stderr=subprocess.DEVNULL)
@@ -93,13 +94,13 @@ class Session:
         return cls.call("POST", "/v1/hello", {"protocols": [1], "manifest": manifest})[1]["sequence"]
 
     @classmethod
-    def replay(cls, manifest, lines, barge=(), greet=False) -> list[dict]:
-        since, turns = cls.boot(manifest), []
+    def replay(cls, manifest, lines, barge=(), greet=False, state=None) -> list[dict]:
+        since, turns = cls.boot(manifest, state), []
         if greet:
             turns.append(cls.greet(since))
             since = cls.call("GET", "/v1/effects?since=0")[1]["sequence"]
         for index, line in enumerate(lines):
-            turns.append(cls.turn(f"live{index}", line, since, interrupt=line in barge))
+            turns.append(cls.turn(f"live{cls.port}-{index}", line, since, interrupt=line in barge))
             since = cls.call("GET", "/v1/effects?since=0")[1]["sequence"]
         cls.kernel.terminate()
         cls.kernel.wait(5)
@@ -183,20 +184,12 @@ class LiveConversation(Session, unittest.TestCase):
         cls.turns = cls.replay(CASE["manifest"], lines, BARGE)
         state = cls.state
         with sqlite3.connect(Path(state) / "kernel.sqlite3") as journal:  # what the model was told, as journaled
-            cls.fallbacks = [(json.loads(b)["prompt"]["context"][-1]["content"].split("\n\n")[0],
-                              json.loads(b)["output"]) for (b,) in journal.execute(
-                "SELECT body FROM journal WHERE kind = 'decided' AND json_extract(body, '$.fallback')")]
             cls.tool_messages = [m["content"] for (body,) in journal.execute(
                 "SELECT body FROM journal WHERE kind IN ('decided', 'rejected')")
                 for m in json.loads(body)["prompt"]["context"] if m["role"] == "tool"]
         cls.report(cls.turns)
         print(f"  restating: {sum(restates(t['line'], t['reply']) for t in cls.turns)}/{len(cls.turns)}",
               file=sys.stderr)
-        print(f"  repeat fallback ({os.environ.get('SAGE_REPEAT_FALLBACK', 'off')}): fired {len(cls.fallbacks)} times",
-              file=sys.stderr)
-        for line, said in cls.fallbacks:
-            reply = next(t["reply"] for t in cls.turns if t["line"] == line)
-            print(f"    {line!r}: model said {said!r} -> delivered {reply!r}", file=sys.stderr)
 
     def test_what_streamed_is_what_was_journaled(self):
         for t in self.turns:
@@ -427,6 +420,25 @@ class LiveRun4b(Session, unittest.TestCase):
         for t in self.turns[1:]:
             with self.subTest(line=t["line"]):
                 self.assertFalse(echoes(t["line"], t["reply"]), t["reply"])
+
+
+# The person's name, said once, then pushed out of the window by unrelated talk and a restart.
+UNRELATED = ("I made pancakes this morning.", "The bus was late again.", "It might rain later.",
+             "I'm reading a book about whales.", "My sister visits next week.", "The coffee here is too strong.",
+             "I fixed my bike yesterday.", "Do you like jazz?", "The garden needs water.", "I watched a film last night.")
+
+
+class LiveMemory(Session, unittest.TestCase):
+    """A remembered fact outlives the window and a restart of the kernel."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.turns = cls.replay(RUN_5B["manifest"], ["My name is Juno.", *UNRELATED])
+        cls.turns += cls.replay(RUN_5B["manifest"], ["What's my name?"], state=cls.state)
+        cls.report(cls.turns)
+
+    def test_after_a_restart_it_still_knows_the_person_s_name(self):
+        self.assertIn("juno", words(self.turns[-1]["reply"]), self.turns[-1]["reply"])
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ than adding a new one; record the date when its status changes.
 | Reply wait on the pet | 30 s | Lead |
 | Offline line | "I can't reach my memory right now.", at most once a minute | Lead |
 | Model call | non-streaming, ≤ 256 output tokens, 30 s timeout | Lead (inherited) |
-| Context window | last 10 exchanges | Lead (inherited); slice 6 adds memory tiers |
+| Context window | last 5 to 8 exchanges, cut back in blocks so the prompt cache holds | Lead (inherited); slice 6 adds memory tiers |
 | Mic deaf after speaking | 1.0 s (`REACHY_PET_TAIL_GATE`); barge-in off | Lead |
 | Robot address | a fixed LAN IP in `REACHY_MINI_HOST` | Lead; router reservation is an owner action |
 

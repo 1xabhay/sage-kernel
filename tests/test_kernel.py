@@ -8,7 +8,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from sage import disposition
+from sage import disposition, policy
 from sage.journal import Journal
 from sage.kernel import Kernel
 
@@ -53,34 +53,6 @@ class DeviceResults(unittest.TestCase):
         self.assertEqual(tools, ["(your reachy body could not do emote: motor_hot)"])
 
 
-class StreamedRepeats(unittest.TestCase):
-    def test_a_recently_said_sentence_is_withheld_from_the_stream_as_well(self):
-        """Live run 4 spoke "How can I assist you?" twice: the stream sent it before delivery dropped it."""
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        streamed, queue = [], ["Yes, I hear you. How can I assist you?", "Great to hear that! How can I assist you?",
-                              "Great to hear that! How can I assist you?"]  # the retry repeats, as live
-
-        def decide(prompt, heard):
-            output = json.dumps({"reply": queue.pop(0)})
-            for end in range(1, len(output) + 1):
-                heard(output[end - 1])
-                streamed.append(kernel.written)
-            return output
-        kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide)
-        kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
-        for turn_id in ("r1", "r2"):
-            streamed.clear()
-            kernel.event("reachy", {"kind": "submitted", "turn_id": turn_id, "text": "Hi"})
-            deadline = time.monotonic() + 5
-            while kernel.state.turn.status == "active" and time.monotonic() < deadline:
-                time.sleep(0.01)
-        self.assertNotIn("assist", " ".join(streamed))
-        self.assertIn("Great to hear that!", " ".join(streamed))
-        replies = [e["text"] for e in kernel.effects("reachy", 0, 0, 0)["effects"] if e["kind"] == "reply"]
-        self.assertEqual(replies[-1], "Great to hear that!")
-
-
 class CappedStream(unittest.TestCase):
     def test_what_streams_is_always_a_prefix_of_the_journaled_reply_when_the_cap_cuts_it(self):
         directory = tempfile.TemporaryDirectory()
@@ -107,24 +79,6 @@ class CappedStream(unittest.TestCase):
         self.assertEqual(kernel.state.exchanges[-1].reply, reply)  # history holds what was spoken
 
 
-class AssistantGuard(unittest.TestCase):
-    def test_a_reply_that_is_only_assistant_speak_is_retried_once(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        decide, prompts = answers("How can I assist you today?", "Oh, lists are overrated anyway.")
-        kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide)
-        kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
-        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "No more lists."})
-        deadline = time.monotonic() + 5
-        while kernel.state.turn.status == "active" and time.monotonic() < deadline:
-            time.sleep(0.01)
-        replies = [e["text"] for e in kernel.effects("reachy", 0, 0, 0)["effects"] if e["kind"] == "reply"]
-        self.assertEqual((replies, len(prompts)), (["Oh, lists are overrated anyway."], 2))
-        with closing(sqlite3.connect(Path(directory.name) / "k.sqlite3")) as connection:
-            self.assertEqual([json.loads(b)["reason"] for (b,) in connection.execute(
-                "SELECT body FROM journal WHERE kind = 'rejected'")], ["only assistant-speak"])
-
-
 class AskedToRepeat(unittest.TestCase):
     def test_asked_what_it_just_said_it_may_say_it_again(self):
         directory = tempfile.TemporaryDirectory()
@@ -139,32 +93,6 @@ class AskedToRepeat(unittest.TestCase):
                 time.sleep(0.01)
         replies = [e["text"] for e in kernel.effects("reachy", 0, 0, 0)["effects"] if e["kind"] == "reply"]
         self.assertEqual((replies[-1], len(prompts)), ("I said: Here's a joke about atoms.", 2))  # no retry, no drop
-
-
-class ActGuard(unittest.TestCase):
-    def run_turn(self, *replies):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        decide, prompts = answers(*replies)
-        kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide)
-        kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
-        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Alright, do it."})
-        deadline = time.monotonic() + 5
-        while kernel.state.turn.status == "active" and time.monotonic() < deadline:
-            time.sleep(0.01)
-        with closing(sqlite3.connect(kernel.journal.path)) as connection:
-            rejected = [json.loads(b)["reason"] for (b,) in connection.execute(
-                "SELECT body FROM journal WHERE kind = 'rejected'")]
-        return [e["text"] for e in kernel.effects("reachy", 0, 0, 0)["effects"] if e["kind"] == "reply"], prompts, rejected
-
-    def test_an_announcement_is_retried_once_to_do_it_now(self):
-        replies, prompts, rejected = self.run_turn("I'll do it.", "A fox once outran the wind.")
-        self.assertEqual((replies, rejected), (["A fox once outran the wind."], ["announces without acting"]))
-        self.assertIn("do it now, in this reply", prompts[1].context[-1]["content"].lower())
-
-    def test_a_second_announcement_is_delivered_rather_than_silence(self):
-        replies, prompts, _ = self.run_turn("I'll do it.", "Sure thing!")
-        self.assertEqual((replies, len(prompts)), (["Sure thing!"], 2))
 
 
 class Proactive(unittest.TestCase):
@@ -306,6 +234,33 @@ class RepeatGuard(unittest.TestCase):
         self.turn(kernel, "r1")
         self.assertEqual([e["text"] for e in self.turn(kernel, "r2")], ["hello, there"])
         self.assertEqual(len(prompts), 3)
+
+
+class Remembering(unittest.TestCase):
+    def test_a_name_outlives_the_window_and_a_restart(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path, prompts = Path(directory.name) / "k.sqlite3", []
+        queue = [json.dumps({"reply": "Hi Juno!", "remember": "Their name is Juno."})]
+        lines = policy.WINDOW + 1  # enough that the window has dropped the first exchange
+        queue += [json.dumps({"reply": f"Reply number {n}."}) for n in range(lines)]
+
+        def decide(prompt, heard):
+            prompts.append(prompt)
+            return queue.pop(0)
+        for n, text in enumerate(["My name is Juno."] + [f"Line {n}." for n in range(lines)]):
+            if n in (0, lines):  # the last exchange after a restart
+                kernel = Kernel(Journal(path), decide)
+                kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
+            kernel.event("reachy", {"kind": "submitted", "turn_id": f"r{n}", "text": text})
+            deadline = time.monotonic() + 5
+            while kernel.state.turn.status == "active" and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertIn("- Their name is Juno.", prompts[-1].system)
+        self.assertNotIn("Juno", json.dumps(prompts[-1].context))
+        with closing(sqlite3.connect(path)) as connection:
+            self.assertEqual(connection.execute("SELECT body, target FROM journal WHERE kind = 'remember'").fetchall(),
+                             [('{"fact": "Their name is Juno."}', None)])
 
 
 if __name__ == "__main__":

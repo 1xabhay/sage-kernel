@@ -30,9 +30,7 @@ def main() -> None:
     except ValueError as error:
         sys.exit(f"sage: {error}")
     journal = Journal(Path(os.environ.get("SAGE_STATE_DIR", ".local/state")) / "kernel.sqlite3")
-    # SAGE_REPEAT_FALLBACK=1: a measured experiment (owner, 2026-10-20), off unless the lead ships it.
-    fallback = os.environ.get("SAGE_REPEAT_FALLBACK", "") in ("1", "on", "true")
-    kernel = Kernel(journal, decide, fresh_s, repeat_fallback=fallback, timings=timings)
+    kernel = Kernel(journal, decide, fresh_s, timings=timings)
     threading.Thread(target=kernel.ticking, daemon=True).start()
     server = http.serve(kernel, devices, host, port)
     print(f"sage: devices on {host}:{port}", file=sys.stderr)

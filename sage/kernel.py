@@ -27,9 +27,8 @@ Decide = Callable[[CompiledPrompt, Callable[[str], None]], str]
 
 class Kernel:
     def __init__(self, journal: Journal, decide: Decide, fresh_s: float = 10.0, clock=time.time,
-                 repeat_fallback: bool = False, timings: disposition.Timings = disposition.DEFAULT):
+                 timings: disposition.Timings = disposition.DEFAULT):
         self.journal, self.decide, self.fresh_s, self.clock = journal, decide, fresh_s, clock
-        self.repeat_fallback = repeat_fallback  # experiment, off by default: see policy.acknowledgement
         # Presence is not kept across restarts, so the first seen after one is an arrival; quiet is kept.
         self.timings = timings
         self.disposition = disposition.Disposition(quiet_until=journal.state.quiet_until)
@@ -159,12 +158,10 @@ class Kernel:
             except (OSError, sqlite3.Error) as caught:
                 print(f"sage: could not start a proactive turn: {caught}", file=sys.stderr)
 
-    def _ask(self, turn_id: str, prompt: CompiledPrompt, declared: dict, recent, sentences=frozenset()) -> str:
+    def _ask(self, turn_id: str, prompt: CompiledPrompt, declared: dict, recent) -> str:
         """One model call. Its reply streams as it decodes, held back while it could repeat one of `recent`
         or opens with what could be a claim of a sense the body lacks."""
         labels, names, senses = manifest.labels(declared["tools"]), self._names(declared), declared["senses"]
-        with self.lock:
-            line = self.state.turn.text
         pieces = []
 
         def heard(piece: str) -> None:
@@ -172,9 +169,9 @@ class Kernel:
             reply, closed = speech.partial_reply("".join(pieces))
             reply = (speech.whole_sentences if closed else speech.near_cap)(reply, manifest.MAX_REPLY)
             # Never a trailing space: the final reply is trimmed, and what streams must be its prefix.
-            said = policy.streamable(speech.speakable(reply, labels, closed, names), sentences).rstrip()
+            said = speech.speakable(reply, labels, closed, names).rstrip()
             if (policy.may_repeat(recent, said) or (closed and policy.repeats(recent, said))
-                    or policy.may_claim(said, senses) or policy.may_announce(said, line)):
+                    or policy.may_claim(said, senses)):
                 return
             with self.lock:
                 turn = self.state.turn
@@ -199,30 +196,19 @@ class Kernel:
     def _think(self, turn_id: str, prompt: CompiledPrompt, declared: dict) -> None:
         senses = declared["senses"]
         with self.lock:
-            recent = policy.recent_replies(self.state, self.state.turn.source)
-            sentences = policy.recent_sentences(self.state, self.state.turn.source)
-            line = self.state.turn.text
-            if policy.asks_to_repeat(line):  # saying it again is the honest answer
-                recent, sentences = (), frozenset()
+            # Asked what it just said, saying it again is the honest answer.
+            recent = () if policy.asks_to_repeat(self.state.turn.text) else policy.recent_replies(
+                self.state, self.state.turn.source)
         try:
-            output = self._ask(turn_id, prompt, declared, recent, sentences)
+            output = self._ask(turn_id, prompt, declared, recent)
             if policy.repeats(recent, said := self._said(output, declared)):  # retried once; never silence
                 self._reject(turn_id, prompt, output, "repeat of a recent reply")
                 prompt = policy.retry_prompt(prompt, policy.repeat_note(said))
-                output = self._ask(turn_id, prompt, declared, (), sentences)
-            if policy.asks_to_act(line) and policy.announces_only(self._said(output, declared)):  # once, then as is
-                self._reject(turn_id, prompt, output, "announces without acting")
-                prompt = policy.retry_prompt(prompt, policy.ACT_NOTE)
-                output = self._ask(turn_id, prompt, declared, (), sentences)
-            reply = speech.parse_output(output)[0]
-            if reply.strip() and not self._said(output, declared) and speech.ASSISTANT.search(reply.lower()):
-                self._reject(turn_id, prompt, output, "only assistant-speak")  # once, then silence
-                prompt = policy.retry_prompt(prompt, policy.OWN_WORDS)
-                output = self._ask(turn_id, prompt, declared, (), sentences)
+                output = self._ask(turn_id, prompt, declared, ())
             if claimed := policy.false_senses(self._said(output, declared), senses):  # retried once, then fixed
                 self._reject(turn_id, prompt, output, "claims a sense this body lacks: " + ", ".join(claimed))
                 prompt = policy.retry_prompt(prompt, policy.sense_note(claimed))
-                output = self._ask(turn_id, prompt, declared, (), sentences)
+                output = self._ask(turn_id, prompt, declared, ())
             error = ""
         except Exception as caught:  # noqa: BLE001 -- any provider or journal failure frees the turn
             output, error = "", f"{type(caught).__name__}: {caught}"[:500]
@@ -232,7 +218,7 @@ class Kernel:
             else:
                 state, rows = policy.decided(self.state, turn_id, prompt, output, declared["tools"],
                                              self.journal.head + 1, self.clock(), senses=senses,
-                                             fallback=self.repeat_fallback, streamed=self.written)
+                                             streamed=self.written)
             try:
                 self._commit(state, rows)
             except (OSError, sqlite3.Error) as caught:

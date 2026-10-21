@@ -42,8 +42,7 @@ def provider(url: str, model: str):
     def decide(prompt: CompiledPrompt, heard) -> str:
         body = json.dumps({"model": model, "messages": prompt.messages(), "format": prompt.format, "stream": True,
                            "think": False, "keep_alive": KEEP_ALIVE,
-                           "options": options if prompt.temperature is None else
-                           {**options, "temperature": prompt.temperature}}).encode()
+                           "options": options}).encode()
         request = urllib.request.Request(endpoint, body, {"Content-Type": "application/json"})
         answer = []
         with opener.open(request, timeout=TIMEOUT_S) as response:

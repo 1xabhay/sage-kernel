@@ -9,6 +9,21 @@ and every protocol change is listed under **Protocol**.
 
 ## [Unreleased]
 
+### Removed
+
+- Guards that an eval ablation on qwen3:4b-instruct showed do nothing measurable:
+  the act-don't-announce retry, the assistant-speak filter and its retry, the
+  hotter (0.9) retry temperature, the `SAGE_REPEAT_FALLBACK` experiment, hiding
+  repeated replies from the model, and dropping or holding recently said
+  sentences. The repeat retry, the sense guard, misheard framing, the reminder
+  line and "never unsay" stay.
+
+### Changed
+
+- The prompt cache now holds across turns once the window is full: the history
+  is cut from 10 back to 6 exchanges in one block instead of sliding by one
+  every turn, which made Ollama re-read the whole history on every turn.
+
 ## [0.1.0] - 2026-10-21
 
 The first public release, with device protocol v1 in Draft.

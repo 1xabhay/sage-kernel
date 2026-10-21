@@ -183,20 +183,12 @@ class LiveConversation(Session, unittest.TestCase):
         cls.turns = cls.replay(CASE["manifest"], lines, BARGE)
         state = cls.state
         with sqlite3.connect(Path(state) / "kernel.sqlite3") as journal:  # what the model was told, as journaled
-            cls.fallbacks = [(json.loads(b)["prompt"]["context"][-1]["content"].split("\n\n")[0],
-                              json.loads(b)["output"]) for (b,) in journal.execute(
-                "SELECT body FROM journal WHERE kind = 'decided' AND json_extract(body, '$.fallback')")]
             cls.tool_messages = [m["content"] for (body,) in journal.execute(
                 "SELECT body FROM journal WHERE kind IN ('decided', 'rejected')")
                 for m in json.loads(body)["prompt"]["context"] if m["role"] == "tool"]
         cls.report(cls.turns)
         print(f"  restating: {sum(restates(t['line'], t['reply']) for t in cls.turns)}/{len(cls.turns)}",
               file=sys.stderr)
-        print(f"  repeat fallback ({os.environ.get('SAGE_REPEAT_FALLBACK', 'off')}): fired {len(cls.fallbacks)} times",
-              file=sys.stderr)
-        for line, said in cls.fallbacks:
-            reply = next(t["reply"] for t in cls.turns if t["line"] == line)
-            print(f"    {line!r}: model said {said!r} -> delivered {reply!r}", file=sys.stderr)
 
     def test_what_streamed_is_what_was_journaled(self):
         for t in self.turns:

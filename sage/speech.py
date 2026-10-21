@@ -18,17 +18,11 @@ EMOJI_PARTS = {0x200D, 0xFE0F, 0x20E3}
 # Talk of being interrupted, the kernel's barge-in note paraphrased ("I was interrupted", live run 5b).
 INTERRUPTION = re.compile(r"\b(?:i|i'm|i've|we)\b[^.!?]{0,20}\b(?:interrupt|cut off)|\binterrupt\w*\s+(?:me|us)\b"
                           r"|\bcut(?:ting)? (?:me|us) off\b")
-# Generic-assistant sentences ("How can I help you today?", "feel free to ask"; live phi4-mini, 2026-10-21).
-ASSISTANT = re.compile(r"\bassist|\bhow (?:can|may) i help\b|\bfeel free to\b|\bcertainly\b|\blet me know if\b"
-                       r"|\bis there anything (?:else )?(?:i|you)\b|\bhere to help\b")
-UNSPOKEN = (INTERRUPTION, ASSISTANT)
-# Openings held while streaming, until they could no longer become a sentence that is never spoken.
+# Openings held while streaming, until they could no longer become talk of being interrupted.
 # ponytail: a fixed list, so a sentence opening otherwise ("Oh, you interrupted") can stream its start.
 OPENINGS = ("i was interrupted", "i got interrupted", "i ve been interrupted", "i was cut off", "i got cut off",
             "sorry i was interrupted", "you interrupted me", "you cut me off", "you keep interrupting me",
-            "you keep cutting me off", "how can i help", "how can i assist", "how may i help", "how may i assist",
-            "feel free to", "let me know if", "is there anything", "certainly", "i m here to help",
-            "i m here to assist", "if you need assistance", "if you need anything")
+            "you keep cutting me off")
 
 
 def partial_reply(raw: str) -> tuple[str, bool]:
@@ -100,7 +94,7 @@ def _emoji(char: str) -> bool:
 
 
 def _unspoken(text: str, closed: bool) -> str:
-    """`text` without sentences that are never spoken (talk of being interrupted, assistant-speak); while
+    """`text` without sentences that are never spoken (talk of being interrupted); while
     streaming, the sentence being written is also held while it could still become one."""
     pieces = re.split(r"(?<=[.!?])(\s+)", text)  # sentence, gap, sentence, gap, ..., the last sentence
     out = []
@@ -108,7 +102,7 @@ def _unspoken(text: str, closed: bool) -> str:
         sentence, gap = pieces[index], pieces[index + 1] if index + 1 < len(pieces) else ""
         plain = sentence.lower().replace("\u2019", "'")
         opening = " ".join(re.sub(r"[^\w\s]", " ", plain).split())
-        if any(p.search(plain) for p in UNSPOKEN) or (not closed and index == len(pieces) - 1 and opening
+        if INTERRUPTION.search(plain) or (not closed and index == len(pieces) - 1 and opening
                                                       and any(o.startswith(opening) for o in OPENINGS)):
             continue
         out.append(sentence + gap)

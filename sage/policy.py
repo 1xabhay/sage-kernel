@@ -28,7 +28,10 @@ EXAMPLES = ("Examples of how you answer:\n"
             'heard (may be misheard): "the fridge banana wire" -> {"reply": "Huh? Something about the fridge?"}\n'
             'I love rainy mornings. -> {"reply": "Me too. The sound on the window is the best part."}')
 STAY = "[Stay Sage: brief, warm, your own words.]"  # on the newest message only (persona drift)
-WINDOW = 6  # exchanges kept in the prompt: short against persona drift and prefill; ponytail: rolling summary + memory tiers replace this (blueprint §3)
+# Exchanges kept in the prompt: short against persona drift and prefill. Past WINDOW they are cut back to the last
+# KEPT, in one block: the model server re-reads all that follows the first changed message, so a window sliding by
+# one re-read the whole history every turn. ponytail: rolling summary + memory tiers replace this (blueprint §3)
+WINDOW, KEPT = 10, 6
 GRACE_S = 2.0
 REPLY_TIMEOUT_S = 30.0
 TIMING = ("stt_ms", "ttft_ms", "first_audio_ms")
@@ -40,7 +43,6 @@ RATE, BURST = 10.0, 20.0
 MAX_DURATION_MS = 600_000  # how long a device may say it spent performing one effect
 RECENT = 3  # replies to a device that a new reply must not repeat
 TEMPLATE_WORDS = 4  # a reply opening with the same words as a recent one is a template, and a repeat
-RETRY_TEMPERATURE = 0.9  # at the live 0.4 a retry often returned the reply it replaced (bench/LEDGER.md)
 NO_REPEAT = "[You said that just now. Say something new, in different words.]"
 
 
@@ -80,7 +82,6 @@ class Exchange:
     calls: tuple[Call, ...] = ()
     device: str = ""
     interrupted: bool = False  # noted to the model after its words, so it never continues a half sentence
-    repeat: bool = False  # repeated a recent reply even after the guard's retry: heard, but never shown to the model
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,6 @@ class CompiledPrompt:
     system: str
     context: tuple[dict, ...]  # chat messages after the system message
     format: dict  # the JSON Schema the answer is constrained to
-    temperature: float | None = None  # None: the provider's own; a guard's retry samples hotter
 
     def messages(self) -> list[dict]:
         return [{"role": "system", "content": self.system}, *self.context]
@@ -257,21 +257,24 @@ def _heard(line: str) -> str:
     return f'heard (may be misheard): "{line}"' if misheard(line) and not line.startswith("[") else line  # [a kernel note]
 
 
+def remember(exchanges: tuple[Exchange, ...], exchange: Exchange) -> tuple[Exchange, ...]:
+    exchanges += (exchange,)
+    return exchanges if len(exchanges) <= WINDOW else exchanges[-KEPT:]
+
+
 def compile_prompt(state: Companion, device: str, declared: dict) -> CompiledPrompt:
     """The prompt for the current turn of `device`, whose manifest is `declared`.
 
     The body's senses and tools follow the persona, the same on every turn of that device. Past
     answers appear as the JSON the model gave, cut to what was heard, each followed by what its
-    body could not do, if anything. Every message is rebuilt byte for byte as it was sent, so the
-    model server's prompt cache holds (bench/LEDGER.md "kernel").
+    body could not do, if anything. Every message is rebuilt byte for byte as it was sent, but for
+    the newest's reminder, so the model server's prompt cache holds (bench/LEDGER.md "kernel").
     """
     context = []
     for exchange in state.exchanges:
-        context.append({"role": "user", "content": _heard(exchange.user)})
-        if not exchange.repeat:  # live run 5b: each repeat shown to the model was copied by the next turn
-            answer = {"reply": exchange.reply, **{call.name: call.input for call in exchange.calls}}
-            context += [{"role": "assistant", "content": json.dumps(answer)}, *_cut(exchange)]
-        context += _failures(exchange)
+        answer = {"reply": exchange.reply, **{call.name: call.input for call in exchange.calls}}
+        context += [{"role": "user", "content": _heard(exchange.user)},
+                    {"role": "assistant", "content": json.dumps(answer)}, *_cut(exchange), *_failures(exchange)]
     context.append({"role": "user", "content": _heard(state.turn.text) + reminder(declared)})
     system = PERSONA + "\n\n" + EXAMPLES + "\n\n" + manifest.describe(device, declared)
     return CompiledPrompt(system, tuple(context), manifest.format_schema(declared["tools"]))
@@ -306,59 +309,6 @@ def _template(said: str, reply: str) -> bool:
     return said[:TEMPLATE_WORDS] == reply[:TEMPLATE_WORDS] or said[-TEMPLATE_WORDS:] == reply[-TEMPLATE_WORDS:]
 
 
-SENTENCE = re.compile(r"(?<=[.!?])\s+")
-
-
-def recent_sentences(state: Companion, device: str) -> frozenset[str]:
-    """Every sentence of the last RECENT replies heard on `device`, normalised."""
-    replies = [x.reply for x in state.exchanges if x.device in (device, "") and x.reply.strip()][-RECENT:]
-    return frozenset(filter(None, (_normal(s) for reply in replies for s in SENTENCE.split(reply))))
-
-
-def fresh(text: str, recent) -> str:
-    """`text` without the sentences said recently; all of it if nothing else would remain (never silence)."""
-    kept = [s for s in SENTENCE.split(text) if _normal(s) not in recent]
-    return " ".join(kept) if any(_normal(s) for s in kept) else text
-
-
-def streamable(said: str, recent) -> str:
-    """What of a reply still streaming may go out: no sentence `fresh` would drop, and the sentence
-    being written held back only while it could still turn out to be one of them (live run 4)."""
-    *complete, partial = SENTENCE.split(said)
-    kept = [s for s in complete if _normal(s) not in recent]
-    if _normal(partial) and not any(sentence.startswith(_normal(partial)) for sentence in recent):
-        kept.append(partial)
-    return " ".join(kept)
-
-
-ASKS_TO_ACT = re.compile(r"\b(do it|go ahead|go on|tell me|speak about|talk about|sing|recite|say something"
-                         r"|what do you say|keep going|continue|show me)\b")
-ANNOUNCE = re.compile(r"^(i'll|i will|i'm going to|i am going to|let's|let me|let us|sure|okay|ok|alright|all right"
-                      r"|of course|great|yes|absolutely)\b")
-OWN_WORDS = "[Say it as Sage, in plain words of your own: no offer of help.]"
-ACT_NOTE = "[Do it now, in this reply: give the thing itself, not a promise to.]"
-
-
-def asks_to_act(line: str) -> bool:
-    """Whether the person asks Sage to do something now ("do it", "go ahead", "tell me…")."""
-    return bool(ASKS_TO_ACT.search(_plain(line))) and not asks_to_repeat(line)
-
-
-def _content(text: str) -> list[str]:
-    """The sentences that say something: three words or more, not an announcement ("I'll…", "Let's…")."""
-    sentences = re.split(r"(?<=[.!?])\s+|\.\.\.\s*", _plain(text))
-    return [s for s in sentences if len(re.findall(r"[a-z']+", s)) >= 3 and not ANNOUNCE.match(s.strip())]
-
-
-def announces_only(reply: str) -> bool:
-    return not _content(reply)
-
-
-def may_announce(said: str, line: str) -> bool:
-    """While streaming a turn that asks it to act: hold an announcement until content starts."""
-    return asks_to_act(line) and not _content(said)
-
-
 ASKS_TO_REPEAT = re.compile(r"\bwhat did you (just )?say\b|\bsay that again\b|\brepeat that\b|^what was that\b"
                             r"|^(sorry|pardon)\W*(what|me)?\W*$")
 
@@ -366,19 +316,6 @@ ASKS_TO_REPEAT = re.compile(r"\bwhat did you (just )?say\b|\bsay that again\b|\b
 def asks_to_repeat(line: str) -> bool:
     """Whether the person asks to hear the last reply again: then repeating it is the honest answer."""
     return bool(ASKS_TO_REPEAT.search(_plain(line).strip()))
-
-
-ACKNOWLEDGEMENTS = ("Mm-hm.", "Okay.", "I'm listening.", "Go on.")
-
-
-def all_repeated(text: str, recent) -> bool:
-    sentences = [_normal(s) for s in SENTENCE.split(text) if _normal(s)]
-    return bool(sentences) and all(s in recent for s in sentences)
-
-
-def acknowledgement(recent) -> str:
-    """A short fresh acknowledgement, the first not said recently (experiment, SAGE_REPEAT_FALLBACK)."""
-    return next((a for a in ACKNOWLEDGEMENTS if _normal(a) not in recent), ACKNOWLEDGEMENTS[0])
 
 
 def repeats(recent, text: str) -> bool:
@@ -395,8 +332,7 @@ def may_repeat(recent, text: str) -> bool:
 def retry_prompt(prompt: CompiledPrompt, note: str = NO_REPEAT) -> CompiledPrompt:
     """The same prompt, with a note on the newest message (by default, not to repeat)."""
     *rest, newest = prompt.context
-    return replace(prompt, context=(*rest, {**newest, "content": newest["content"] + "\n\n" + note}),
-                   temperature=RETRY_TEMPERATURE)
+    return replace(prompt, context=(*rest, {**newest, "content": newest["content"] + "\n\n" + note}))
 
 
 # Senses ------------------------------------------------------------------------------------
@@ -464,7 +400,7 @@ def rejected(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str
 
 
 def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str, tools, sequence: int, now: float,
-            senses=None, fallback: bool = False, streamed: str = ""):
+            senses=None, streamed: str = ""):
     """Record what the model answered and, if its turn is still running, deliver what it decided.
 
     `sequence` is the journal sequence the first row will get. Tool effects are listed just
@@ -473,19 +409,11 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
     turn = state.turn
     reply, calls, problem = speech.parse_output(output)
     text = speech.speakable(speech.whole_sentences(reply, manifest.MAX_REPLY), manifest.labels(tools), True, tuple(tool["name"] for tool in tools))
-    acknowledged = False
-    recent = () if asks_to_repeat(turn.text) else recent_replies(state, turn.source)
-    if senses is not None:  # the last resorts, after the guards' retries
+    if senses is not None:  # the last resort, after the guard's retry
         text = honest(text, senses)
-        if not asks_to_repeat(turn.text):
-            said = recent_sentences(state, turn.source)
-            text = fresh(text, said)
-            acknowledged = fallback and all_repeated(text, said)
-            text = acknowledgement(said) if acknowledged else text
     if not text.startswith(streamed):  # a last-resort fix would unsay what the device already played
         text = streamed  # ponytail: what was heard wins; the guards' streaming holds keep this rare
-    record = Row("decided", "kernel", turn_id, {"prompt": asdict(prompt), "output": output, "problem": problem,
-                                                "fallback": acknowledged})
+    record = Row("decided", "kernel", turn_id, {"prompt": asdict(prompt), "output": output, "problem": problem})
     if turn.turn_id != turn_id or turn.status != "active":
         return state, (record,)  # stopped or interrupted meanwhile: nothing more is delivered
     rows, opened, recorded = [record], [], []
@@ -504,9 +432,9 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
         rows.append(Row("reply", "kernel", turn_id, {"text": text}, target=turn.source))
         opened.append(Open(reply_sequence, turn.source, turn_id, "reply", now + REPLY_TIMEOUT_S))
     rows.append(Row("completed", "kernel", turn_id))
-    exchange = Exchange(turn.text, text, reply_sequence, tuple(recorded), turn.source, repeat=repeats(recent, text))
+    exchange = Exchange(turn.text, text, reply_sequence, tuple(recorded), turn.source)
     return replace(state, turn=replace(turn, status="completed", text=""), open=state.open + tuple(opened),
-                   exchanges=(state.exchanges + (exchange,))[-WINDOW:]), tuple(rows)
+                   exchanges=remember(state.exchanges, exchange)), tuple(rows)
 
 
 def failed(state: Companion, turn_id: str, prompt: CompiledPrompt, reason: str):
@@ -608,7 +536,8 @@ def report_turn(state: Companion, source: str, turn_id: str, reply: dict | None,
             raise Refused("forbidden", "Only the device that started this turn may report its reply.")
         heard = (text or "") if status == "interrupted" else ""
         state = replace(state, turn=replace(turn, status="interrupted", text=""),
-                        exchanges=(state.exchanges + (Exchange(turn.text, heard, device=turn.source, interrupted=status == "interrupted"),))[-WINDOW:])
+                        exchanges=remember(state.exchanges, Exchange(turn.text, heard, device=turn.source,
+                                                                     interrupted=status == "interrupted")))
         body = {"turn_id": turn_id, "status": status, "reason": reason, "text": text, "timing": timing,
                 "duration_ms": duration_ms}
         # A streaming reply has no sequence yet, so its duration is kept under "reply" (lead).
@@ -645,7 +574,9 @@ def _call(data: dict) -> Call:
 
 def decode(data: dict) -> Companion:
     # ponytail: formats are migrated here by shape; add a checkpoint version the next time one changes.
+    # Before 0.2.0 an exchange also kept `repeat` (hidden from the model); it is dropped.
     return Companion(
         turn=Turn(**data["turn"]),
-        exchanges=tuple(Exchange(**{**x, "calls": tuple(map(_call, x["calls"]))}) for x in data["exchanges"]),
+        exchanges=tuple(Exchange(**{**{k: v for k, v in x.items() if k != "repeat"},
+                                    "calls": tuple(map(_call, x["calls"]))}) for x in data["exchanges"]),
         open=tuple(Open(**o) for o in data["open"]), quiet_until=data.get("quiet_until"))

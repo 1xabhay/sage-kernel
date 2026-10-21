@@ -332,9 +332,9 @@ class Provenance(unittest.TestCase):
             state, _ = answered(asked(f"line {index}", turn_id=f"r{index}", state=state), output(f"Reply {index}."))
             kept.append(len(state.exchanges))
             starts.append(state.exchanges[0].user)
-        self.assertEqual((policy.WINDOW, policy.KEPT), (10, 6))
-        self.assertEqual(kept, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 6, 7, 8, 9, 10, 6, 7, 8, 9, 10])
-        self.assertEqual(len(set(starts)), 3)  # the history's start moved twice in 20 turns
+        self.assertEqual((policy.WINDOW, policy.KEPT), (8, 5))
+        self.assertEqual(kept, [1, 2, 3, 4, 5, 6, 7, 8, 5, 6, 7, 8, 5, 6, 7, 8, 5, 6, 7, 8])
+        self.assertEqual(len(set(starts)), 4)  # the history's start moved three times in 20 turns
 
     def test_the_body_note_says_plainly_what_the_body_cannot_sense(self):
         note = manifest.describe("reachy", MANIFEST)  # senses: speech only

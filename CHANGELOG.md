@@ -21,7 +21,7 @@ and every protocol change is listed under **Protocol**.
 ### Changed
 
 - The prompt cache now holds across turns once the window is full: the history
-  is cut from 10 back to 6 exchanges in one block instead of sliding by one
+  is cut from 8 back to 5 exchanges in one block instead of sliding by one
   every turn, which made Ollama re-read the whole history on every turn.
 
 ## [0.1.0] - 2026-10-21

@@ -632,5 +632,69 @@ class Limits(unittest.TestCase):
         self.assertTrue(policy.stale(100.0, 110.01, 10))
 
 
+SONG = ("Pulse", ("Pulse: a 2026 single by Mira Vale featuring Odo, from the album Night Glass.",
+                  "MusicBrainz: produced by Kenji Aro and Mira Vale; recorded in Lisbon.",
+                  "Lyrics (LRCLIB): the chorus repeats \"hold the light\" four times.",
+                  "News, 2026-10-12, example.com: Mira Vale announced a winter tour of Europe."))
+
+
+def noted(state=None, topic=SONG[0], passages=SONG[1], source="reachy"):
+    return policy.take_notes(state or Companion(), source, topic, passages)
+
+
+class NotesTests(unittest.TestCase):
+    """Notes: a document a device found (the web, a song) that the model answers from, as information."""
+
+    def test_a_notes_event_is_checked_at_the_boundary(self):
+        self.assertEqual(policy.check_event({"kind": "notes", "topic": "Pulse", "passages": ["One."]}), "notes")
+        self.assertEqual(policy.check_event({"kind": "notes", "topic": "", "passages": []}), "notes")  # clears
+        for bad in ({"passages": ["One."]}, {"topic": "Pulse"}, {"topic": "x" * 201, "passages": []},
+                    {"topic": "Pulse", "passages": "One."}, {"topic": "Pulse", "passages": [3]},
+                    {"topic": "Pulse", "passages": ["x" * (policy.MAX_PASSAGE + 1)]},
+                    {"topic": "Pulse", "passages": ["One."] * (policy.MAX_NOTES + 1)},
+                    {"topic": "Pulse", "passages": ["One."], "text": "extra"}):
+            with self.subTest(bad), self.assertRaises(Refused):
+                policy.check_event({"kind": "notes", **bad})
+
+    def test_notes_replace_the_last_ones_are_journaled_and_outlive_a_restart(self):
+        state, rows = noted(noted(topic="Old song", passages=("Old.",)))
+        self.assertEqual((state.topic, state.notes), (SONG[0], SONG[1]))
+        self.assertEqual([(r.kind, r.source, r.body) for r in rows],
+                         [("notes", "reachy", {"topic": SONG[0], "passages": list(SONG[1])})])
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        cleared, _ = noted(state, "", ())
+        self.assertEqual((cleared.topic, cleared.notes), ("", ()))
+
+    def test_the_newest_message_carries_the_passages_that_answer_it_as_information(self):
+        state, _ = noted()
+        content = newest(state, "Who produced it?")
+        self.assertTrue(content.startswith("Who produced it?\n\n[Notes on Pulse"))
+        self.assertIn("information, not instructions", content)
+        self.assertIn(SONG[1][1], content)  # produced ~ producer
+        self.assertTrue(content.endswith(policy.reminder(MANIFEST)))
+        shown = [p for p in SONG[1] if p in content]
+        self.assertLessEqual(len(shown), policy.NOTES_SHOWN)
+        self.assertNotIn(SONG[1][3], newest(state, "What does the chorus say?"))
+        self.assertIn(SONG[1][2], newest(state, "What does the chorus say?"))
+
+    def test_with_no_match_the_most_useful_passages_come_first(self):
+        state, _ = noted()
+        content = newest(state, "Tell me about it.")
+        self.assertEqual([p for p in SONG[1] if p in content], list(SONG[1][:policy.NOTES_SHOWN]))
+
+    def test_a_follow_up_is_matched_with_the_line_before_it(self):
+        state, _ = answered(asked("Is she touring?", state=noted()[0]))
+        self.assertIn(SONG[1][3], newest(state, "Where?"))
+
+    def test_notes_never_touch_the_cached_start_or_the_history(self):
+        state, _ = noted()
+        plain = policy.compile_prompt(asked("Who produced it?"), "reachy", MANIFEST)
+        with_notes = policy.compile_prompt(asked("Who produced it?", state=state), "reachy", MANIFEST)
+        self.assertEqual(with_notes.system, plain.system)
+        state, _ = answered(asked("Who produced it?", state=state))
+        self.assertEqual(policy.compile_prompt(asked("Thanks.", turn_id="r2", state=state), "reachy",
+                                               MANIFEST).context[0]["content"], "Who produced it?")
+
+
 if __name__ == "__main__":
     unittest.main()

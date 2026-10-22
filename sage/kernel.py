@@ -95,6 +95,8 @@ class Kernel:
                     state = replace(state, quiet_until=self.disposition.quiet_until)
             elif kind == "presence":
                 more = (policy.Row("presence", source, None, {"state": data["state"], "confidence": data["confidence"]}),)
+            elif kind == "notes":
+                state, more = policy.take_notes(state, source, data["topic"], data["passages"])
             elif kind == "stop":
                 state, more = policy.stop(state, source, turn_id, streaming=bool(self.written))
             elif kind == "acknowledged":

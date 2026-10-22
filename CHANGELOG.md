@@ -9,6 +9,17 @@ and every protocol change is listed under **Protocol**.
 
 ## [Unreleased]
 
+### Added
+
+- Notes: a device can hand the kernel a topic and up to 64 passages (such as a
+  song looked up on the web); each turn, the 3 that best match the newest line
+  ride on the newest message as information. Journaled and checkpointed.
+
+### Protocol
+
+- New event `notes` `{topic, passages}` (§10, draft). JSON bodies may be up to
+  131072 bytes (was 8192).
+
 ## [0.2.0] - 2026-10-21
 
 ### Added

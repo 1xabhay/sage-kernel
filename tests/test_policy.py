@@ -657,7 +657,7 @@ class NotesTests(unittest.TestCase):
                 policy.check_event({"kind": "notes", **bad})
 
     def test_notes_replace_the_last_ones_are_journaled_and_outlive_a_restart(self):
-        state, rows = noted(noted(topic="Old song", passages=("Old.",)))
+        state, rows = noted(noted(topic="Old song", passages=("Old.",))[0])
         self.assertEqual((state.topic, state.notes), (SONG[0], SONG[1]))
         self.assertEqual([(r.kind, r.source, r.body) for r in rows],
                          [("notes", "reachy", {"topic": SONG[0], "passages": list(SONG[1])})])

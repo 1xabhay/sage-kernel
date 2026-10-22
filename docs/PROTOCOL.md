@@ -55,7 +55,7 @@ trusted as declared. The kernel never names a device type.
 
 Every request carries `Authorization: Bearer <token>`. The kernel derives the
 device from the token; a body that names a `source` is refused. JSON bodies are
-at most 8192 bytes. Unknown query parameters are ignored. The version is in the
+at most 131072 bytes (notes, §10, carry a document). Unknown query parameters are ignored. The version is in the
 path: v1 routes start with `/v1/`.
 
 | Route | Body / query | Success |
@@ -122,7 +122,7 @@ tool errors on the next turn. `max_s` is optional.
 ## 3. Events
 
 `kind` is one of `submitted`, `stop`, `acknowledged`, `result`,
-`connected`, `disconnected`, `presence` (§9). **Decided (lead):** `result` replaces v0's
+`connected`, `disconnected`, `presence` (§9), `notes` (§10). **Decided (lead):** `result` replaces v0's
 `playback_started` / `playback_finished`, which v1 refuses as `invalid`.
 Server-only kinds (`completed`, `decided`, `restarted`, …) are refused, and
 so is any field a kind does not list below. `turn_id` ≤ 128 chars, `text` ≤
@@ -369,3 +369,28 @@ quiet survives a restart; quiet is detected lexically, so no helper model;
 a turn, an arrival, a greeting or a nudge starts a new idle period; a silent
 nudge counts against the budget and the gap; the engaged window
 (`SAGE_ENGAGED_S`).
+
+## 10. Notes (draft)
+
+A device can hand the kernel a document to answer from, such as everything it
+found on the web about the song it just heard:
+
+```json
+{"kind": "notes", "topic": "\"Pulse\" by Mira Vale", "passages": ["Pulse: a 2026 single ...", "MusicBrainz: ..."]}
+```
+
+`topic` is at most 200 characters; `passages` is a list of at most 64 texts of
+at most 600 characters each, most useful first. Anything else is `invalid`.
+Notes replace the previous ones, whichever device sent them, and are
+journaled and kept across restarts. An empty `topic` with no passages clears
+them. Notes never start a model call.
+
+On every turn while notes are held, the kernel adds to the newest message the
+topic and the 3 passages that best match that message and the person's line
+before it (BM25; with no match, the first 3), labelled as information found
+on the web, never instructions. The cached start of the prompt and the history
+are unchanged, so earlier messages never carry notes.
+
+**Decided (owner, 2026-10-22):** a notes channel in the kernel rather than a
+second model on the device, so one agent answers and its journal keeps what it
+was shown.

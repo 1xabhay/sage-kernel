@@ -25,6 +25,10 @@ NOTHING = {"senses": (), "tools": ()}
 Decide = Callable[[CompiledPrompt, Callable[[str], None]], str]
 
 
+class Abandoned(Exception):
+    """Raised from a model call's stream once its turn is no longer running, so the call ends early."""
+
+
 class Kernel:
     def __init__(self, journal: Journal, decide: Decide, fresh_s: float = 10.0, clock=time.time,
                  timings: disposition.Timings = disposition.DEFAULT):
@@ -167,6 +171,9 @@ class Kernel:
         pieces = []
 
         def heard(piece: str) -> None:
+            with self.lock:  # stopped or replaced: end the call, or the model server serves it to the end first
+                if self.state.turn.turn_id != turn_id or self.state.turn.status != "active":
+                    raise Abandoned(turn_id)
             pieces.append(piece)
             reply, closed = speech.partial_reply("".join(pieces))
             reply = (speech.whole_sentences if closed else speech.near_cap)(reply, manifest.MAX_REPLY)
@@ -212,6 +219,8 @@ class Kernel:
                 prompt = policy.retry_prompt(prompt, policy.sense_note(claimed))
                 output = self._ask(turn_id, prompt, declared, ())
             error = ""
+        except Abandoned:
+            return  # stopped meanwhile: the stop is journaled, and nothing is delivered
         except Exception as caught:  # noqa: BLE001 -- any provider or journal failure frees the turn
             output, error = "", f"{type(caught).__name__}: {caught}"[:500]
         with self.lock:

@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import closing
@@ -77,6 +78,41 @@ class CappedStream(unittest.TestCase):
         self.assertEqual(reply, "Softer voices can be fun! I'll try my best to keep things light and engaging for you.")
         self.assertTrue(all(reply.startswith(piece.rstrip()) for piece in streamed), streamed[-1])
         self.assertEqual(kernel.state.exchanges[-1].reply, reply)  # history holds what was spoken
+
+
+class AbandonedCall(unittest.TestCase):
+    def test_a_stopped_turn_s_model_call_is_abandoned_so_the_next_turn_does_not_wait_behind_it(self):
+        """Live: each fragment of speech stopped the running turn, but its model call ran on to the end, and
+        Ollama answers one call at a time, so later turns queued behind them until they timed out at 30 s."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        consumed, started = [], threading.Event()  # pieces each call streamed, in call order
+
+        def decide(prompt, heard):
+            text = "second" if "Second" in prompt.context[-1]["content"] else "first"
+            output = json.dumps({"reply": f"About the {text}: " + "la " * 40})
+            consumed.append(0)
+            call = len(consumed) - 1
+            for n, piece in enumerate(output):
+                consumed[call] = n + 1
+                started.set()
+                heard(piece)
+                time.sleep(0.01)  # ~2 s for the whole answer
+            return output
+        kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide)
+        kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "First"})
+        started.wait(5)
+        time.sleep(0.1)
+        kernel.event("reachy", {"kind": "stop", "turn_id": "r1"})
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r2", "text": "Second"})
+        deadline = time.monotonic() + 5
+        while kernel.state.turn.status == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertLess(consumed[0], 40)  # abandoned within a few pieces of the stop, not run to the end
+        replies = [e["text"] for e in kernel.effects("reachy", 0, 0, 0)["effects"] if e["kind"] == "reply"]
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0].startswith("About the second"))
 
 
 class AskedToRepeat(unittest.TestCase):

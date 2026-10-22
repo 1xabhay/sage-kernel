@@ -635,7 +635,9 @@ class Limits(unittest.TestCase):
 SONG = ("Pulse", ("Pulse: a 2026 single by Mira Vale featuring Odo, from the album Night Glass.",
                   "MusicBrainz: produced by Kenji Aro and Mira Vale; recorded in Lisbon.",
                   "Lyrics (LRCLIB): the chorus repeats \"hold the light\" four times.",
-                  "News, 2026-10-12, example.com: Mira Vale announced a winter tour of Europe."))
+                  "News, 2026-10-12, example.com: Mira Vale announced a winter tour of Europe.",
+                  "Web, example.org: a review of the album's artwork and its photographer.",
+                  "Web, example.net: the video was filmed in one take on a rooftop."))
 
 
 def noted(state=None, topic=SONG[0], passages=SONG[1], source="reachy"):
@@ -673,14 +675,22 @@ class NotesTests(unittest.TestCase):
         self.assertIn(SONG[1][1], content)  # produced ~ producer
         self.assertTrue(content.endswith(policy.reminder(MANIFEST)))
         shown = [p for p in SONG[1] if p in content]
-        self.assertLessEqual(len(shown), policy.NOTES_SHOWN)
+        self.assertLessEqual(len(shown), 1 + policy.NOTES_SHOWN)
         self.assertNotIn(SONG[1][3], newest(state, "What does the chorus say?"))
         self.assertIn(SONG[1][2], newest(state, "What does the chorus say?"))
+
+    def test_the_first_passage_is_always_shown_beside_the_best_matches(self):
+        """The first is the most useful, such as a song's card (release date, album): "When did it come
+        out?" has no word to match it by."""
+        state, _ = noted()
+        content = newest(state, "What does the chorus say?")
+        self.assertIn(SONG[1][0], content)
+        self.assertLess(content.index(SONG[1][0]), content.index(SONG[1][2]))
 
     def test_with_no_match_the_most_useful_passages_come_first(self):
         state, _ = noted()
         content = newest(state, "Tell me about it.")
-        self.assertEqual([p for p in SONG[1] if p in content], list(SONG[1][:policy.NOTES_SHOWN]))
+        self.assertEqual([p for p in SONG[1] if p in content], list(SONG[1][:1 + policy.NOTES_SHOWN]))
 
     def test_a_follow_up_is_matched_with_the_line_before_it(self):
         state, _ = answered(asked("Is she touring?", state=noted()[0]))

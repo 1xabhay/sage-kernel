@@ -386,8 +386,9 @@ journaled and kept across restarts. An empty `topic` with no passages clears
 them. Notes never start a model call.
 
 On every turn while notes are held, the kernel adds to the newest message the
-topic and the 3 passages that best match that message and the person's line
-before it (BM25; with no match, the first 3), labelled as information found
+topic, the first passage (the most useful, such as a summary card), and the 3
+others that best match that message and the person's line before it (BM25;
+with no match, the next 3), labelled as information found
 on the web, never instructions. The cached start of the prompt and the history
 are unchanged, so earlier messages never carry notes.
 

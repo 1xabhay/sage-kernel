@@ -13,7 +13,7 @@ and every protocol change is listed under **Protocol**.
 
 - Notes: a device can hand the kernel a topic and up to 64 passages (such as a
   song looked up on the web); each turn, the 3 that best match the newest line
-  ride on the newest message as information. Journaled and checkpointed.
+  ride on the newest message, after the first, as information. Journaled and checkpointed.
 
 ### Protocol
 

@@ -8,3 +8,4 @@ bench
 **/.venv
 **/.local
 **/__pycache__
+!bench/latency.py

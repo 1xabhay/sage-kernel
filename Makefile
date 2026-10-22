@@ -1,10 +1,10 @@
 PYTHON ?= python3
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
 RUFF_IMAGE := ghcr.io/astral-sh/ruff:0.17.1-alpine@sha256:b527bd3e15c43b4fb9fc3c0615cd2ed4df019d100459c37b0916dee999111190
-SOURCES := sage tests conformance evals pyproject.toml
+SOURCES := sage tests conformance evals bench/latency.py pyproject.toml
 # Tests use their own compose project, never the live one: see compose.test.yaml.
 TEST := docker compose -f compose.test.yaml
-.PHONY: up down check unit conformance eval lint vuln secrets hygiene
+.PHONY: up down check unit conformance eval latency lint vuln secrets hygiene
 
 # The kernel on 127.0.0.1:8776 (the old kernel keeps 8765/8766). Needs SAGE_DEVICES in the environment or .env.
 up:
@@ -34,6 +34,15 @@ endif
 eval:
 	$(TEST) run --build --rm -e SAGE_EVAL_MODEL_URL=http://host.docker.internal:11434 -e SAGE_MODEL conformance \
 	  python -m unittest discover -s evals -v
+
+# Per-turn latency of the live kernel, read from a copy of its journal: the original is never opened.
+# SINCE=30 make latency keeps the last 30 minutes. ponytail: docker cp of a live WAL database can tear if the
+# kernel checkpoints mid-copy; rerun, or snapshot with sqlite3's backup API if it ever matters.
+latency:
+	@dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT \
+	  && docker cp -q sage-kernel-kernel-1:/data/kernel.sqlite3 "$$dir/" \
+	  && for end in -wal -shm; do docker cp -q sage-kernel-kernel-1:/data/kernel.sqlite3$$end "$$dir/" 2>/dev/null || true; done \
+	  && $(PYTHON) bench/latency.py "$$dir/kernel.sqlite3" $(if $(SINCE),--since-minutes $(SINCE))
 
 # The code is streamed in, never mounted: the Colima VM cannot see this folder.
 lint:

@@ -263,6 +263,14 @@ class RepoWideComposeTests(unittest.TestCase):
             with self.subTest(path=path):  # find's -prune is fine; docker's prune is not
                 self.assertNotRegex((ROOT / path).read_text(), r"down\s+(-\w*v|--volumes)|volume rm|(?<![-\w])prune")
 
+@unittest.skipUnless((ROOT / "Makefile").exists(), "checks the source tree; the image ships without it")
+class SecretScanTests(unittest.TestCase):
+    def test_the_secret_scan_reads_a_bundle_so_it_works_in_a_worktree(self):
+        # In a linked worktree .git is a file pointing elsewhere: tarring it sends gitleaks nothing to read.
+        commands = recipe("secrets")
+        self.assertIn("git bundle create - --all", commands)
+        self.assertNotIn("tar -c .git", commands)
+
 
 if __name__ == "__main__":
     unittest.main()

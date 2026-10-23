@@ -22,6 +22,13 @@ and every protocol change is listed under **Protocol**.
 - Model timing: the `decided` row keeps Ollama's own counts and durations from
   its final chunk as `model_timing` {prompt_tokens, prefill_ms, gen_tokens,
   decode_ms, load_ms}; `bench/latency.py` reports prefill and decode p50/p95.
+- `sage.policy.relevant(passages, query, k)`: the BM25 retriever that picks
+  which notes ride on a turn, importable on its own so a device's eval can score
+  the kernel's own retrieval.
+- `bench/audio_llm.py`: Gemma 4 E4B/E2B audio-in (llama.cpp) measured against
+  Parakeet STT on 58 synthetic clips and 20 live ones; verdict no (worse WER
+  outside clean speech, and its joint "heard + reply" JSON invents what it
+  heard). Results in `bench/LEDGER.md`.
 
 ### Protocol
 

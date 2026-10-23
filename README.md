@@ -13,6 +13,8 @@ device.
 - **Core:** [sage/](sage/), Python 3.12 standard library only.
 - **Design:** [docs/BLUEPRINT.md](docs/BLUEPRINT.md), [docs/DECISIONS.md](docs/DECISIONS.md),
   [docs/ROADMAP.md](docs/ROADMAP.md). Changes: [CHANGELOG.md](CHANGELOG.md).
+- **Devices:** [devices/reachy-mini/](devices/reachy-mini/), the Reachy Mini voice app, pet and simulator.
+- **Apps:** [apps/](apps/), other programs built on Sage. **Experiments:** [experiments/](experiments/), e.g. the Rust `sage-os`.
 
 ## Quick start
 

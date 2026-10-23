@@ -15,6 +15,47 @@ about 0.1 s at p50.
 frame) to the robot's first audible sample. It is the same clock as BLUEPRINT §5 and an earlier Pipecat voice bot's
 "reply" latency. Target: p50 ≤ 1 s, p95 ≤ 2 s.
 
+## Audio-in LLM: Gemma 4 E4B/E2B vs Parakeet (`audio_llm.py`, 2026-10-21)
+
+**Question:** can one audio-in model replace STT plus the "(may be misheard)" heuristics? **Runtime:**
+Homebrew llama.cpp 0.7.0 `llama-server`, official `ggml-org/gemma-4-E{4,2}B-it-GGUF` Q4_0 + Q8_0 mmproj
+(llama.cpp's multimodal docs list both with audio input; the server logs "audio input is in experimental
+stage"). Audio as an OpenAI `input_audio` part, temperature 0, thinking off; pet mode constrained by
+`response_format` json_schema `{heard, addressed_to_me, reply}` (0 malformed of 234). **Clips:** 58
+synthetic Kokoro clips (clear, fragments, coined words, names, speech under a sung bed or a TV voice at
+0/5/10 dB, background alone) plus the owner's first 20 live recordings (no labels; never copied).
+**Conditions:** `qwen3:4b-instruct` resident in Ollama throughout; swap 12-18 GB in use, so latency is an
+upper bound. WER folds hyphens (robo-splaining = robosplaining).
+
+| | Parakeet (CPU) | E4B transcribe | E4B pet JSON `heard` | E4B v2 pet | E2B transcribe | E2B pet JSON |
+|---|---|---|---|---|---|---|
+| WER all addressed (54) | **0.261** | 0.292 | 0.500 | 0.437 | 0.303 | 0.666 |
+| clear / names | **0.010** / 0.033 | 0.019 / 0.033 | 0.077 / 0.033 | 0.019 / 0.033 | 0.019 / 0.033 | 0.644 / 0.267 |
+| coined | **0.06** | 0.10 | 0.90 | 0.76 | 0.12 | 0.78 |
+| fragments | **0.0** | 0.10 | 4.4 (invented lines) | 4.4 | 0.20 | 4.6 |
+| song mix / TV mix | **0.204** / 0.806 | 0.323 / 0.774 | 0.355 / 0.634 | 0.258 / **0.613** | 0.366 / 0.753 | 0.301 / 0.699 |
+| addressed: speech / bg-only / mixed | n/a | n/a | 52/54, 2/4 rejected, 23/24 | 48/54, 2/4, 20/24 | n/a | 54/54, **0/4**, 24/24 |
+| real 20: WER vs Parakeet / said addressed | ref | 0.89 / - | - / 20 | 1.11 / 10 | 1.16 / - | - / 20 |
+| 2-5 s clip: first token p50 / total p50 (p95) s | - / 0.29 (0.97) | 0.64 / 1.02 (1.27) | 0.83 / 2.90 (3.27) | 0.83 / 2.78 (3.04) | 0.28 / 0.50 (0.69) | 0.46 / 1.58 (1.70) |
+| load (warm disk) | - | 18 s cold, 7 s | | | 5 s | |
+| memory (server log) | - | Metal 3.06 GB + CPU-mapped PLE 2.19 GB + mmproj up to 0.75 GB | | | 1.58 + 1.67 + 0.75 GB | |
+
+- **The joint JSON prompt invents what it heard.** On fragments, some coined lines and most real clips,
+  `heard` comes back as a stock line primed by the prompt ("Hey Sage, what's up?", and after the name was
+  removed "Hey, little robot, can you tell me what time it is?"), marked addressed, with a confident reply
+  ("It's currently 3:15 PM"). A mishearing you can flag is replaced by a fluent invention you cannot.
+- **Plain transcription is close to Parakeet on clean speech but worse everywhere else,** and on the real
+  robot mic it drifts into other languages (Hindi, Marathi, German, Swedish output for English speech)
+  even when told "English". E2B is faster than E4B but says addressed on everything.
+- **Background:** the TV voice alone was rejected by both E4B prompts; the sung lyrics mostly were not.
+- **Pet first-token** is the JSON's opening brace; the reply streams after `heard`, so 2.8-2.9 s total is
+  the honest figure for E4B. Replies are generic-assistant ("How can I help you today?", an emoji, "I slept
+  wonderfully").
+- **Co-resident:** E4B in llama-server + `qwen3:4b-instruct` (2.9 GB, 100% GPU) both stayed loaded; 10
+  alternating calls: Gemma pet total p50 2.89 s (solo 2.90), qwen p50 0.41 s; swap +0.1 GB, free 16%. It fits,
+  but only because this Mac was already swapping 17.7 GB.
+- **Verdict: no** (not even a second pass as prompted). Rerun: `PROMPTS=v2` selects the second prompt set.
+
 ## Live model comparison (`live_models.py`, 2026-10-20/21)
 
 **Judge:** the kernel's own eval, `evals/test_live_conversation.py`: 15 checks over 17 replayed lines.

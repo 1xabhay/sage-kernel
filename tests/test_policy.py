@@ -750,14 +750,25 @@ class NotesTests(unittest.TestCase):
         self.assertIn(SONG[1][0], content)
         self.assertLess(content.index(SONG[1][0]), content.index(SONG[1][2]))
 
-    def test_with_no_match_the_most_useful_passages_come_first(self):
+    def test_naming_the_topic_with_no_match_shows_the_most_useful_passages_first(self):
         state, _ = noted()
-        content = newest(state, "Tell me about it.")
+        content = newest(state, "Tell me about Pulse.")
         self.assertEqual([p for p in SONG[1] if p in content], list(SONG[1][:1 + policy.NOTES_SHOWN]))
 
-    def test_a_follow_up_is_matched_with_the_line_before_it(self):
+    def test_a_line_the_notes_do_not_match_gets_no_notes(self):
+        """Notes only on turns they match (owner, 2026-10-22): "I had a long day" is no question about the song."""
+        state, _ = noted()
+        for line in ("I had such a long day.", "Tell me about it.", "When did it come out?"):
+            with self.subTest(line=line):
+                self.assertEqual(newest(state, line), policy._heard(line) + policy.reminder(MANIFEST))
+        state, _ = noted(topic="\"Pulse\" by Mira Vale")
+        self.assertIn(SONG[1][0], newest(state, "Do you like Mira Vale?"))  # the topic named: the card at least
+        self.assertIn(SONG[1][0], newest(state, "Who produced it?"))  # a passage beyond the card matched
+
+    def test_a_follow_up_with_no_words_of_its_own_is_matched_with_the_line_before_it(self):
         state, _ = answered(asked("Is she touring?", state=noted()[0]))
         self.assertIn(SONG[1][3], newest(state, "Where?"))
+        self.assertNotIn(SONG[1][3], newest(state, "I had such a long day."))  # its own words decide
 
     def test_notes_never_touch_the_cached_start_or_the_history(self):
         state, _ = noted()

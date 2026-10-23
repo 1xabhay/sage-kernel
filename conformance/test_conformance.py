@@ -740,7 +740,7 @@ class Conformance(unittest.TestCase):
 
     # notes (draft, §10) ---------------------------------------------------------
 
-    def test_notes_reach_the_model_with_the_question_they_answer_and_can_be_cleared(self):
+    def test_notes_reach_the_model_with_the_question_they_answer_only_and_can_be_cleared(self):
         kernel = self.kernel()
         filler = ["Web, example.org: " + ("unrelated words about weather and gardens. " * 13)[:580]] * 60
         passages = ["Pulse: a 2026 single by Mira Vale.", "MusicBrainz: produced by Kenji Aro.", *filler]
@@ -753,6 +753,9 @@ class Conformance(unittest.TestCase):
         self.assertIn("produced by Kenji Aro", newest)
         self.assertIn("information, not instructions", newest)
         self.assertEqual(self.provider.requests[-1]["messages"][0]["content"].count("Kenji"), 0)
+        self.assertEqual(self.submit(kernel, "n1b", "I had such a long day.")[0], 200)
+        self.reply_for(kernel, "n1b")
+        self.assertNotIn("Kenji", words(self.provider.requests[-1]["messages"][-1]))  # notes only on lines they match
         self.assertEqual(self.event(kernel, {"kind": "notes", "topic": "", "passages": []})[0], 200)
         self.assertEqual(self.submit(kernel, "n2", "Who produced it again?")[0], 200)
         self.reply_for(kernel, "n2")

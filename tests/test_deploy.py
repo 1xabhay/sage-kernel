@@ -164,6 +164,39 @@ class PrePushTests(unittest.TestCase):
     def test_make_hooks_enables_the_tracked_hooks(self):
         self.assertIn("git config core.hooksPath .githooks", recipe("hooks"))
 
+@unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
+class CommitGateTests(unittest.TestCase):
+    """The commit-msg gate runs `make test` of the project nearest each staged path; (red) lets a failure in."""
+
+    def setUp(self):
+        self.repo = tempfile.TemporaryDirectory()
+        self.addCleanup(self.repo.cleanup)
+        self.root = Path(self.repo.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        (self.root / "Makefile").write_text("test:\n\ttrue\n")
+        (self.root / "app" / "src").mkdir(parents=True)
+        (self.root / "app" / "Makefile").write_text("test:\n\tfalse\n")
+
+    def gate(self, path: str, subject: str) -> int:
+        (self.root / path).write_text("x\n")
+        subprocess.run(["git", "add", path], cwd=self.root, check=True)
+        (self.root / "MSG").write_text(subject + "\n\nbody\n")
+        return subprocess.run(["sh", str(ROOT / ".githooks/commit-msg"), "MSG"], cwd=self.root,
+                              capture_output=True, check=False).returncode
+
+    def test_the_nearest_project_must_pass(self):
+        self.assertEqual(self.gate("top.txt", "Root change"), 0)  # only the root project ran
+        self.assertNotEqual(self.gate("app/src/a.txt", "App change"), 0)
+
+    def test_a_red_subject_lets_failing_tests_in(self):
+        self.assertEqual(self.gate("app/src/a.txt", "App test first (red)"), 0)
+        self.assertNotEqual(self.gate("app/src/a.txt", "App (red) in the middle"), 0)
+
+    def test_make_test_runs_the_kernel_suites(self):
+        self.assertEqual(recipe("test").strip(), "")  # the work is in its prerequisites
+        self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^test: unit conformance$")
+        self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^check: test$")
+
 
 if __name__ == "__main__":
     unittest.main()

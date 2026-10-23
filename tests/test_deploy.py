@@ -3,6 +3,7 @@
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -89,7 +90,7 @@ class LiveDataTests(unittest.TestCase):
 
 
 PRIVATE = (".env", ".env.local", ".backups/kernel.sqlite3", "evals/local/run.json", "bench/.local/hf/model.bin",
-           "bench/expressive/.local/run.sqlite3", "bench/.venv/bin/python")
+           "bench/expressive/.local/run.sqlite3", "bench/.venv/bin/python", ".claude/worktrees/lane/x", ".deploy/abc/x")
 
 
 @unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
@@ -119,6 +120,50 @@ class PublishTests(unittest.TestCase):
                 run = subprocess.run([sys.executable, ".githooks/hygiene.py", mode], check=False, cwd=ROOT,
                                      capture_output=True, text=True)
                 self.assertEqual(run.returncode, 0, run.stderr)
+
+@unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
+class PrePushTests(unittest.TestCase):
+    """The pre-push hook keeps local-only branches local and refuses to publish an added private address."""
+
+    def setUp(self):
+        self.repo = tempfile.TemporaryDirectory()
+        self.addCleanup(self.repo.cleanup)
+        self.git("init", "-q")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], check=True,
+                              cwd=self.repo.name, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, text: str) -> str:
+        (Path(self.repo.name) / "f.txt").write_text(text)
+        self.git("add", "f.txt")
+        self.git("commit", "-qm", "c")
+        return self.git("rev-parse", "HEAD")
+
+    def push(self, local_ref: str, sha: str, remote_ref: str = "") -> int:
+        line = f"{local_ref} {sha} {remote_ref or local_ref} {'0' * 40}\n"
+        return subprocess.run(["sh", str(ROOT / ".githooks/pre-push"), "origin", "url"], input=line, text=True,
+                              cwd=self.repo.name, capture_output=True, check=False).returncode
+
+    def test_local_only_branches_are_refused(self):
+        sha = self.commit("hello\n")
+        for ref in ("refs/heads/history/sage", "refs/heads/reachy/sage-voice", "refs/heads/backup/x",
+                    "refs/heads/private-history"):
+            with self.subTest(ref=ref):
+                self.assertNotEqual(self.push(ref, sha), 0)
+        self.assertNotEqual(self.push("refs/heads/topic", sha, "refs/heads/history/sage"), 0)
+        self.assertEqual(self.push("refs/heads/repo/guards", sha), 0)
+
+    def test_an_added_private_address_is_refused(self):
+        self.commit("hello\n")
+        sha = self.commit("hello\nkernel at " + "192.168" + ".1.20\n")
+        self.assertNotEqual(self.push("refs/heads/repo/topic", sha), 0)
+        sha = self.commit("hello\n")  # removing it again does not make the range clean: the add is still pushed
+        self.assertNotEqual(self.push("refs/heads/repo/topic", sha), 0)
+
+    def test_make_hooks_enables_the_tracked_hooks(self):
+        self.assertIn("git config core.hooksPath .githooks", recipe("hooks"))
+
 
 if __name__ == "__main__":
     unittest.main()

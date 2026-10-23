@@ -2,8 +2,14 @@ PYTHON ?= python3
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
 RUFF_IMAGE := ghcr.io/astral-sh/ruff:0.17.1-alpine@sha256:b527bd3e15c43b4fb9fc3c0615cd2ed4df019d100459c37b0916dee999111190
 SOURCES := sage tests conformance evals pyproject.toml
+# A linked worktree (a parallel lane) is not the main checkout: it tests in its own project and image,
+# named after its folder, and never touches the live kernel.
+LINKED := $(shell [ "$$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)" = \
+  "$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ] || echo yes)
+LANE := $(if $(LINKED),$(notdir $(CURDIR)),main)
+MAIN_ONLY = @[ -z "$(LINKED)" ] || { echo "make $@: the live kernel runs only from the main checkout, not lane $(LANE)." >&2; exit 1; }
 # Tests use their own compose project, never the live one: see compose.test.yaml.
-TEST := docker compose -f compose.test.yaml
+TEST := LANE=$(LANE) docker compose -p sage-kernel-test-$(LANE) -f compose.test.yaml
 .PHONY: hooks up down test check unit conformance eval lint vuln secrets hygiene
 
 # Tracked git hooks: the push guard and the red/green commit gate (.githooks/).
@@ -12,9 +18,11 @@ hooks:
 
 # The kernel on 127.0.0.1:8776 (the old kernel keeps 8765/8766). Needs SAGE_DEVICES in the environment or .env.
 up:
+	$(MAIN_ONLY)
 	docker compose up -d --build --wait kernel
 
 down:
+	$(MAIN_ONLY)
 	docker compose down
 
 # Unit tests, then the conformance suite, both in Docker on Python 3.12. `check` is the old name.

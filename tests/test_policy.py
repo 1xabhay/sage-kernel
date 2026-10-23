@@ -707,6 +707,13 @@ def noted(state=None, topic=SONG[0], passages=SONG[1], source="reachy"):
     return policy.take_notes(state or Companion(), source, topic, passages)
 
 
+def idle(state, turns):
+    """`state` after `turns` exchanges the notes do not match."""
+    for n in range(turns):
+        state, _ = answered(asked(f"My dog sneezed {n} times.", turn_id=f"idle{n}", state=state))
+    return state
+
+
 class NotesTests(unittest.TestCase):
     """Notes: a document a device found (the web, a song) that the model answers from, as information."""
 
@@ -755,15 +762,28 @@ class NotesTests(unittest.TestCase):
         content = newest(state, "Tell me about Pulse.")
         self.assertEqual([p for p in SONG[1] if p in content], list(SONG[1][:1 + policy.NOTES_SHOWN]))
 
-    def test_a_line_the_notes_do_not_match_gets_no_notes(self):
+    def test_a_line_the_notes_do_not_match_gets_no_notes_once_they_stop_lingering(self):
         """Notes only on turns they match (owner, 2026-10-22): "I had a long day" is no question about the song."""
-        state, _ = noted()
+        state = idle(noted()[0], 2)
         for line in ("I had such a long day.", "Tell me about it.", "When did it come out?"):
             with self.subTest(line=line):
                 self.assertEqual(newest(state, line), policy._heard(line) + policy.reminder(MANIFEST))
         state, _ = noted(topic="\"Pulse\" by Mira Vale")
         self.assertIn(SONG[1][0], newest(state, "Do you like Mira Vale?"))  # the topic named: the card at least
         self.assertIn(SONG[1][0], newest(state, "Who produced it?"))  # a passage beyond the card matched
+
+    def test_the_card_lingers_for_two_turns_after_the_notes_arrive_or_last_matched(self):
+        """Live (2026-10-22): "When did it come out?" right after the song was named got no notes, so no card
+        and no release date: nothing in it matches "Released: ...". The card stays on for two turns."""
+        state, _ = noted()
+        content = newest(state, "When did it come out?")
+        self.assertIn(SONG[1][0], content)
+        self.assertEqual([p for p in SONG[1] if p in content], [SONG[1][0]])  # the card alone, not padding
+        state = idle(state, 2)
+        self.assertNotIn("[Notes on", newest(state, "When did it come out?"))
+        state, _ = answered(asked("Who produced it?", turn_id="m1", state=state))  # a match starts it again
+        self.assertIn(SONG[1][0], newest(state, "When did it come out?"))
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
 
     def test_a_follow_up_with_no_words_of_its_own_is_matched_with_the_line_before_it(self):
         state, _ = answered(asked("Is she touring?", state=noted()[0]))
@@ -787,8 +807,6 @@ BODY_PLAN = json.loads((Path(__file__).parents[1] / "evals" / "body_commands.jso
 
 
 class Budget(unittest.TestCase):
-    # Over budget (2026-10-22): an owner decision, not a silent cut. See the K3 commit for the cheapest cut.
-    @unittest.expectedFailure
     def test_the_worst_case_prompt_leaves_room_to_answer_in_the_context(self):
         """num_ctx is 4096; under 3600 tokens leaves room for the answer. ponytail: chars/4, not the
         model's tokenizer (qwen3 runs ~3.5-4 chars a token on English); measure with Ollama if it gets close."""
@@ -809,3 +827,18 @@ class Budget(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Description(unittest.TestCase):
+    def test_an_enum_its_description_already_spells_out_is_not_printed_twice(self):
+        """The emote names were listed twice in the cached prefix, once in the enum and once in their glosses:
+        ~200 tokens of a 4096 context. The answer format still constrains the names."""
+        spelled = {"name": "emote", "inputSchema": {"type": "object", "properties": {"name": {
+            "type": "string", "enum": ["yes1", "no1"], "description": "yes1: agree.\nno1: refuse."}}}}
+        half = {"name": "look", "inputSchema": {"type": "object", "properties": {"to": {
+            "type": "string", "enum": ["left", "right"], "description": "left: turn left."}}}}
+        text = manifest.describe("reachy", {"senses": ("speech",), "tools": (spelled, half)})
+        self.assertNotIn('"enum": ["yes1", "no1"]', text)
+        self.assertIn("yes1: agree.", text)
+        self.assertIn('"enum": ["left", "right"]', text)  # "right" is not in its description: kept
+        self.assertEqual(manifest.format_schema((spelled,))["properties"]["emote"], spelled["inputSchema"])

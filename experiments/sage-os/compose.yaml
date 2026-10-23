@@ -1,0 +1,53 @@
+services:
+  kernel:
+    image: sage-os:0.1.0
+    build: .
+    restart: unless-stopped
+    environment:
+      SAGE_DEVICES: ${SAGE_DEVICES:-}
+      SAGE_OWNERS: ${SAGE_OWNERS:-}
+      SAGE_MODEL_URL: ${SAGE_MODEL_URL:-http://host.docker.internal:11434}
+      SAGE_MODEL: ${SAGE_MODEL:-qwen3:1.7b}
+      SAGE_UTC_OFFSET_S: ${SAGE_UTC_OFFSET_S:-0}
+    # 8765/8766 belong to ../sage and 8776 to ../sage-kernel while they run.
+    ports:
+      - "127.0.0.1:8786:8766"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - home:/data
+    # Sealed: only /data persists and nothing else is writable.
+    read_only: true
+    pids_limit: 64
+    mem_limit: 64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Routines are just a device: they post messages to the kernel with their own token.
+  # Needs routines=<token> in SAGE_DEVICES and the same token in SAGE_ROUTINES_TOKEN.
+  routines:
+    image: sage-os:0.1.0
+    build: .
+    entrypoint: ["/sage-routines"]
+    restart: unless-stopped
+    depends_on:
+      - kernel
+    environment:
+      SAGE_KERNEL_URL: http://kernel:8766
+      SAGE_ROUTINES_TOKEN: ${SAGE_ROUTINES_TOKEN:-}
+      SAGE_UTC_OFFSET_S: ${SAGE_UTC_OFFSET_S:-0}
+    # It only reads /data/routines; no ports, nothing writable.
+    volumes:
+      - home:/data:ro
+    read_only: true
+    pids_limit: 16
+    mem_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  home:

@@ -1,0 +1,5 @@
+target/
+.env
+evals/.last-run.txt
+# Live robot conversations (the owner's own speech): never commit them.
+evals/local/

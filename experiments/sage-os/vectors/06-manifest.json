@@ -1,0 +1,19 @@
+{
+  "about": "A manifest is refused when a tool name is malformed, repeated or reserved, or its schema is not an object; sandboxed change tools need no approval, others do.",
+  "policy": {"owners": ["phone"]},
+  "steps": [
+    {"input": {"kind": "hello", "device": "x", "manifest": {"tools": [{"name": "send", "inputSchema": {"type": "object"}}]}}, "refused": "invalid"},
+    {"input": {"kind": "hello", "device": "x", "manifest": {"tools": [{"name": "Bad", "inputSchema": {"type": "object"}}]}}, "refused": "invalid"},
+    {"input": {"kind": "hello", "device": "x", "manifest": {"tools": [{"name": "a", "inputSchema": {"type": "object"}}, {"name": "a", "inputSchema": {"type": "object"}}]}}, "refused": "invalid"},
+    {"input": {"kind": "hello", "device": "x", "manifest": {"tools": [{"name": "a", "inputSchema": {"type": "string"}}]}}, "refused": "invalid"},
+    {"input": {"kind": "hello", "device": "phone", "manifest": {}}, "facts": [{"seq": 1}]},
+    {"input": {"kind": "hello", "device": "sandbox", "manifest": {"sandbox": true, "tools": [{"name": "shell", "tier": "change", "inputSchema": {"type": "object"}}]}}},
+    {"input": {"kind": "hello", "device": "laptop", "manifest": {"tools": [{"name": "host_shell", "tier": "change", "inputSchema": {"type": "object"}}]}}},
+    {"input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m1", "text": "Build it"},
+     "facts": [{"seq": 4}, {"seq": 5, "kind": "started"}]},
+    {"input": {"kind": "decided", "turn": 5, "calls": [{"tool": "shell", "input": {}}, {"tool": "host_shell", "input": {}}]},
+     "facts": [{"seq": 6, "kind": "decided"},
+               {"seq": 7, "kind": "effect", "target": "sandbox", "wait": true},
+               {"seq": 8, "kind": "pending", "target": "laptop"}]}
+  ]
+}

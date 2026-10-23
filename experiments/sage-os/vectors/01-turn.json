@@ -1,0 +1,30 @@
+{
+  "about": "One turn: a message starts it, send is the only way to speak, quiet and model failure end it, the first result counts and only its target may report it.",
+  "policy": {"owners": ["phone"]},
+  "steps": [
+    {"now": 0, "input": {"kind": "hello", "device": "phone", "manifest": {}},
+     "facts": [{"seq": 1, "kind": "hello", "device": "phone"}]},
+    {"now": 1, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m1", "text": "Hello"},
+     "facts": [{"seq": 2, "kind": "message", "at": 1}, {"seq": 3, "kind": "started", "conversation": "owner"}],
+     "thinking": [3]},
+    {"now": 2, "input": {"kind": "decided", "turn": 3, "calls": [{"tool": "send", "input": {"text": "Hi."}}], "prompt": "abc"},
+     "facts": [{"seq": 4, "kind": "decided", "prompt": "abc"},
+               {"seq": 5, "kind": "effect", "turn": 3, "target": "phone", "deadline": 32, "wait": false},
+               {"seq": 6, "kind": "ended", "turn": 3, "end": "completed"}],
+     "thinking": []},
+    {"now": 3, "input": {"kind": "result", "device": "robot", "effect": 5, "status": "done"}, "refused": "forbidden"},
+    {"now": 3, "input": {"kind": "result", "device": "phone", "effect": 5, "status": "done"},
+     "facts": [{"seq": 7, "kind": "result", "effect": 5, "status": "done"}]},
+    {"now": 4, "input": {"kind": "result", "device": "phone", "effect": 5, "status": "failed"}, "facts": []},
+    {"now": 5, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m2", "text": "ok"},
+     "facts": [{"seq": 8, "kind": "message"}, {"seq": 9, "kind": "started"}]},
+    {"now": 6, "input": {"kind": "decided", "turn": 9, "calls": [{"tool": "send", "input": {"text": " "}}]},
+     "facts": [{"seq": 10, "kind": "decided"}, {"seq": 11, "kind": "ended", "end": "completed"}]},
+    {"now": 7, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m3", "text": "Still there?"},
+     "facts": [{"seq": 12, "kind": "message"}, {"seq": 13, "kind": "started"}]},
+    {"now": 8, "input": {"kind": "failed", "turn": 13, "reason": "model timeout"},
+     "facts": [{"seq": 14, "kind": "ended", "turn": 13, "end": "failed", "reason": "model timeout"}],
+     "thinking": []},
+    {"now": 9, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "", "text": "x"}, "refused": "invalid"}
+  ]
+}

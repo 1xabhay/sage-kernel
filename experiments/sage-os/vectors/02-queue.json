@@ -1,0 +1,24 @@
+{
+  "about": "One turn at a time per conversation: messages during a turn wait, then start one turn together; a repeated message id causes nothing.",
+  "policy": {"owners": ["phone"]},
+  "steps": [
+    {"now": 0, "input": {"kind": "hello", "device": "phone", "manifest": {}}},
+    {"now": 1, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m1", "text": "Book lunch Monday"},
+     "facts": [{"seq": 2, "kind": "message"}, {"seq": 3, "kind": "started"}]},
+    {"now": 2, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m2", "text": "Actually, make it Thursday"},
+     "facts": [{"seq": 4, "kind": "message"}]},
+    {"now": 3, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m3", "text": "And add Maya"},
+     "facts": [{"seq": 5, "kind": "message"}]},
+    {"now": 3, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m2", "text": "Actually, make it Thursday"},
+     "facts": []},
+    {"now": 4, "input": {"kind": "message", "device": "phone", "conversation": "other", "id": "m4", "text": "Separate thread"},
+     "facts": [{"seq": 6, "kind": "message", "conversation": "other"}, {"seq": 7, "kind": "started", "conversation": "other"}],
+     "thinking": [3, 7]},
+    {"now": 5, "input": {"kind": "decided", "turn": 3, "calls": [{"tool": "send", "input": {"text": "Monday it is."}}]},
+     "facts": [{"seq": 8, "kind": "decided"},
+               {"seq": 9, "kind": "effect", "target": "phone"},
+               {"seq": 10, "kind": "ended", "turn": 3},
+               {"seq": 11, "kind": "started", "conversation": "owner"}],
+     "thinking": [7, 11]}
+  ]
+}

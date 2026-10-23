@@ -1,0 +1,33 @@
+{
+  "about": "Speech guards: a reply that repeats a recent one or reuses its closing, or claims a sense the body lacks, delivers nothing and is retried once; after that, or once its start was streamed, only the unspoken part is fixed. A refused reply never counts as said.",
+  "policy": {"owners": ["robot"]},
+  "steps": [
+    {"input": {"kind": "hello", "device": "robot", "manifest": {"senses": ["speech"]}}},
+    {"input": {"kind": "message", "device": "robot", "conversation": "c", "id": "r1", "text": "Hi"}},
+    {"input": {"kind": "decided", "turn": 3, "calls": [{"tool": "send", "input": {"text": "Hello! Let me know if you need any help."}}]},
+     "facts": [{"seq": 4, "kind": "decided"}, {"seq": 5, "kind": "effect"}, {"seq": 6, "kind": "ended"}]},
+    {"input": {"kind": "message", "device": "robot", "conversation": "c", "id": "r2", "text": "Thanks"},
+     "facts": [{"seq": 7}, {"seq": 8, "kind": "started"}]},
+    {"input": {"kind": "decided", "turn": 8, "calls": [{"tool": "send", "input": {"text": "Sure thing. Let me know if you need any help."}}]},
+     "facts": [{"seq": 9, "kind": "decided"}, {"seq": 10, "kind": "rejected", "turn": 8}, {"seq": 11, "kind": "resume", "turn": 8}],
+     "thinking": [8]},
+    {"input": {"kind": "decided", "turn": 8, "calls": [{"tool": "send", "input": {"text": "Sure thing. Let me know if you need any help."}}]},
+     "facts": [{"seq": 12, "kind": "decided", "calls": [{"input": {"text": "Sure thing."}}], "raw": [{"tool": "send"}]},
+               {"seq": 13, "kind": "effect", "call": {"input": {"text": "Sure thing."}}},
+               {"seq": 14, "kind": "ended"}]},
+    {"input": {"kind": "message", "device": "robot", "conversation": "c", "id": "r3", "text": "Can you see me?"},
+     "facts": [{"seq": 15}, {"seq": 16, "kind": "started"}]},
+    {"input": {"kind": "decided", "turn": 16, "calls": [{"tool": "send", "input": {"text": "Yes, I can see you!"}}]},
+     "facts": [{"seq": 17, "kind": "decided"}, {"seq": 18, "kind": "rejected", "reason": "This body cannot see. Do not say you can; say you cannot."}, {"seq": 19, "kind": "resume"}]},
+    {"input": {"kind": "decided", "turn": 16, "calls": [{"tool": "send", "input": {"text": "I can see you clearly."}}]},
+     "facts": [{"seq": 20, "kind": "decided"},
+               {"seq": 21, "kind": "effect", "call": {"input": {"text": "I can't see yet; I can only hear you."}}},
+               {"seq": 22, "kind": "ended"}]},
+    {"input": {"kind": "message", "device": "robot", "conversation": "c", "id": "r4", "text": "Hi again"},
+     "facts": [{"seq": 23}, {"seq": 24, "kind": "started"}]},
+    {"input": {"kind": "decided", "turn": 24, "spoken": 6, "calls": [{"tool": "send", "input": {"text": "Hello! Let me know if you need any help."}}]},
+     "facts": [{"seq": 25, "kind": "decided"},
+               {"seq": 26, "kind": "effect", "call": {"input": {"text": "Hello!"}}},
+               {"seq": 27, "kind": "ended"}]}
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "about": "Model, tools, repeat: a read tool's result wakes the turn again; an unknown tool is refused and reaches the model; a turn ends when the model only speaks.",
+  "policy": {"owners": ["phone"]},
+  "steps": [
+    {"now": 0, "input": {"kind": "hello", "device": "phone", "manifest": {}}},
+    {"now": 0, "input": {"kind": "hello", "device": "computer", "manifest": {"tools": [
+      {"name": "search", "description": "Search the web.", "tier": "read", "max_s": 20,
+       "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}]}}},
+    {"now": 10, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m1", "text": "Who won?"},
+     "facts": [{"seq": 3, "kind": "message"}, {"seq": 4, "kind": "started"}],
+     "thinking": [4]},
+    {"now": 11, "input": {"kind": "decided", "turn": 4, "calls": [
+      {"tool": "search", "input": {"query": "final score"}}, {"tool": "weather", "input": {}}]},
+     "facts": [{"seq": 5, "kind": "decided"},
+               {"seq": 6, "kind": "effect", "target": "computer", "wait": true, "deadline": 33},
+               {"seq": 7, "kind": "refused", "reason": "unavailable: no device offers weather"}],
+     "thinking": []},
+    {"now": 12, "input": {"kind": "result", "device": "computer", "effect": 6, "status": "done", "text": "3-1"},
+     "facts": [{"seq": 8, "kind": "result"}, {"seq": 9, "kind": "resume", "turn": 4}],
+     "thinking": [4]},
+    {"now": 13, "input": {"kind": "decided", "turn": 4, "calls": [{"tool": "search", "input": {"q": 1}}]},
+     "facts": [{"seq": 10, "kind": "decided"},
+               {"seq": 11, "kind": "refused", "reason": "invalid input: input.query is required"},
+               {"seq": 12, "kind": "resume", "turn": 4}],
+     "thinking": [4]},
+    {"now": 14, "input": {"kind": "decided", "turn": 4, "calls": [{"tool": "send", "input": {"text": "3-1."}}]},
+     "facts": [{"seq": 13, "kind": "decided"},
+               {"seq": 14, "kind": "effect", "target": "phone", "deadline": 44},
+               {"seq": 15, "kind": "ended", "end": "completed"}],
+     "thinking": []}
+  ]
+}

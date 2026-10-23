@@ -1,0 +1,52 @@
+services:
+  # Free, local, open-weights model server. No key, no account.
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # One-shot: pulls the model into the shared volume, then exits.
+  model-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ollama-models:/root/.ollama
+    entrypoint: ["sh", "-c", "ollama pull ${MUSIC_TELLING_MODEL:-qwen2.5:7b}"]
+
+  music-telling:
+    build:
+      context: .
+      target: ${MT_TARGET:-full}
+    image: music-telling:local
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      MUSIC_TELLING_PROVIDER: ${MUSIC_TELLING_PROVIDER:-ollama}
+      MUSIC_TELLING_MODEL: ${MUSIC_TELLING_MODEL:-qwen2.5:7b}
+      MUSIC_TELLING_CACHE: /cache
+      OLLAMA_HOST: http://ollama:11434
+      # Only needed if you switch MUSIC_TELLING_PROVIDER=anthropic.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./src:/app/src          # live code, no rebuild while iterating
+      - ./tests:/app/tests
+      - ./out:/app/out          # stories land here on the host
+      - mt-cache:/cache         # lyrics, previews and model weights persist
+    working_dir: /app
+
+volumes:
+  mt-cache:
+  ollama-models:

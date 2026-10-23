@@ -1,0 +1,12 @@
+[workspace]
+members = ["core", "sage", "wasm", "routines"]
+resolver = "3"
+
+# The browser build: as small as it can be.
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

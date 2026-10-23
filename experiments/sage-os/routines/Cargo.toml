@@ -1,0 +1,16 @@
+[package]
+name = "sage-routines"
+version = "0.1.0"
+edition = "2024"
+description = "Routines as a device: prompt files with a schedule, posted to the kernel as messages when due."
+license = "MIT"
+
+[dependencies]
+serde_json = "1"
+# Plain HTTP to the kernel on the compose network: no TLS stack.
+ureq = { version = "2", default-features = false, features = ["json"] }
+
+[dev-dependencies]
+sage = { path = "../sage" }
+sage-core = { path = "../core" }
+tiny_http = "0.12"

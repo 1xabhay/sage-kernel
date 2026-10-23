@@ -1,0 +1,25 @@
+{
+  "about": "A body cut off a reply it was still receiving: the turn ends with what was heard, and a late answer delivers nothing; if the reply was already decided, the cut applies to its send. Timing rides with messages and results.",
+  "policy": {"owners": ["robot", "phone"]},
+  "steps": [
+    {"input": {"kind": "hello", "device": "robot", "manifest": {}}},
+    {"input": {"kind": "hello", "device": "phone", "manifest": {}}},
+    {"now": 1, "input": {"kind": "message", "device": "robot", "conversation": "owner", "id": "r1", "text": "Tell me a story", "timing": {"stt_ms": 120}},
+     "facts": [{"seq": 3, "kind": "message", "timing": {"stt_ms": 120}}, {"seq": 4, "kind": "started"}]},
+    {"now": 2, "input": {"kind": "interrupted", "device": "phone", "turn": 4, "text": "Once"}, "refused": "forbidden"},
+    {"now": 2, "input": {"kind": "interrupted", "device": "robot", "turn": 4, "text": "Once upon", "timing": {"first_audio_ms": 900}},
+     "facts": [{"seq": 5, "kind": "interrupted", "turn": 4, "text": "Once upon", "timing": {"first_audio_ms": 900}},
+               {"seq": 6, "kind": "ended", "turn": 4, "end": "stopped", "reason": "interrupted by robot"}],
+     "thinking": []},
+    {"now": 3, "input": {"kind": "decided", "turn": 4, "calls": [{"tool": "send", "input": {"text": "Once upon a time, a robot..."}}]},
+     "facts": [{"seq": 7, "kind": "decided"}]},
+    {"now": 4, "input": {"kind": "message", "device": "robot", "conversation": "owner", "id": "r2", "text": "Again"},
+     "facts": [{"seq": 8, "kind": "message"}, {"seq": 9, "kind": "started"}]},
+    {"now": 5, "input": {"kind": "decided", "turn": 9, "calls": [{"tool": "send", "input": {"text": "Hello there."}}]},
+     "facts": [{"seq": 10, "kind": "decided"}, {"seq": 11, "kind": "effect"}, {"seq": 12, "kind": "ended"}]},
+    {"now": 6, "input": {"kind": "interrupted", "device": "robot", "turn": 9, "text": "Hello"},
+     "facts": [{"seq": 13, "kind": "result", "effect": 11, "status": "interrupted", "text": "Hello"}]},
+    {"now": 6, "input": {"kind": "interrupted", "device": "robot", "turn": 9, "text": "Hello"}, "facts": []},
+    {"now": 7, "input": {"kind": "message", "device": "robot", "conversation": "owner", "id": "r3", "text": "x", "timing": {"bogus_ms": 1}}, "refused": "invalid"}
+  ]
+}

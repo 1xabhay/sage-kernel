@@ -1,0 +1,15 @@
+[package]
+name = "sage"
+version = "0.1.0"
+edition = "2024"
+description = "The Sage kernel binary: a journal file, the device protocol over HTTP, and local model calls around sage-core."
+license = "MIT"
+
+[dependencies]
+sage-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: the answer schema lists `send` first, so speech streams before any tool.
+serde_json = { version = "1", features = ["preserve_order"] }
+tiny_http = "0.12"
+# Plain HTTP to a local model server: no TLS stack.
+ureq = { version = "2", default-features = false, features = ["json"] }

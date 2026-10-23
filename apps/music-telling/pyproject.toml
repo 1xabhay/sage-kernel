@@ -1,0 +1,50 @@
+[project]
+name = "music-telling"
+version = "0.1.0"
+description = "Turn a theme into a coherent story told through songs."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=1.0",
+    "pydantic>=2.7",
+    "httpx2>=2.0",
+    "librosa>=1.0",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "ddgs>=9.0",
+    "rich>=13.7",
+    "typer>=0.12",
+    "platformdirs>=4.2",
+    "tenacity>=8.2",
+]
+
+[project.optional-dependencies]
+# Essentia MusiCNN mood/danceability classifiers (pulls TensorFlow).
+mood = ["essentia-tensorflow>=2.1b6.dev1438"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+music-telling = "music_telling.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/music_telling"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's API is built on function-call defaults.
+"src/music_telling/cli.py" = ["B008"]

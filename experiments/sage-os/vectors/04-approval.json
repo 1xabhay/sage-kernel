@@ -1,0 +1,30 @@
+{
+  "about": "A tool that names no tier is the strictest: it waits for an owner's approval, and no answer means no.",
+  "policy": {"owners": ["phone"]},
+  "steps": [
+    {"now": 0, "input": {"kind": "hello", "device": "phone", "manifest": {}}},
+    {"now": 0, "input": {"kind": "hello", "device": "mail", "manifest": {"tools": [
+      {"name": "email", "inputSchema": {"type": "object", "properties": {"to": {"type": "string"}, "body": {"type": "string"}}, "required": ["to", "body"]}}]}}},
+    {"now": 0, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "m1", "text": "Email Sam"},
+     "facts": [{"seq": 3, "kind": "message"}, {"seq": 4, "kind": "started"}]},
+    {"now": 1, "input": {"kind": "decided", "turn": 4, "calls": [{"tool": "email", "input": {"to": "sam", "body": "hi"}}]},
+     "facts": [{"seq": 5, "kind": "decided"}, {"seq": 6, "kind": "pending", "target": "mail", "deadline": 16}],
+     "thinking": []},
+    {"now": 2, "input": {"kind": "approve", "device": "mail", "pending": 6, "yes": true}, "refused": "forbidden"},
+    {"now": 10, "input": {"kind": "tick"}, "facts": []},
+    {"now": 17, "input": {"kind": "tick"},
+     "facts": [{"seq": 7, "kind": "denied", "pending": 6, "reason": "no answer"}, {"seq": 8, "kind": "resume", "turn": 4}],
+     "thinking": [4]},
+    {"now": 18, "input": {"kind": "decided", "turn": 4, "calls": [{"tool": "email", "input": {"to": "sam", "body": "hi"}}]},
+     "facts": [{"seq": 9, "kind": "decided"}, {"seq": 10, "kind": "pending", "deadline": 33}]},
+    {"now": 19, "input": {"kind": "approve", "device": "phone", "pending": 10, "yes": true},
+     "facts": [{"seq": 11, "kind": "approved", "pending": 10},
+               {"seq": 12, "kind": "effect", "target": "mail", "wait": true, "deadline": null}]},
+    {"now": 19, "input": {"kind": "approve", "device": "phone", "pending": 10, "yes": false}, "facts": []},
+    {"now": 20, "input": {"kind": "result", "device": "mail", "effect": 12, "status": "done"},
+     "facts": [{"seq": 13, "kind": "result"}, {"seq": 14, "kind": "resume"}],
+     "thinking": [4]},
+    {"now": 21, "input": {"kind": "decided", "turn": 4, "calls": []},
+     "facts": [{"seq": 15, "kind": "decided"}, {"seq": 16, "kind": "ended", "end": "completed"}]}
+  ]
+}

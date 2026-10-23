@@ -1,0 +1,17 @@
+{
+  "about": "Where a reply goes: the owner device that spoke last, if it is connected; a device that never said hello (a routine) never becomes that place; otherwise the first owner device that is online.",
+  "policy": {"owners": ["phone", "routines", "robot"]},
+  "steps": [
+    {"input": {"kind": "hello", "device": "phone", "manifest": {}}},
+    {"input": {"kind": "hello", "device": "robot", "manifest": {"senses": ["speech"]}}},
+    {"input": {"kind": "message", "device": "routines", "conversation": "owner", "id": "brief@1", "text": "Brief me on today."},
+     "facts": [{"seq": 3, "kind": "message"}, {"seq": 4, "kind": "started"}]},
+    {"input": {"kind": "decided", "turn": 4, "calls": [{"tool": "send", "input": {"text": "Good morning."}}]},
+     "facts": [{"seq": 5, "kind": "decided"}, {"seq": 6, "kind": "effect", "target": "phone"}, {"seq": 7, "kind": "ended"}]},
+    {"input": {"kind": "message", "device": "robot", "conversation": "owner", "id": "r1", "text": "Are you there?"},
+     "facts": [{"seq": 8, "kind": "message"}, {"seq": 9, "kind": "started"}]},
+    {"input": {"kind": "gone", "device": "robot"}, "facts": [{"seq": 10, "kind": "gone"}]},
+    {"input": {"kind": "decided", "turn": 9, "calls": [{"tool": "send", "input": {"text": "Yes, here on your phone."}}]},
+     "facts": [{"seq": 11, "kind": "decided"}, {"seq": 12, "kind": "effect", "target": "phone"}, {"seq": 13, "kind": "ended"}]}
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "about": "Body effects are fire and forget, bounded by max_s; Stop from any device reaches whichever body is acting and ends the running turn; a late answer for a stopped turn is recorded and delivers nothing; with the robot gone, its tools fail and its reply reaches the phone.",
+  "policy": {"owners": ["robot", "phone"]},
+  "steps": [
+    {"now": 0, "input": {"kind": "hello", "device": "robot", "manifest": {"senses": ["speech"], "tools": [
+      {"name": "emote", "tier": "body", "max_s": 3,
+       "inputSchema": {"type": "object", "properties": {"name": {"enum": ["happy", "sad"]}}, "required": ["name"]}}]}}},
+    {"now": 0, "input": {"kind": "hello", "device": "phone", "manifest": {}}},
+    {"now": 0, "input": {"kind": "message", "device": "robot", "conversation": "owner", "id": "r1", "text": "Hi!"},
+     "facts": [{"seq": 3, "kind": "message"}, {"seq": 4, "kind": "started"}]},
+    {"now": 1, "input": {"kind": "decided", "turn": 4, "calls": [
+      {"tool": "emote", "input": {"name": "happy"}},
+      {"tool": "emote", "input": {"name": "angry"}},
+      {"tool": "send", "input": {"text": "Hello!"}}]},
+     "facts": [{"seq": 5, "kind": "decided"},
+               {"seq": 6, "kind": "effect", "target": "robot", "wait": false, "deadline": 6},
+               {"seq": 7, "kind": "refused", "reason": "invalid input: input.name must be one of [\"happy\",\"sad\"]"},
+               {"seq": 8, "kind": "effect", "target": "robot", "deadline": 31},
+               {"seq": 9, "kind": "ended", "end": "completed"}]},
+    {"now": 2, "input": {"kind": "message", "device": "phone", "conversation": "owner", "id": "p1", "text": "Tell me a long story"},
+     "facts": [{"seq": 10, "kind": "message"}, {"seq": 11, "kind": "started"}]},
+    {"now": 3, "input": {"kind": "stop", "device": "phone"},
+     "facts": [{"seq": 12, "kind": "stop", "by": "phone", "target": "robot"},
+               {"seq": 13, "kind": "ended", "turn": 11, "end": "stopped", "reason": "stopped by phone"}],
+     "thinking": []},
+    {"now": 4, "input": {"kind": "result", "device": "robot", "effect": 8, "status": "interrupted", "text": "Hel"},
+     "facts": [{"seq": 14, "kind": "result"}]},
+    {"now": 7, "input": {"kind": "tick"},
+     "facts": [{"seq": 15, "kind": "result", "device": "kernel", "effect": 6, "status": "failed", "text": "timeout"}]},
+    {"now": 8, "input": {"kind": "decided", "turn": 11, "calls": [{"tool": "send", "input": {"text": "Once upon a time"}}]},
+     "facts": [{"seq": 16, "kind": "decided"}]},
+    {"now": 9, "input": {"kind": "stop", "device": "robot"}, "facts": []},
+    {"now": 9, "input": {"kind": "gone", "device": "robot"}, "facts": [{"seq": 17, "kind": "gone"}]},
+    {"now": 10, "input": {"kind": "message", "device": "robot", "conversation": "owner", "id": "r2", "text": "Back"},
+     "facts": [{"seq": 18, "kind": "message"}, {"seq": 19, "kind": "started"}]},
+    {"now": 11, "input": {"kind": "decided", "turn": 19, "calls": [{"tool": "emote", "input": {"name": "sad"}}, {"tool": "send", "input": {"text": "Hm."}}]},
+     "facts": [{"seq": 20, "kind": "decided"},
+               {"seq": 21, "kind": "refused", "reason": "unavailable: robot is not connected; try again when it is back"},
+               {"seq": 22, "kind": "effect", "target": "phone"},
+               {"seq": 23, "kind": "ended", "end": "completed"}]}
+  ]
+}

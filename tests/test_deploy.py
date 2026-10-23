@@ -271,6 +271,17 @@ class SecretScanTests(unittest.TestCase):
         self.assertIn("git bundle create --quiet - --all", commands)
         self.assertNotIn("tar -c .git", commands)
 
+@unittest.skipUnless((ROOT / "Makefile").exists(), "checks the source tree; the image ships without it")
+class HygieneTests(unittest.TestCase):
+    """make hygiene is exactly what CI runs, including these host checks that skip inside the image."""
+
+    def test_hygiene_runs_the_host_checks_and_ci_runs_only_hygiene(self):
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertRegex(makefile, r"(?m)^hygiene: source lint vuln secrets test$")
+        self.assertIn("-m unittest tests.test_deploy tests.test_boundary", recipe("source"))
+        runs = re.findall(r"(?m)^\s+run: (.*)$", (ROOT / ".github/workflows/ci.yml").read_text())
+        self.assertEqual(runs, ["make hygiene"])
+
 
 if __name__ == "__main__":
     unittest.main()

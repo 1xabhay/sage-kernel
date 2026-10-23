@@ -28,13 +28,13 @@ pub fn check(schema: &Value, value: &Value, at: &str) -> Result<(), String> {
             return Err(format!("{at} must be of type {kind}"));
         }
     }
-    if let Some(options) = schema.get("enum").and_then(Value::as_array) {
-        if !options.contains(value) {
-            return Err(format!(
-                "{at} must be one of {}",
-                Value::Array(options.clone())
-            ));
-        }
+    if let Some(options) = schema.get("enum").and_then(Value::as_array)
+        && !options.contains(value)
+    {
+        return Err(format!(
+            "{at} must be one of {}",
+            Value::Array(options.clone())
+        ));
     }
     if let Some(object) = value.as_object() {
         for key in schema

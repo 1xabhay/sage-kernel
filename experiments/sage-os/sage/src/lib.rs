@@ -348,9 +348,9 @@ impl Kernel {
                 } else {
                     "\n"
                 };
-                write!(
+                writeln!(
                     OpenOptions::new().create(true).append(true).open(&path)?,
-                    "{gap}{line}\n"
+                    "{gap}{line}"
                 )?;
             }
             Ok(())

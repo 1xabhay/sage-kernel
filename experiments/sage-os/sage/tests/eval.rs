@@ -53,10 +53,10 @@ fn check(
     if let Some(s) = reply.send_s.filter(|s| *s > send_s) {
         out.push(format!("send after {s:.1} s, over {send_s} s"));
     }
-    if message["repeat_ok"] != true {
-        if let Some(before) = earlier.iter().find(|before| reuses(before, text)) {
-            out.push(format!("reuses {before:?}"));
-        }
+    if message["repeat_ok"] != true
+        && let Some(before) = earlier.iter().find(|before| reuses(before, text))
+    {
+        out.push(format!("reuses {before:?}"));
     }
     let said = phrases("none_of")
         .into_iter()

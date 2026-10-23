@@ -767,15 +767,12 @@ impl State {
                     if let Some(c) = self.conversations.get_mut(&o.conversation) {
                         if o.call.tool == SEND {
                             // Memory keeps only what the person heard.
-                            if *status == Status::Interrupted {
-                                if let Some(Entry::Out { calls }) = c.history.get_mut(o.out) {
-                                    if let Some(call) =
-                                        calls.iter_mut().find(|call| **call == o.call)
-                                    {
-                                        let heard = format!("{text} (interrupted)");
-                                        call.input = json!({ "text": heard.trim_start() });
-                                    }
-                                }
+                            if *status == Status::Interrupted
+                                && let Some(Entry::Out { calls }) = c.history.get_mut(o.out)
+                                && let Some(call) = calls.iter_mut().find(|call| **call == o.call)
+                            {
+                                let heard = format!("{text} (interrupted)");
+                                call.input = json!({ "text": heard.trim_start() });
                             }
                         } else if *status != Status::Done || !text.is_empty() {
                             c.history.push(Entry::Outcome {
@@ -789,24 +786,24 @@ impl State {
             }
             Fact::Interrupted { turn, text, .. } => {
                 // Memory keeps only what the person heard.
-                if let Some(t) = self.turns.get(turn) {
-                    if let Some(c) = self.conversations.get_mut(&t.conversation) {
-                        let heard = format!("{text} (interrupted)");
-                        let send = Call {
-                            tool: SEND.into(),
-                            input: json!({ "text": heard.trim_start() }),
-                        };
-                        c.history.push(Entry::Out { calls: vec![send] });
-                    }
+                if let Some(t) = self.turns.get(turn)
+                    && let Some(c) = self.conversations.get_mut(&t.conversation)
+                {
+                    let heard = format!("{text} (interrupted)");
+                    let send = Call {
+                        tool: SEND.into(),
+                        input: json!({ "text": heard.trim_start() }),
+                    };
+                    c.history.push(Entry::Out { calls: vec![send] });
                 }
             }
             Fact::Stop { .. } => {}
             Fact::Ended { turn, at, .. } => {
-                if let Some(t) = self.turns.remove(turn) {
-                    if let Some(c) = self.conversations.get_mut(&t.conversation) {
-                        c.running = None;
-                        c.quiet_since = *at;
-                    }
+                if let Some(t) = self.turns.remove(turn)
+                    && let Some(c) = self.conversations.get_mut(&t.conversation)
+                {
+                    c.running = None;
+                    c.quiet_since = *at;
                 }
             }
             Fact::Memory { memory } => self.memory = memory.clone(),
@@ -1135,7 +1132,11 @@ pub fn step(state: &State, input: &Input, now: f64) -> Result<Vec<Fact>, Refusal
             let mut added: Vec<String> = vec![];
             for fact in add.iter().map(one_line).filter(|f| !f.is_empty()) {
                 let before = memory::revise(profile, &gone, &added);
-                let after = memory::revise(profile, &gone, &[&added[..], &[fact.clone()]].concat());
+                let after = memory::revise(
+                    profile,
+                    &gone,
+                    &[&added[..], std::slice::from_ref(&fact)].concat(),
+                );
                 if after != before && memory::fits(&after) {
                     added.push(fact);
                 }
@@ -1362,9 +1363,8 @@ impl Tx {
     /// part not yet spoken is fixed.
     fn guard(&self, turn: u64, t: &Turn, calls: &[Call], spoken: usize) -> Guarded {
         let Some((index, text)) = calls.iter().enumerate().find_map(|(i, c)| {
-            Some((i, c.input["text"].as_str()?.to_owned()))
-                .filter(|_| c.tool == SEND)
-                .filter(|(_, text)| !text.trim().is_empty())
+            let text = c.input["text"].as_str()?;
+            (c.tool == SEND && !text.trim().is_empty()).then(|| (i, text.to_owned()))
         }) else {
             return Guarded::Pass;
         };
@@ -1421,7 +1421,7 @@ fn check_manifest(manifest: &Manifest) -> Result<(), String> {
                 "Tool {name}: keep the description and schema under 4,000 characters"
             ));
         }
-        if tool.max_s.is_some_and(|s| !(s >= 0.0)) {
+        if tool.max_s.is_some_and(|s| s.is_nan() || s < 0.0) {
             return Err(format!(
                 "Tool {name}: max_s must be a number of seconds of at least 0"
             ));

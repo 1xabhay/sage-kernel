@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 /// A decision function for the kernel, asking `model` at `url`.
+#[allow(clippy::type_complexity)] // an `impl Fn` return type cannot be aliased on stable
 pub fn decider(
     url: String,
     model: String,

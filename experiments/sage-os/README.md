@@ -1,10 +1,11 @@
 # Sage OS
 
 The kernel of an operating system whose processor is a language model, written
-from scratch in Rust. It draws on what we learned in `../sage`, `../sage-kernel`,
-the Reachy pet, Quila and Worldmonitor; the reasons are in
-[`../sage/docs/VISION.md`](../sage/docs/VISION.md). Those projects keep running
-until this one passes their cases.
+from scratch in Rust. It draws on what we learned in the Python kernel at the
+[monorepo root](../../README.md) (once the `sage` and `sage-kernel` repos), the Reachy
+pet, Quila and Worldmonitor; the reasons are in
+[`docs/history/sage/VISION.md`](../../docs/history/sage/VISION.md). Those projects keep
+running until this one passes their cases.
 
 **The model proposes, the kernel decides, bodies act.**
 
@@ -114,7 +115,8 @@ model, see it pass, ship. The checks are word predicates (`sage/tests/eval.rs`);
 
 ## Next
 
-1. Point `reachy_sage_voice` at port 8786 (its client speaks `sage-kernel`'s v1).
+1. Point [`reachy_sage_voice`](../../devices/reachy-mini/apps/reachy_sage_voice/) at port 8786
+   (its client speaks the Python kernel's v1).
 2. Live evals are in (`make eval`, `evals/local/LEDGER.md`). They show the speech guards' gap:
    after its one retry a small model usually writes the same reply again, and the kernel
    delivers it, because `fix` drops only whole repeated sentences, not a reused opening or

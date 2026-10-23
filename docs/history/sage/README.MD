@@ -1,8 +1,11 @@
 # Sage Kernel
 
+> **Historical.** The old kernel, before the rewrite of 2026-10-20. Its `make` commands were that
+> repository's and do not run here. The current kernel is described in the [root README](../../../README.md).
+
 Sage is a minimal, self-hosted, model-independent runtime for a persistent
 personal agent. The first experiment is one agent shared by the browser and
-Reachy Mini. The [engineering charter](docs/KERNEL-CHARTER.md) defines that boundary.
+Reachy Mini. The [engineering charter](KERNEL-CHARTER.md) defines that boundary.
 
 The browser connects to a shared kernel with an injected decision provider and
 a SQLite journal. Events and requested effects are committed before dispatch;
@@ -21,7 +24,7 @@ Open [Sage at localhost:8765](http://127.0.0.1:8765/). Type to the character,
 optionally enable spoken replies, and use Stop. Without a configured model,
 the page is explicitly a preview with authored replies.
 
-Read [the fundamentals and current contract](docs/FUNDAMENTALS.md) for the
+Read [the fundamentals and current contract](FUNDAMENTALS.md) for the
 minimum loop, ownership, real-model configuration, and implementation limits.
 Run `make help` for tests, status, logs, snapshots, builds, packaging, and the
 future SSH tunnel. `make down` preserves companion state.
@@ -30,7 +33,7 @@ The previous OpenClaw distribution experiment remains in
 `compose.reference.yaml`, accessed through `make reference-up` and
 `make reference-check`. Its state and backups remain separate. Earlier plans
 and research are preserved as historical reference; the owner's correction
-replaces their selected-runtime decision. See [execution evidence](docs/EVIDENCE.md).
+replaces their selected-runtime decision. See [execution evidence](EVIDENCE.md).
 
 Run the dependency-free policy tests from this directory:
 

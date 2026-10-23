@@ -86,7 +86,42 @@ class LiveDataTests(unittest.TestCase):
     def test_no_target_can_remove_a_volume(self):
         makefile = (ROOT / "Makefile").read_text()
         self.assertNotRegex(makefile, r"down\s+(-\w*v|--volumes)|volume\s+rm|\bprune\b|--remove-orphans")
-        self.assertEqual(recipe("down").strip(), "docker compose down")
+        self.assertEqual(recipe("down").strip().splitlines()[-1].strip(), "docker compose down")
+
+    def test_the_journal_volume_keeps_its_name_wherever_compose_yaml_sits(self):
+        # The volume that exists today: pinned, so moving compose.yaml (or the project) never makes a new one.
+        self.assertRegex((ROOT / "compose.yaml").read_text(),
+                         r"(?m)^volumes:\n  kernel-data:\n    name: sage-kernel_kernel-data$")
+
+    def test_each_lane_tests_in_its_own_project(self):
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertRegex(makefile, r"(?m)^TEST := .*docker compose -p sage-kernel-test-\$\(LANE\) -f compose.test.yaml$")
+        self.assertRegex((ROOT / "compose.test.yaml").read_text(), r"(?m)^    image: sage-kernel-test:\$\{LANE")
+
+    def test_up_and_down_run_only_from_the_main_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            main, lane, bin_ = Path(tmp, "main"), Path(tmp, "lane"), Path(tmp, "bin")
+            main.mkdir()
+            bin_.mkdir()
+            (bin_ / "docker").write_text('#!/bin/sh\necho "$*" >> "$DOCKER_CALLS"\n')  # a fake: never the real one
+            (bin_ / "docker").chmod(0o755)
+            (main / "Makefile").write_text((ROOT / "Makefile").read_text())
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+            subprocess.run([*git, "init", "-q"], cwd=main, check=True)
+            subprocess.run([*git, "add", "Makefile"], cwd=main, check=True)
+            subprocess.run([*git, "commit", "-qm", "m"], cwd=main, check=True)
+            subprocess.run([*git, "worktree", "add", "-q", str(lane)], cwd=main, check=True)
+            calls = Path(tmp, "calls")
+            env = {"PATH": f"{bin_}:/usr/bin:/bin", "DOCKER_CALLS": str(calls), "HOME": tmp}
+            for target in ("up", "down"):
+                with self.subTest(target=target):
+                    run = subprocess.run(["make", "-s", target], cwd=lane, env=env, capture_output=True, check=False)
+                    self.assertNotEqual(run.returncode, 0)
+                    self.assertFalse(calls.exists(), "a linked worktree reached docker")
+                    run = subprocess.run(["make", "-s", target], cwd=main, env=env, capture_output=True, check=False)
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertTrue(calls.exists())
+                    calls.unlink()
 
 
 PRIVATE = (".env", ".env.local", ".backups/kernel.sqlite3", "evals/local/run.json", "bench/.local/hf/model.bin",
@@ -196,6 +231,33 @@ class CommitGateTests(unittest.TestCase):
         self.assertEqual(recipe("test").strip(), "")  # the work is in its prerequisites
         self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^test: unit conformance$")
         self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^check: test$")
+
+# ponytail: these are red until repo/experiments merges (it names them, drops `down -v`, and moves
+# music-telling to experiments/); delete this list then.
+NOT_YET = {"apps/music-telling/docker-compose.yml", "apps/music-telling/Makefile", "experiments/sage-os/compose.yaml"}
+
+
+@unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
+class RepoWideComposeTests(unittest.TestCase):
+    """Every project in the repo pins its compose project name and no Makefile can delete a volume."""
+
+    def tracked(self, pattern: str) -> list[str]:
+        out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+        return [p for p in out.split("\0") if re.search(pattern, p) and p not in NOT_YET]
+
+    def test_every_compose_file_pins_its_project_name(self):
+        files = self.tracked(r"(^|/)(docker-)?compose[\w.-]*\.ya?ml$")
+        self.assertIn("compose.yaml", files)
+        for path in files:
+            with self.subTest(path=path):
+                self.assertRegex((ROOT / path).read_text(), r"(?m)^name: \S+")
+
+    def test_no_makefile_can_remove_a_volume(self):
+        files = self.tracked(r"(^|/)Makefile$")
+        self.assertIn("Makefile", files)
+        for path in files:
+            with self.subTest(path=path):  # find's -prune is fine; docker's prune is not
+                self.assertNotRegex((ROOT / path).read_text(), r"down\s+(-\w*v|--volumes)|volume rm|(?<![-\w])prune")
 
 
 if __name__ == "__main__":

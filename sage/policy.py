@@ -487,7 +487,7 @@ def rejected(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str
 
 
 def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str, tools, sequence: int, now: float,
-            senses=None, streamed: str = ""):
+            senses=None, streamed: str = "", model_timing: dict | None = None):
     """Record what the model answered and, if its turn is still running, deliver what it decided.
 
     `sequence` is the journal sequence the first row will get. Tool effects are listed just
@@ -500,7 +500,8 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
         text = honest(text, senses)
     if not text.startswith(streamed):  # a last-resort fix would unsay what the device already played
         text = streamed  # ponytail: what was heard wins; the guards' streaming holds keep this rare
-    record = Row("decided", "kernel", turn_id, {"prompt": asdict(prompt), "output": output, "problem": problem})
+    record = Row("decided", "kernel", turn_id, {"prompt": asdict(prompt), "output": output, "problem": problem,
+                                                **({"model_timing": model_timing} if model_timing else {})})
     if turn.turn_id != turn_id or turn.status != "active":
         return state, (record,)  # stopped or interrupted meanwhile: nothing more is delivered
     rows, opened, recorded, facts = [record], [], [], state.facts

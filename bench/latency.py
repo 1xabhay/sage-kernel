@@ -2,7 +2,8 @@
 
 Per submitted turn: kernel time from submit to the decided (or failed) row, model retries (rejected rows), the
 size of the prompt the model saw, whether notes rode on the newest message, and what the device reported
-(stt_ms, ttft_ms, first_audio_ms; docs/PROTOCOL.md). Submit to first reply_delta is not journaled.
+(stt_ms, ttft_ms, first_audio_ms; docs/PROTOCOL.md), and the model server's own prefill and decode time when the
+decided row has them. Submit to first reply_delta is not journaled.
 
     python bench/latency.py <kernel.sqlite3> [--since-minutes N]
 """
@@ -16,6 +17,7 @@ from contextlib import closing
 from pathlib import Path
 
 DEVICE = ("stt_ms", "ttft_ms", "first_audio_ms")
+MODEL = ("prefill_ms", "decode_ms")  # the decided row's model_timing (Ollama's own)
 
 
 def connect(path) -> sqlite3.Connection:
@@ -34,7 +36,7 @@ def turns(path, since: float | None = None) -> list[dict]:
             if turn_id not in found and (since is None or at >= since):
                 found[turn_id] = {"turn_id": turn_id, "text": body["text"], "submitted_at": at, "decided_s": None,
                                   "outcome": None, "retries": 0, "prompt_chars": None, "notes": None,
-                                  **{key: body.get("timing", {}).get(key) for key in DEVICE}}
+                                  **dict.fromkeys(MODEL), **{key: body.get("timing", {}).get(key) for key in DEVICE}}
             continue
         turn = found.get(turn_id)
         if turn is None:
@@ -45,7 +47,8 @@ def turns(path, since: float | None = None) -> list[dict]:
             prompt = body["prompt"]
             newest = prompt["context"][-1]["content"] if prompt["context"] else ""
             turn |= {"outcome": kind, "decided_s": round(at - turn["submitted_at"], 3), "notes": "[Notes on" in newest,
-                     "prompt_chars": len(prompt["system"]) + sum(len(m["content"]) for m in prompt["context"])}
+                     "prompt_chars": len(prompt["system"]) + sum(len(m["content"]) for m in prompt["context"]),
+                     **{key: (body.get("model_timing") or {}).get(key) for key in MODEL}}
         elif kind == "result":
             for key in DEVICE:
                 turn[key] = turn[key] if turn[key] is not None else (body.get("timing") or {}).get(key)
@@ -74,10 +77,10 @@ def main(argv=None) -> None:
         prompt = "-" if t["prompt_chars"] is None else f"{t['prompt_chars']}ch~{t['prompt_chars'] // 4}tok"
         print(f"{t['turn_id']} {t['text'][:30]!r} {t['outcome'] or 'pending'} {decided} retries {t['retries']} "
               f"prompt {prompt} notes {'yes' if t['notes'] else 'no'} "
-              + " ".join(f"{key[:-3]} {_ms(t[key])}" for key in DEVICE))
+              + " ".join(f"{key[:-3]} {_ms(t[key])}" for key in MODEL + DEVICE))
     print(f"{len(found)} turns, {sum(t['retries'] for t in found)} retries, "
           f"{sum(bool(t['notes']) for t in found)} with notes")
-    for key, unit in (("decided_s", "s"), ("prompt_chars", "ch"), *((key, "ms") for key in DEVICE)):
+    for key, unit in (("decided_s", "s"), ("prompt_chars", "ch"), *((key, "ms") for key in MODEL + DEVICE)):
         values = [t[key] for t in found if t[key] is not None]
         if values:
             print(f"{key}: p50 {pct(values, 50)}{unit} p95 {pct(values, 95)}{unit} (n={len(values)})")

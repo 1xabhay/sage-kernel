@@ -31,8 +31,9 @@ class Abandoned(Exception):
 
 class Kernel:
     def __init__(self, journal: Journal, decide: Decide, fresh_s: float = 10.0, clock=time.time,
-                 timings: disposition.Timings = disposition.DEFAULT):
+                 timings: disposition.Timings = disposition.DEFAULT, warm: Decide | None = None):
         self.journal, self.decide, self.fresh_s, self.clock = journal, decide, fresh_s, clock
+        self.warm = warm  # a one-token call that fills the model server's prompt cache; None: never warm
         # Presence is not kept across restarts, so the first seen after one is an arrival; quiet is kept.
         self.timings = timings
         self.disposition = disposition.Disposition(quiet_until=journal.state.quiet_until)
@@ -78,8 +79,35 @@ class Kernel:
         except ValueError as error:
             raise Refused("invalid", str(error)) from None
         with self.lock:
+            # First seen, or a new body: a new system prompt, cold in the model server's cache.
+            if self.warm and self.manifests.get(source) != declared and self.state.turn.status != "active":
+                threading.Thread(target=self._warm, args=(source,), daemon=True).start()
             self.manifests[source] = declared
             return {"protocol": max(common), "sequence": self.journal.head}
+
+    def _warm(self, source: str) -> None:
+        """Prefill this device's next prompt (its system prompt and history) into the model server's cache,
+        so its next turn skips the ~6 s cold prefill. Never while a turn runs; abandoned when one starts.
+        ponytail: Ollama runs one call at a time, so a turn arriving mid-prefill queues behind it; that prefill
+        is the turn's own prefix, so it costs what the cold turn would have. Close the socket if that changes."""
+        def heard(piece: str) -> None:
+            with self.lock:
+                if self.state.turn.status == "active":
+                    raise Abandoned(source)
+
+        with self.lock:
+            if self.state.turn.status == "active":
+                return
+            prompt = policy.compile_prompt(self.state, source, self.manifests[source])
+        started = time.monotonic()
+        try:
+            self.warm(prompt, heard)
+        except Abandoned:
+            return
+        except Exception as caught:  # noqa: BLE001 -- a failed warm-up costs only the prefill it meant to save
+            print(f"sage: could not warm the model for {source}: {caught}", file=sys.stderr)
+            return
+        print(f"sage: warmed the model for {source} in {time.monotonic() - started:.1f} s", file=sys.stderr)
 
     def event(self, source: str, data: dict) -> dict:
         with self.lock:
@@ -229,7 +257,7 @@ class Kernel:
             else:
                 state, rows = policy.decided(self.state, turn_id, prompt, output, declared["tools"],
                                              self.journal.head + 1, self.clock(), senses=senses,
-                                             streamed=self.written)
+                                             streamed=self.written, model_timing=getattr(output, "timing", None))
             try:
                 self._commit(state, rows)
             except (OSError, sqlite3.Error) as caught:

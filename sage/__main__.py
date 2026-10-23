@@ -17,7 +17,8 @@ def main() -> None:
         if not devices:
             raise ValueError("Set SAGE_DEVICES=name=token,... to start the device listener")
         # SAGE_BACKGROUND_MODEL is configured for background work and not used yet.
-        decide = model.provider(os.environ.get("SAGE_MODEL_URL", ""), os.environ.get("SAGE_MODEL", ""))
+        url, name = os.environ.get("SAGE_MODEL_URL", ""), os.environ.get("SAGE_MODEL", "")
+        decide, warm = model.provider(url, name), model.provider(url, name, num_predict=1)
         fresh_s = float(os.environ.get("SAGE_FRESH_SECONDS", "10"))
         timings = disposition.Timings(float(os.environ.get("SAGE_GREET_AFTER_ABSENT_S", disposition.GREET_AFTER_S)),
                                       float(os.environ.get("SAGE_NUDGE_AFTER_IDLE_S", disposition.RESTLESS_S)),
@@ -30,7 +31,7 @@ def main() -> None:
     except ValueError as error:
         sys.exit(f"sage: {error}")
     journal = Journal(Path(os.environ.get("SAGE_STATE_DIR", ".local/state")) / "kernel.sqlite3")
-    kernel = Kernel(journal, decide, fresh_s, timings=timings)
+    kernel = Kernel(journal, decide, fresh_s, timings=timings, warm=warm)
     threading.Thread(target=kernel.ticking, daemon=True).start()
     server = http.serve(kernel, devices, host, port)
     print(f"sage: devices on {host}:{port}", file=sys.stderr)

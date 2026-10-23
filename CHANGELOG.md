@@ -14,6 +14,14 @@ and every protocol change is listed under **Protocol**.
 - Notes: a device can hand the kernel a topic and up to 64 passages (such as a
   song looked up on the web); on each turn they match, the first and the 3 that
   best match the newest line ride on the newest message, as information. Journaled and checkpointed.
+- Prompt cache warm-up: when a device says hello with a manifest the kernel has
+  not seen from it (the first hello after a restart, or a changed body), the
+  kernel sends Ollama one background call with that device's next prompt and
+  `num_predict: 1`, so its next turn skips the ~6 s cold prefill. Never while a
+  turn runs, abandoned when one starts, journals nothing (stderr says `warmed`).
+- Model timing: the `decided` row keeps Ollama's own counts and durations from
+  its final chunk as `model_timing` {prompt_tokens, prefill_ms, gen_tokens,
+  decode_ms, load_ms}; `bench/latency.py` reports prefill and decode p50/p95.
 
 ### Protocol
 

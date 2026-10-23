@@ -14,6 +14,10 @@ from sage.journal import Journal
 from sage.kernel import Kernel
 
 
+class Timed(str):
+    """A model answer with the model server's own timing, as the Ollama provider returns it."""
+
+
 class LatencyReport(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -25,7 +29,10 @@ class LatencyReport(unittest.TestCase):
         def decide(prompt, heard):
             reply, seconds = queue.pop(0)
             clock[0] += seconds  # the model's time, as the kernel's clock sees it
-            return json.dumps({"reply": reply})
+            answer = Timed(json.dumps({"reply": reply}))
+            answer.timing = {"prompt_tokens": 2337, "prefill_ms": 450, "gen_tokens": 36, "decode_ms": 1217,
+                             "load_ms": 0} if len(queue) == 2 else None  # r1's call only
+            return answer
         self.kernel = kernel = Kernel(Journal(self.path), decide, clock=lambda: clock[0])
         kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
         self.turn(kernel, "r1", "Hello there, Sage", {"stt_ms": 300})
@@ -48,6 +55,7 @@ class LatencyReport(unittest.TestCase):
         self.assertEqual((r1["stt_ms"], r1["ttft_ms"], r1["first_audio_ms"]), (300, 900, 1400))
         self.assertEqual((r2["turn_id"], r2["decided_s"], r2["retries"], r2["notes"]), ("r2", 4.0, 1, True))
         self.assertEqual((r2["stt_ms"], r2["ttft_ms"], r2["first_audio_ms"]), (None, None, None))
+        self.assertEqual((r1["prefill_ms"], r1["decode_ms"], r2["prefill_ms"], r2["decode_ms"]), (450, 1217, None, None))
         self.assertGreater(r2["prompt_chars"], r1["prompt_chars"])
         self.assertGreater(r1["prompt_chars"], 1000)  # the persona alone
         self.assertEqual([t["turn_id"] for t in latency.turns(self.path, since=1001.0)], ["r2"])
@@ -60,6 +68,8 @@ class LatencyReport(unittest.TestCase):
         self.assertTrue(any(line.startswith("r1 ") for line in lines), lines)
         self.assertTrue(any(line.startswith("r2 ") and "notes" in line for line in lines), lines)
         self.assertTrue(any("p50" in line and "p95" in line for line in lines), lines)
+        self.assertIn("prefill_ms: p50 450ms p95 450ms (n=1)", lines)
+        self.assertIn("decode_ms: p50 1217ms p95 1217ms (n=1)", lines)
         self.assertEqual((latency.pct(range(1, 21), 50), latency.pct(range(1, 21), 95)), (10, 19))
 
     def test_the_journal_is_opened_read_only_and_left_unchanged(self):

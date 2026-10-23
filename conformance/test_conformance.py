@@ -82,6 +82,11 @@ class Provider:
                     self.send_error(404)
                     return
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if request.get("options", {}).get("num_predict") == 1:  # a cache warm-up, not a decision
+                    self.send_response(200)
+                    self.end_headers()
+                    self.line("{", True)
+                    return
                 provider.requests.append(request)
                 provider.open.wait(10)
                 reply, actions = ("", {}) if provider.silent else answer(request["messages"])
@@ -105,8 +110,10 @@ class Provider:
             def line(self, content, done):
                 data = {"model": "fake", "created_at": "2026-10-20T00:00:00Z",
                         "message": {"role": "assistant", "content": content}, "done": done}
-                if done:
-                    data["done_reason"] = "stop"
+                if done:  # Ollama's own counts and durations (ns) end the stream
+                    data |= {"done_reason": "stop", "total_duration": 9_000_000, "load_duration": 1_000_000,
+                             "prompt_eval_count": 12, "prompt_eval_duration": 5_000_000, "eval_count": 3,
+                             "eval_duration": 3_000_000}
                 self.wfile.write(json.dumps(data).encode() + b"\n")
                 self.wfile.flush()
 

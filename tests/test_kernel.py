@@ -11,7 +11,11 @@ from pathlib import Path
 
 from sage import disposition, policy
 from sage.journal import Journal
-from sage.kernel import Kernel
+from sage.kernel import Abandoned, Kernel
+
+
+class Timed(str):
+    """A model answer with the model server's own timing, as the Ollama provider returns it."""
 
 
 def answers(*replies):
@@ -297,6 +301,115 @@ class Remembering(unittest.TestCase):
         with closing(sqlite3.connect(path)) as connection:
             self.assertEqual(connection.execute("SELECT body, target FROM journal WHERE kind = 'remember'").fetchall(),
                              [('{"fact": "Their name is Juno."}', None)])
+
+
+def until(condition):
+    deadline = time.monotonic() + 5
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def settle(kernel):
+    until(lambda: kernel.state.turn.status != "active")
+
+
+VOICE = {"senses": ["speech"], "tools": []}
+
+
+class Prewarm(unittest.TestCase):
+    """A cold prompt prefill cost ~6 s on the first turn after a restart and after a body change: a changed
+    manifest warms the model's prompt cache in the background, so the next real turn starts warm."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.warmed, self.release, self.outcomes = [], threading.Event(), []
+        self.release.set()
+
+        def warm(prompt, heard):
+            self.warmed.append(prompt)
+            self.release.wait(5)  # the prefill
+            try:
+                heard("{")
+                self.outcomes.append("warm")
+            except Abandoned:
+                self.outcomes.append("abandoned")
+                raise
+            return "{"
+        self.decide, self.prompts = answers("Hello!", "Again!")
+        self.kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), self.decide, warm=warm)
+
+    def test_each_changed_manifest_warms_once_with_the_next_turn_s_prefix_and_journals_nothing(self):
+        kernel, head = self.kernel, self.kernel.journal.head
+        body = {**VOICE, "body": "A small robot."}
+        for manifest, n in ((VOICE, 1), (VOICE, 1), (body, 2), (body, 2)):
+            kernel.hello("reachy", {"protocols": [1], "manifest": manifest})
+            until(lambda n=n: len(self.outcomes) >= n)
+        time.sleep(0.05)
+        self.assertEqual((len(self.warmed), self.outcomes), (2, ["warm", "warm"]))
+        self.assertEqual(kernel.journal.head, head)
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        settle(kernel)
+        self.assertEqual(self.prompts[0].system, self.warmed[-1].system)
+        self.assertEqual(self.prompts[0].format, self.warmed[-1].format)
+
+    def test_no_warm_starts_during_a_turn_and_a_turn_that_starts_abandons_it_without_waiting(self):
+        kernel, gate = self.kernel, threading.Event()
+
+        def slow(prompt, heard):
+            gate.wait(5)
+            return self.decide(prompt, heard)
+        kernel.decide = slow
+        kernel.hello("reachy", {"protocols": [1], "manifest": VOICE})
+        until(lambda: len(self.outcomes) == 1)
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        kernel.hello("reachy", {"protocols": [1], "manifest": {**VOICE, "body": "A small robot."}})  # mid-turn
+        gate.set()
+        settle(kernel)
+        time.sleep(0.05)
+        self.assertEqual(len(self.warmed), 1)  # only the first hello's
+
+        self.release.clear()  # the next warm is still prefilling when a turn arrives
+        kernel.hello("reachy", {"protocols": [1], "manifest": {**VOICE, "body": "A tall robot."}})
+        until(lambda: len(self.warmed) == 2)
+        gate.clear()
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r2", "text": "Hi again"})
+        self.release.set()
+        until(lambda: len(self.outcomes) == 2)
+        self.assertEqual(self.outcomes[-1], "abandoned")
+        gate.set()
+        settle(kernel)
+        self.assertEqual(kernel.state.turn.status, "completed")
+
+    def test_a_real_turn_right_after_a_hello_does_not_wait_for_the_warm(self):
+        kernel = self.kernel
+        self.release.clear()
+        kernel.hello("reachy", {"protocols": [1], "manifest": VOICE})
+        until(lambda: len(self.warmed) == 1)
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        settle(kernel)
+        self.assertEqual(kernel.state.turn.status, "completed")  # while the warm still holds
+        self.release.set()
+
+
+class ModelTiming(unittest.TestCase):
+    def test_the_decided_row_carries_the_model_s_own_timing(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path, timing = Path(directory.name) / "k.sqlite3", {"prompt_tokens": 2337, "prefill_ms": 450,
+                                                            "gen_tokens": 36, "decode_ms": 1217, "load_ms": 12}
+
+        def decide(prompt, heard):
+            answer = Timed(json.dumps({"reply": "Hello!"}))
+            answer.timing = timing
+            return answer
+        kernel = Kernel(Journal(path), decide)
+        kernel.hello("reachy", {"protocols": [1], "manifest": VOICE})
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        settle(kernel)
+        with closing(sqlite3.connect(path)) as connection:
+            body = json.loads(connection.execute("SELECT body FROM journal WHERE kind = 'decided'").fetchone()[0])
+        self.assertEqual(body["model_timing"], timing)
 
 
 if __name__ == "__main__":

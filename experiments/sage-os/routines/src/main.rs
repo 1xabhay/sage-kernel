@@ -5,14 +5,19 @@ use sage_routines::Runner;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).expect("the clock is after 1970").as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_secs() as i64
 }
 
 fn main() {
     let env = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
     let token = env("SAGE_ROUTINES_TOKEN", "");
     if token.is_empty() {
-        eprintln!("sage-routines: set SAGE_ROUTINES_TOKEN to the token SAGE_DEVICES gives `routines`");
+        eprintln!(
+            "sage-routines: set SAGE_ROUTINES_TOKEN to the token SAGE_DEVICES gives `routines`"
+        );
         std::process::exit(2);
     }
     let dir = std::path::PathBuf::from(env("SAGE_HOME", "home")).join("routines");

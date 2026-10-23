@@ -11,7 +11,7 @@ MODEL   ?= qwen2.5:7b
 
 .DEFAULT_GOAL := help
 .PHONY: help setup setup-mood ollama tell doctor test lint fmt clean clean-cache \
-        docker-build tell-docker docker-shell up down logs tell-fast serve
+        docker-build tell-docker docker-shell up down logs tell-fast serve image-test
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -84,3 +84,10 @@ down: ## Stop and remove compose resources
 
 logs: ## Tail compose logs
 	docker compose logs -f
+
+IMAGE_TEST_TAG ?= music-telling-image-test:$(shell date +%s)
+image-test: ## Build the lite image, check its entrypoint and tests offline, then remove it
+	docker build -q --target lite -t $(IMAGE_TEST_TAG) . >/dev/null
+	docker run --rm --network none $(IMAGE_TEST_TAG) --help >/dev/null \
+	  && docker run --rm --network none --entrypoint pytest $(IMAGE_TEST_TAG) -q; \
+	  s=$$?; docker rmi -f $(IMAGE_TEST_TAG) >/dev/null; exit $$s

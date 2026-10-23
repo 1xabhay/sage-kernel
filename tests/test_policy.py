@@ -228,7 +228,7 @@ class Results(unittest.TestCase):
         self.assertEqual(after[2], {"role": "tool", "content": "(your reachy body: emote done: tracking you)"})
         self.assertEqual(after[3:], before[2:])
         self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
-        long, _ = self.report(self.emote, "done", "x" * 4000, state=state)
+        long, _ = self.report(self.emote, "done", "x" * 4000)
         self.assertEqual(body_notes(long), [f"(your reachy body: emote done: {'x' * policy.DONE_TEXT})"])
         failed, _ = self.report(self.emote, "failed", "stuck")
         self.assertEqual(body_notes(failed), ["(your reachy body could not do emote: stuck)"])  # as before

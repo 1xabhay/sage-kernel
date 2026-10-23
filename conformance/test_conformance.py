@@ -518,7 +518,7 @@ class Conformance(unittest.TestCase):
         self.assertEqual(after[said[0]]["role"], "tool")
         self.assertIn("emote", words(after[said[0]]))
         self.assertEqual(after[:said[0]], before[:said[0]])  # the start and the exchange before it, unchanged
-        self.assertLess(said[0], [i for i, m in enumerate(after) if words(m).startswith("Hi")][0])
+        self.assertLess(said[0], next(i for i, m in enumerate(after) if words(m).startswith("Hi")))
 
     def test_a_result_reason_is_accepted_and_bounded(self):
         kernel = self.kernel()

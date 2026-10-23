@@ -21,6 +21,8 @@ and every protocol change is listed under **Protocol**.
   characters (§2). The model sees it beside the senses and may name parts it
   cannot use yet ("I have a camera, but I can't see through it yet"); it declares
   no sense. Manifests without it work as before.
+- A `done` result's `text` for a tool effect now reaches the model on the next
+  turn, after that exchange, as the body's report (§5); before, only failures did.
 - New event `notes` `{topic, passages}` (§10, draft). JSON bodies may be up to
   131072 bytes (was 8192).
 

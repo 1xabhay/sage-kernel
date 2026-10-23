@@ -244,6 +244,13 @@ call that was unavailable reach the model on the next turn as a message that
 names the tool and the reason (`unavailable`, `timeout`, or the device's
 `reason`).
 
+**Done reports.** A `done` result for a tool effect that carries `text`
+reaches the model on the next turn as a message after that exchange, naming
+the tool and the text (`(your reachy body: body_plan done: tracking you)`):
+what the body is doing now. Only the first 120 characters are told, with
+whitespace collapsed. A `done` without `text` is not told, and the messages
+before that exchange are unchanged.
+
 **Acting.** A device is acting while it holds a delivered tool or reply
 effect with no result, a streaming reply included. Stop, from any device, delivers one `stop` effect to
 each acting device, at the next step of its long poll. A device that has
@@ -253,6 +260,8 @@ is acting is derived from the journal alone, so it survives a restart.
 **Decided (lead):** "acting" means delivered with no result yet; a stop needs
 no result; the `max_s` + 2 s and reply 30 s timeouts; a stale unspoken reply
 is `failed: stale`; a stop for another turn is `stale`.
+**Decided (owner, 2026-10-22):** a `done` result's `text` reaches the model on
+the next turn, so it knows what its body is doing.
 
 ## 6. Timing reported by the device
 

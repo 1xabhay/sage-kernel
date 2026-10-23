@@ -59,10 +59,12 @@ vuln:
 	@grep -q '^dependencies = \[\]$$' pyproject.toml && echo "No third-party dependencies: nothing to audit." \
 	  || { echo "pyproject.toml declares dependencies: lock them with hashes and audit them here." >&2; exit 1; }
 
-# Secrets anywhere in the git history (gitleaks), offline; .git is streamed in, never mounted.
+# Secrets anywhere in the git history (gitleaks), offline. The history goes in as a bundle of every ref, never
+# mounted, so this works in a linked worktree too (where .git is only a pointer file).
 secrets:
-	COPYFILE_DISABLE=1 tar -c .git | docker run --rm -i --network none --read-only --tmpfs /tmp:size=256m -e HOME=/tmp \
-	  --entrypoint sh $(GITLEAKS_IMAGE) -c 'mkdir /tmp/repo && cd /tmp/repo && tar -x --no-same-owner \
-	  && git config --global --add safe.directory /tmp/repo && gitleaks git --redact --no-banner .'
+	git bundle create --quiet - --all | docker run --rm -i --network none --read-only --tmpfs /tmp:size=256m \
+	  -e HOME=/tmp --entrypoint sh $(GITLEAKS_IMAGE) -c 'cat > /tmp/all.bundle && git init -q /tmp/repo \
+	  && cd /tmp/repo && git fetch -q /tmp/all.bundle "+refs/*:refs/*" && rm /tmp/all.bundle \
+	  && gitleaks git --redact --no-banner .'
 
 hygiene: lint vuln secrets test

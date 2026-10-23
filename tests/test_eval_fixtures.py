@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from evals.test_live_conversation import fixture
@@ -55,10 +56,13 @@ class FixtureTests(unittest.TestCase):
         for line, needles in notes["grounded"] + notes["unrelated"]:
             with self.subTest(line=line):
                 self.assertTrue(all(n in text for n in needles))
-                prompt = policy.compile_prompt(policy.submit(state, "reachy", "e1", line, {}, False)[0], "reachy",
+                grounded = [line, needles] in notes["grounded"]
+                # An unrelated line is judged once the card has stopped lingering after the notes arrived.
+                at = state if grounded else replace(state, notes_idle=policy.NOTES_LINGER)
+                prompt = policy.compile_prompt(policy.submit(at, "reachy", "e1", line, {}, False)[0], "reachy",
                                                declared)
                 shown = "[Notes on" in prompt.context[-1]["content"]
-                self.assertEqual(shown, [line, needles] in notes["grounded"])  # K6: only where they answer
+                self.assertEqual(shown, grounded)  # K6: only where they answer
 
     def test_no_live_fixture_is_tracked_outside_local(self):
         for path in (ROOT / "evals").glob("*.json"):

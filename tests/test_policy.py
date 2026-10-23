@@ -710,7 +710,7 @@ def noted(state=None, topic=SONG[0], passages=SONG[1], source="reachy"):
 def idle(state, turns):
     """`state` after `turns` exchanges the notes do not match."""
     for n in range(turns):
-        state, _ = answered(asked(f"My dog sneezed {n} times.", turn_id=f"idle{n}", state=state))
+        state, _ = answered(asked(f"My dog ate breakfast early, number {n}.", turn_id=f"idle{n}", state=state))
     return state
 
 

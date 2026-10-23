@@ -62,10 +62,22 @@ def format_schema(tools) -> dict:
             "required": ["reply"], "additionalProperties": False}
 
 
+def _unlisted(node):
+    """`node` for the model to read, without an enum its own description already spells out: the voice's
+    emote names were printed twice (~200 tokens of a 4096 context). The answer format keeps the enum."""
+    if isinstance(node, list):
+        return [_unlisted(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    spelled = (isinstance(node.get("enum"), list) and isinstance(node.get("description"), str)
+               and all(re.search(rf"(?<![\w-]){re.escape(str(v))}(?![\w-])", node["description"]) for v in node["enum"]))
+    return {key: _unlisted(value) for key, value in node.items() if not (spelled and key == "enum")}
+
+
 def describe(device: str, manifest: dict) -> str:
     """The body a turn comes from, for the system message: its description, senses and tools as declared."""
     tools = "; ".join(f"{tool['name']}: {tool.get('description') or 'no description'} "
-                      f"Input: {json.dumps(tool['inputSchema'])}" for tool in manifest["tools"]) or "none"
+                      f"Input: {json.dumps(_unlisted(tool['inputSchema']))}" for tool in manifest["tools"]) or "none"
     missing = [verb for sense, verb in SENSES.items() if sense not in manifest["senses"]]
     verbs = f"{', '.join(missing[:-1])}{' or ' if len(missing) > 1 else ''}{missing[-1]}" if missing else ""
     body = manifest.get("body")

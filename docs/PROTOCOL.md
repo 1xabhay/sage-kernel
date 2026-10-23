@@ -410,7 +410,7 @@ While notes are held, the kernel adds them to the newest message only on a
 turn they match: some passage after the first matches the person's line
 (BM25 score above 0), or the line names a word of the topic. A line with no
 words of its own beyond common ones ("Where?") is read as the person's line
-before it. A line they do not match gets no notes. On a matching turn the
+before it. A line they do not match gets no notes, except that for 2 turns after the notes arrive or last match, the first passage alone stays on ("When did it come out?" matches nothing, and the card has the date). On a matching turn the
 newest message carries the topic, the first passage (the most useful, such as a
 summary card), and up to 3 others that best match the line (with only the
 topic named, the next 3), labelled as information found on the web, never

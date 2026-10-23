@@ -1,5 +1,7 @@
 # music-telling
 
+**Status: experiment.** A standalone CLI, not built on Sage; nothing in the monorepo calls it.
+
 Turn a **theme** into a coherent **story told through songs** — discovered from the
 open web, enriched with real lyrics and real audio analysis, then ranked and
 eliminated so only the songs that genuinely carry the theme survive.
@@ -18,8 +20,8 @@ and "valence" are no longer something you can look up. This project computes the
 equivalent itself: it pulls the free 30-second preview from Deezer and runs
 **librosa** (tempo, key, energy, brightness, dynamics, onset rate) plus
 **Essentia's MusiCNN** mood classifiers over the actual waveform. Every data source
-is open and key-free — the only credential needed is an Anthropic key for the
-reasoning stages.
+is open and key-free; an Anthropic key is optional, for the `--provider anthropic`
+reasoning backend.
 
 **It runs entirely on free, open components — no API key, no account.** The
 reasoning stages use a local open-weights model through [Ollama]; the whole
@@ -39,7 +41,7 @@ pipeline works offline once the model and lyrics are cached.
 ## Quick start
 
 ```bash
-make setup-mood   # uv venv + deps incl. Essentia mood models
+make setup-mood   # .venv from uv.lock, incl. Essentia mood models
 make ollama       # install Ollama + pull qwen2.5:7b (~4.7GB, one time)
 make doctor       # verify every source and the local model
 make tell THEME="leaving home for the first time"
@@ -101,7 +103,9 @@ outrank a more on-theme one.
 | Command | Does |
 |---|---|
 | `make help` | List all targets |
-| `make setup` / `setup-mood` | Create the uv venv and install |
+| `make setup` / `setup-mood` | Create `.venv` from `uv.lock` (`uv sync --locked`) |
+| `make vuln` / `secrets` / `imports` | pip-audit of `uv.lock` / the repo's gitleaks scan / n/a |
+| `make image-test` | Build the lite image, run `--help` and the tests in it offline, remove it |
 | `make tell THEME="..."` | Build a story (`LENGTH=`, `POOL=`, `OUT=`) |
 | `make tell-fast THEME="..."` | Skip audio analysis |
 | `make doctor` | Health-check every source and credential |
@@ -111,15 +115,18 @@ outrank a more on-theme one.
 ## Docker
 
 ```bash
-cp .env.example .env        # add your ANTHROPIC_API_KEY
+cp .env.example .env        # optional: only for the Anthropic backend
 make docker-build
 make up                     # runs `doctor` in the container
 make tell-docker THEME="songs about a city at 4am"
 ```
 
-`src/` and `out/` are bind-mounted so you can iterate without rebuilding, and a
-named volume keeps the cache (lyrics, previews, ~25MB of model weights) across
-runs. `MT_TARGET=lite docker compose build` skips TensorFlow.
+The code is baked into the image (Colima cannot see this folder), so rebuild after
+edits; `tell-docker` prints the Markdown on stdout. A named volume keeps the cache
+(lyrics, previews, ~25MB of model weights) across runs, and `make down` keeps the
+volumes. Ollama is published on `127.0.0.1` only; set `MT_OLLAMA_PORT` if a host
+Ollama already holds 11434. The default image is `lite`; `MT_TARGET=full` adds
+TensorFlow.
 
 > On Apple Silicon the Essentia wheels are amd64, so the `full` image runs under
 > emulation. For native speed locally, use `make setup-mood` instead of Docker.
@@ -161,7 +168,7 @@ src/music_telling/
   sources/        deezer, lrclib, websearch, http
   audio/          download, librosa features, Essentia moods
   llm/            client, discover, judge, compose
-  pipeline/run.py the five stages, wired
+  pipeline/run.py the stages, wired
   render.py       Markdown output
   cli.py          `tell` and `doctor`
 ```

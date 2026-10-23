@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ValidationError
-
-T = TypeVar("T", bound=BaseModel)
 
 
 class ProviderError(RuntimeError):
@@ -118,7 +116,7 @@ def extract_json(text: str) -> str:
     return text[start:]
 
 
-def parse_into(schema: type[T], raw: str) -> T:
+def parse_into[T: BaseModel](schema: type[T], raw: str) -> T:
     return schema.model_validate_json(extract_json(raw))
 
 

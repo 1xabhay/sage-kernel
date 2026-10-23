@@ -1,3 +1,6 @@
+# The project name is pinned: the live kernel runs as project `sage-os` on the volume `sage-os_home`.
+name: sage-os
+
 services:
   kernel:
     image: sage-os:0.1.0
@@ -9,7 +12,7 @@ services:
       SAGE_MODEL_URL: ${SAGE_MODEL_URL:-http://host.docker.internal:11434}
       SAGE_MODEL: ${SAGE_MODEL:-qwen3:1.7b}
       SAGE_UTC_OFFSET_S: ${SAGE_UTC_OFFSET_S:-0}
-    # 8765/8766 belong to ../sage and 8776 to ../sage-kernel while they run.
+    # 8776 belongs to the Python kernel (the monorepo root) while it runs.
     ports:
       - "127.0.0.1:8786:8766"
     extra_hosts:

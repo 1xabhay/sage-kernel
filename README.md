@@ -14,7 +14,8 @@ device.
 - **Design:** [docs/BLUEPRINT.md](docs/BLUEPRINT.md), [docs/DECISIONS.md](docs/DECISIONS.md),
   [docs/ROADMAP.md](docs/ROADMAP.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 - **Devices:** [devices/reachy-mini/](devices/reachy-mini/), the Reachy Mini voice app, pet and simulator.
-- **Apps:** [apps/](apps/), other programs built on Sage. **Experiments:** [experiments/](experiments/), e.g. the Rust `sage-os`.
+- **Experiments:** [experiments/](experiments/): the Rust [`sage-os`](experiments/sage-os/) kernel and
+  [`music-telling`](experiments/music-telling/), a standalone CLI that tells a story through songs.
 
 ## Quick start
 

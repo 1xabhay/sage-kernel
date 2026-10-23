@@ -7,15 +7,11 @@ validation errors fed back rather than surfaced to the caller.
 
 from __future__ import annotations
 
-from typing import TypeVar
-
 from pydantic import BaseModel, ValidationError
 
 from ..config import settings
 from .providers import ProviderError, get_provider
 from .providers.base import json_schema, parse_into, validation_hint
-
-T = TypeVar("T", bound=BaseModel)
 
 # Re-exported so callers can keep catching one error type.
 LLMUnavailable = ProviderError
@@ -26,7 +22,7 @@ _JSON_RULE = (
 )
 
 
-def structured(
+def structured[T: BaseModel](
     *,
     schema: type[T],
     system: str | list[str],

@@ -4,7 +4,11 @@ RUFF_IMAGE := ghcr.io/astral-sh/ruff:0.17.1-alpine@sha256:b527bd3e15c43b4fb9fc3c
 SOURCES := sage tests conformance evals pyproject.toml
 # Tests use their own compose project, never the live one: see compose.test.yaml.
 TEST := docker compose -f compose.test.yaml
-.PHONY: up down check unit conformance eval lint vuln secrets hygiene
+.PHONY: hooks up down check unit conformance eval lint vuln secrets hygiene
+
+# Tracked git hooks: the push guard and the red/green commit gate (.githooks/).
+hooks:
+	git config core.hooksPath .githooks
 
 # The kernel on 127.0.0.1:8776 (the old kernel keeps 8765/8766). Needs SAGE_DEVICES in the environment or .env.
 up:

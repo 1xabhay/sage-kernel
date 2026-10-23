@@ -143,10 +143,14 @@ class PublishTests(unittest.TestCase):
         self.assertNotEqual(self.git("check-ignore", "-q", "--no-index", ".env.example").returncode, 0)
 
     def test_private_and_cached_paths_never_reach_the_image_build(self):
-        ignored = set((ROOT / ".dockerignore").read_text().split())
-        for pattern in (".env", ".env.*", ".backups", "evals/local", "bench", "**/.venv", "**/.local", ".git"):
+        # An allow-list: everything is out, then only what the image copies comes back, minus caches and secrets.
+        lines = [line for line in (ROOT / ".dockerignore").read_text().splitlines() if line and line[0] != "#"]
+        self.assertEqual(lines[0], "*")
+        self.assertEqual({line for line in lines if line[0] == "!"}, {"!sage", "!tests", "!conformance", "!evals"})
+        last_include = max(i for i, line in enumerate(lines) if line[0] == "!")
+        for pattern in ("**/.env", "**/.env.*", "**/.local", "**/.venv", "**/__pycache__", "evals/local"):
             with self.subTest(pattern=pattern):
-                self.assertIn(pattern, ignored)
+                self.assertIn(pattern, lines[last_include:])
 
     def test_no_tracked_file_names_a_lan_address_or_a_home_folder(self):
         # The same scanner the pre-push hook runs over the added lines: one list of patterns.

@@ -781,18 +781,9 @@ class NotesTests(unittest.TestCase):
 
 
 # The voice app's manifest as it declares it (reachy_sage_voice kernel.manifest(moves, song=True), 59 emotes
-# described from the Pollen emotions library, 2026-10-22), plus the commands lane's body_plan.
+# described from the Pollen emotions library, 2026-10-22), plus the commands lane's body_plan (the eval's).
 VOICE = json.loads((Path(__file__).parent / "voice_manifest.json").read_text())
-BODY_PLAN = {"name": "body_plan", "max_s": 60, "interruptible": True,
-             "description": "Move your head when asked: look or turn somewhere, search for the person, track "
-                            "them, stop. Steps run in order; a step may last until a face is found or it times out.",
-             "inputSchema": {"type": "object", "required": ["steps"], "properties": {"steps": {
-                 "type": "array", "minItems": 1, "maxItems": 4, "items": {
-                     "type": "object", "required": ["skill"], "additionalProperties": False, "properties": {
-                         "skill": {"enum": ["look", "turn", "search_face", "track_face", "stop", "listen"]},
-                         "arg": {"type": "string", "maxLength": 16},
-                         "until": {"enum": ["face_found", "timeout"]}}}}}}}
-NUM_CTX = 4096
+BODY_PLAN = json.loads((Path(__file__).parents[1] / "evals" / "body_commands.json").read_text())["body_plan"]
 
 
 class Budget(unittest.TestCase):

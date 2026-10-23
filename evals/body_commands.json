@@ -1,0 +1,239 @@
+{
+ "source": "written, not recorded (2026-10-22, wave 1 K7): commands, self-knowledge and notes grounding for a body that hears, moves its head and has a camera not connected yet; expected to fail on the notes build (no body, notes on every line) and to be run in wave 3 (make eval)",
+ "body": "A Reachy Mini: a head that turns and tilts, two antennas, a speaker, four microphones, and a camera that is not connected yet.",
+ "body_plan": {
+  "name": "body_plan",
+  "max_s": 60,
+  "interruptible": true,
+  "description": "Move your head when asked: look or turn somewhere, search for the person, track them, stop. Steps run in order; a step may last until a face is found or it times out.",
+  "inputSchema": {
+   "type": "object",
+   "required": [
+    "steps"
+   ],
+   "properties": {
+    "steps": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 4,
+     "items": {
+      "type": "object",
+      "required": [
+       "skill"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "skill": {
+        "enum": [
+         "look",
+         "turn",
+         "search_face",
+         "track_face",
+         "stop"
+        ]
+       },
+       "arg": {
+        "type": "string",
+        "maxLength": 16
+       },
+       "until": {
+        "enum": [
+         "face_found",
+         "timeout"
+        ]
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "commands": {
+  "single": [
+   [
+    "Look left.",
+    [
+     {
+      "skill": "look",
+      "arg": "left"
+     }
+    ]
+   ],
+   [
+    "Look to your right.",
+    [
+     {
+      "skill": "look",
+      "arg": "right"
+     }
+    ]
+   ],
+   [
+    "Turn around.",
+    [
+     {
+      "skill": "turn",
+      "arg": "around"
+     }
+    ]
+   ],
+   [
+    "Look up at the ceiling.",
+    [
+     {
+      "skill": "look",
+      "arg": "up"
+     }
+    ]
+   ],
+   [
+    "Track me.",
+    [
+     {
+      "skill": "track_face"
+     }
+    ]
+   ],
+   [
+    "Find me.",
+    [
+     {
+      "skill": "search_face",
+      "until": "face_found"
+     }
+    ]
+   ],
+   [
+    "Stop moving.",
+    [
+     {
+      "skill": "stop"
+     }
+    ]
+   ]
+  ],
+  "chained": [
+   [
+    "Search for me, then track me.",
+    [
+     {
+      "skill": "search_face",
+      "until": "face_found"
+     },
+     {
+      "skill": "track_face"
+     }
+    ]
+   ],
+   [
+    "Look left, then look right.",
+    [
+     {
+      "skill": "look",
+      "arg": "left"
+     },
+     {
+      "skill": "look",
+      "arg": "right"
+     }
+    ]
+   ],
+   [
+    "Turn around and look for me.",
+    [
+     {
+      "skill": "turn",
+      "arg": "around"
+     },
+     {
+      "skill": "search_face",
+      "until": "face_found"
+     }
+    ]
+   ],
+   [
+    "Look up, then look down, then look at me.",
+    [
+     {
+      "skill": "look",
+      "arg": "up"
+     },
+     {
+      "skill": "look",
+      "arg": "down"
+     },
+     {
+      "skill": "search_face",
+      "until": "face_found"
+     }
+    ]
+   ]
+  ],
+  "negatives": [
+   "I looked left and right before crossing the street.",
+   "My friend turned around and walked off.",
+   "I can't stop thinking about that film.",
+   "The police tracked the stolen car for an hour.",
+   "Have you ever looked for something you were holding?"
+  ],
+  "chit_chat": [
+   "I had pasta for lunch.",
+   "What's your favourite colour?",
+   "My sister visits next week.",
+   "It might rain later.",
+   "Tell me something funny."
+  ]
+ },
+ "self_knowledge": {
+  "has_camera": [
+   "Do you have a camera?",
+   "Have you got a camera in there?"
+  ],
+  "cannot_see": [
+   "Can you see me?",
+   "What am I holding up right now?"
+  ]
+ },
+ "notes": {
+  "topic": "\"Pulse\" by Mira Vale",
+  "passages": [
+   "Pulse: a 2026 single by Mira Vale featuring Odo, from the album Night Glass.",
+   "MusicBrainz: produced by Kenji Aro and Mira Vale; recorded in Lisbon.",
+   "Lyrics (LRCLIB): the chorus repeats \"hold the light\" four times.",
+   "News, 2026-10-12, example.com: Mira Vale announced a winter tour of Europe.",
+   "Web, example.net: the video was filmed in one take on a rooftop."
+  ],
+  "grounded": [
+   [
+    "Who produced it?",
+    [
+     "kenji"
+    ]
+   ],
+   [
+    "Where was it recorded?",
+    [
+     "lisbon"
+    ]
+   ],
+   [
+    "Is she going on tour?",
+    [
+     "europe",
+     "winter"
+    ]
+   ]
+  ],
+  "unrelated": [
+   [
+    "I had such a long day.",
+    [
+     "kenji",
+     "lisbon",
+     "rooftop",
+     "night glass"
+    ]
+   ]
+  ]
+ }
+}

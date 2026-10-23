@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from evals.test_live_conversation import fixture
-from sage import policy
+from sage import manifest, policy
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,6 +39,26 @@ class FixtureTests(unittest.TestCase):
         for line in later["lyrics"] + later["fragments"]:
             with self.subTest(line=line):
                 self.assertTrue(policy.misheard(line))
+
+    def test_the_body_fixture_s_expected_plans_are_valid_and_its_notes_hold_the_answers(self):
+        case = json.loads((ROOT / "evals" / "body_commands.json").read_text())
+        declared = manifest.check_manifest({"senses": ["speech"], "tools": [case["body_plan"]], "body": case["body"]})
+        commands = case["commands"]
+        self.assertEqual([len(commands[k]) for k in ("single", "chained", "negatives", "chit_chat")], [7, 4, 5, 5])
+        for line, expected in commands["single"] + commands["chained"]:
+            with self.subTest(line=line):
+                self.assertEqual(manifest.authorize("body_plan", {"steps": expected}, declared["tools"]), "")
+        self.assertTrue(all(len(plan) > 1 for _, plan in commands["chained"]))
+        notes = case["notes"]
+        text = " ".join(notes["passages"]).lower()
+        state = policy.take_notes(policy.Companion(), "reachy", notes["topic"], notes["passages"])[0]
+        for line, needles in notes["grounded"] + notes["unrelated"]:
+            with self.subTest(line=line):
+                self.assertTrue(all(n in text for n in needles))
+                prompt = policy.compile_prompt(policy.submit(state, "reachy", "e1", line, {}, False)[0], "reachy",
+                                               declared)
+                shown = "[Notes on" in prompt.context[-1]["content"]
+                self.assertEqual(shown, [line, needles] in notes["grounded"])  # K6: only where they answer
 
     def test_no_live_fixture_is_tracked_outside_local(self):
         for path in (ROOT / "evals").glob("*.json"):

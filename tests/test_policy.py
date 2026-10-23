@@ -355,6 +355,32 @@ class Provenance(unittest.TestCase):
         self.assertNotIn("cannot", everything)
         self.assertIn("cannot see, hear or feel touch", manifest.describe("x", {"senses": (), "tools": ()}))
 
+    def test_a_declared_body_is_kept_or_refused(self):
+        body = "A Reachy Mini: a head that turns, antennas, a speaker, microphones, and a camera not connected yet."
+        self.assertEqual(manifest.check_manifest({"senses": ["speech"], "body": body}),
+                         {"senses": ("speech",), "tools": (), "body": body})
+        self.assertNotIn("body", manifest.check_manifest({"senses": ["speech"]}))  # optional
+        self.assertEqual(manifest.check_manifest({"body": "b" * 300})["body"], "b" * 300)
+        for bad in (7, ["camera"], None, "b" * 301):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                manifest.check_manifest({"senses": ["speech"], "body": bad})
+
+    def test_a_declared_body_lets_the_model_name_parts_it_cannot_use_yet(self):
+        body = "A small robot head with a camera that is not connected yet."
+        declared = {**MANIFEST, "body": body}
+        note = manifest.describe("reachy", declared)
+        self.assertIn(json.dumps(body), note)
+        self.assertLess(note.index(body), note.index("Senses: speech."))
+        self.assertNotIn("This body cannot see", note)
+        self.assertIn("cannot see or feel touch yet", note)
+        self.assertIn("say what it has", note)
+        self.assertEqual(manifest.describe("reachy", MANIFEST).count("This body cannot see or feel touch;"), 1)
+        first = policy.compile_prompt(asked(), "reachy", declared)
+        state, _ = answered(asked())
+        second = policy.compile_prompt(asked("And now?", turn_id="r2", state=state), "reachy", declared)
+        self.assertEqual(first.system, second.system)  # byte for byte: the cached start
+        self.assertIn(body, first.system)
+
     def test_the_body_note_follows_the_persona_once_per_device(self):
         reachy = policy.compile_prompt(asked("Hi there"), "reachy", MANIFEST)
         self.assertTrue(reachy.system.startswith(policy.PERSONA))

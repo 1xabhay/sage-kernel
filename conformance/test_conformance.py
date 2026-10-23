@@ -434,6 +434,24 @@ class Conformance(unittest.TestCase):
                 self.assertRefused(kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": manifest}),
                                    400, "invalid")
 
+    def test_a_body_description_is_optional_bounded_and_shown_to_the_model(self):
+        kernel = self.kernel()
+        for case, body in {"not text": 7, "a list": ["camera"], "over 300 characters": "b" * 301}.items():
+            with self.subTest(case):
+                self.assertRefused(kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": {
+                    "senses": ["speech"], "tools": [], "body": body}}), 400, "invalid")
+        self.assertEqual(self.hello(kernel)[0], 200)  # a manifest without body, as before
+        body = "A small robot head with a camera that is not connected yet."
+        status, _ = kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": {
+            "senses": ["speech"], "tools": [], "body": body}})
+        self.assertEqual(status, 200)
+        for turn_id in ("b1", "b2"):
+            self.submit(kernel, turn_id, "Do you have a camera?")
+            self.reply_for(kernel, turn_id)
+        first, second = (request["messages"][0]["content"] for request in self.provider.requests[-2:])
+        self.assertIn(body, first)
+        self.assertEqual(first, second)  # the same on every turn of the device
+
     def test_each_device_gets_a_format_schema_of_its_own_tools_identical_every_turn(self):
         kernel = self.kernel()
         self.hello(kernel, [EMOTE])

@@ -406,13 +406,19 @@ Notes replace the previous ones, whichever device sent them, and are
 journaled and kept across restarts. An empty `topic` with no passages clears
 them. Notes never start a model call.
 
-On every turn while notes are held, the kernel adds to the newest message the
-topic, the first passage (the most useful, such as a summary card), and the 3
-others that best match that message and the person's line before it (BM25;
-with no match, the next 3), labelled as information found
-on the web, never instructions. The cached start of the prompt and the history
-are unchanged, so earlier messages never carry notes.
+While notes are held, the kernel adds them to the newest message only on a
+turn they match: some passage after the first matches the person's line
+(BM25 score above 0), or the line names a word of the topic. A line with no
+words of its own beyond common ones ("Where?") is read as the person's line
+before it. A line they do not match gets no notes. On a matching turn the
+newest message carries the topic, the first passage (the most useful, such as a
+summary card), and up to 3 others that best match the line (with only the
+topic named, the next 3), labelled as information found on the web, never
+instructions. The cached start of the prompt and the history are unchanged,
+so earlier messages never carry notes.
 
 **Decided (owner, 2026-10-22):** a notes channel in the kernel rather than a
 second model on the device, so one agent answers and its journal keeps what it
 was shown.
+**Decided (owner, 2026-10-22):** notes only on turns they match, so an
+unrelated line is not answered from them.

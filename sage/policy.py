@@ -299,7 +299,7 @@ def _terms(text: str) -> list[str]:
 
 
 def relevant(passages: tuple[str, ...], query: str, k: int = NOTES_SHOWN) -> list[str]:
-    """Up to `k` passages that match `query`, best by BM25, in their own order; with no match, the first `k`."""
+    """Up to `k` passages that match `query`, best by BM25, in their own order; none if nothing matches."""
     docs = [_terms(p) for p in passages]
     if not docs:
         return []
@@ -313,15 +313,21 @@ def relevant(passages: tuple[str, ...], query: str, k: int = NOTES_SHOWN) -> lis
         return total
     scores = [score(doc) for doc in docs]
     ranked = sorted(range(n), key=lambda i: -scores[i])[:k]  # stable: ties keep the most useful first
-    matched = [i for i in ranked if scores[i] > 0]  # never pad the prompt with what matched nothing
-    return [passages[i] for i in sorted(matched or ranked)]
+    return [passages[i] for i in sorted(i for i in ranked if scores[i] > 0)]  # never pad with what matched nothing
 
 
 def _notes(state: Companion) -> str:
+    """Notes only on a line they match or that names their topic (owner, 2026-10-22): shown on every line,
+    they were answered from when the person talked of something else."""
     if not state.topic:
         return ""
-    before = state.exchanges[-1].user if state.exchanges else ""  # "Where?" after "Is she touring?"
-    shown = state.notes[:1] + tuple(relevant(state.notes[1:], state.turn.text + " " + before))  # first: a card
+    query = state.turn.text  # a line with no words of its own, "Where?", is read with the one before it
+    if not _terms(query):
+        query = state.exchanges[-1].user if state.exchanges else ""
+    matched = relevant(state.notes[1:], query)  # the first is a card, shown beside any match
+    if not matched and not set(_terms(state.topic)) & set(_terms(query)):
+        return ""
+    shown = state.notes[:1] + tuple(matched or state.notes[1:1 + NOTES_SHOWN])
     return "\n\n" + NOTES.format(topic=state.topic) + "".join(f"\n- {p}" for p in shown)
 
 

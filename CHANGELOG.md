@@ -12,8 +12,8 @@ and every protocol change is listed under **Protocol**.
 ### Added
 
 - Notes: a device can hand the kernel a topic and up to 64 passages (such as a
-  song looked up on the web); each turn, the 3 that best match the newest line
-  ride on the newest message, after the first, as information. Journaled and checkpointed.
+  song looked up on the web); on each turn they match, the first and the 3 that
+  best match the newest line ride on the newest message, as information. Journaled and checkpointed.
 
 ### Protocol
 
@@ -24,7 +24,9 @@ and every protocol change is listed under **Protocol**.
 - A `done` result's `text` for a tool effect now reaches the model on the next
   turn, after that exchange, as the body's report (§5); before, only failures did.
 - New event `notes` `{topic, passages}` (§10, draft). JSON bodies may be up to
-  131072 bytes (was 8192).
+  131072 bytes (was 8192). Notes ride only on turns they match (a passage after
+  the first matches the line, or the line names the topic); an unrelated line
+  gets none.
 
 ## [0.2.0] - 2026-10-21
 

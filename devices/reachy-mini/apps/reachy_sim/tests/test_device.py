@@ -19,7 +19,7 @@ from conftest import API, api, present
 
 APP = Path(__file__).parent.parent
 VOICE_KERNEL = APP.parent / "reachy_sage_voice" / "reachy_sage_voice" / "kernel.py"
-SAGE_KERNEL = APP.parents[2] / "sage-kernel"
+SAGE_KERNEL = APP.parents[3]
 
 
 def test_the_emote_vocabulary_is_the_voice_apps():

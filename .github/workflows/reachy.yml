@@ -1,5 +1,5 @@
-# The Sage voice app's and the simulator's tests: no robot, no GPU, no models.
-name: test
+# Reachy Mini device apps (devices/reachy-mini): the Sage voice app's and the simulator's tests: no robot, no GPU, no models.
+name: reachy
 
 on:
   push:
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: apps/reachy_sage_voice
+        working-directory: devices/reachy-mini/apps/reachy_sage_voice
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,22 +27,15 @@ jobs:
 
   reachy-sim:
     runs-on: ubuntu-latest
-    # The device tests run sage-kernel's conformance kernel from a sibling checkout.
+    # The device tests run the root kernel's conformance suite.
     defaults:
       run:
-        working-directory: lab/apps/reachy_sim
+        working-directory: devices/reachy-mini/apps/reachy_sim
     env:
       MUJOCO_GL: osmesa # offscreen eye-camera renders on a runner with no GPU
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: lab
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: 1xabhay/sage-kernel
-          ref: v0.1.0
-          path: sage-kernel
           persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y libosmesa6 libcairo2-dev libgirepository1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gir1.2-gst-plugins-base-1.0 gstreamer1.0-nice
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -51,20 +44,13 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
-    # The voice against the real Sage kernel (conformance fake model), from a sibling checkout.
+    # The voice against the root Sage kernel (conformance fake model).
     defaults:
       run:
-        working-directory: lab/apps/reachy_sage_voice
+        working-directory: devices/reachy-mini/apps/reachy_sage_voice
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: lab
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: 1xabhay/sage-kernel
-          ref: main
-          path: sage-kernel
           persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y libcairo2-dev libgirepository1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gir1.2-gst-plugins-base-1.0 gstreamer1.0-nice
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0

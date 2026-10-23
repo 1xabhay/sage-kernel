@@ -1,7 +1,7 @@
 """The voice and the real Sage kernel together: what was said, and what was journaled.
 
-The kernel is sage-kernel's own (``SAGE_KERNEL_DIR``, default the sibling
-checkout, as ``apps/reachy_sim`` finds it), started by its conformance suite on
+The kernel is sage-kernel's own (``SAGE_KERNEL_DIR``, default the monorepo
+root, as ``apps/reachy_sim`` finds it), started by its conformance suite on
 a free loopback port with a throwaway state directory, thinking with that
 suite's fake Ollama, whose answers each test scripts. The voice is the app's
 real ``Session``, ``SageProcessor``, Kokoro TTS service with its clause
@@ -42,7 +42,7 @@ from reachy_sage_voice.tts import RATE, KokoroTTSService
 pytestmark = pytest.mark.integration
 
 APP = Path(__file__).resolve().parents[2]
-KERNEL_DIR = Path(os.environ.get("SAGE_KERNEL_DIR", APP.parents[2] / "sage-kernel"))
+KERNEL_DIR = Path(os.environ.get("SAGE_KERNEL_DIR", APP.parents[3]))
 WORD_S = 0.1  # how long the fake Kokoro takes to say each word
 
 

@@ -1,22 +1,38 @@
-# Sage kernel
+# Sage
 
 [![CI](https://github.com/1xabhay/sage-kernel/actions/workflows/ci.yml/badge.svg)](https://github.com/1xabhay/sage-kernel/actions/workflows/ci.yml)
 
-A minimal, model-independent, dependency-free kernel for always-on agents.
+Sage is an always-on agent: a minimal, model-independent kernel, and the bodies and tools that
+plug into it over one HTTP device protocol. [Reachy Mini](https://github.com/pollen-robotics/reachy_mini)
+is its first body. This repository holds all of it.
+
+## Projects
+
+| Project | Path | What | Tests |
+| --- | --- | --- | --- |
+| Kernel | `/` (`sage/`, moves to `kernel/` last) | Python 3.12, stdlib only; [below](#the-kernel) | `make check` |
+| Reachy Mini | [devices/reachy-mini/](devices/reachy-mini/README.md) | the voice app, the simulator, the testbench | [TESTING](docs/TESTING.md#reachy-mini-devicesreachy-mini) |
+| sage-os | [experiments/sage-os/](experiments/sage-os/README.md) | a Rust kernel, an experiment | `make -C experiments/sage-os test` |
+| music-telling | [apps/music-telling/](apps/music-telling/README.md) | songs told as a story, standalone; moves to `experiments/music-telling` with PR #6 | its README |
+
+## Docs
+
+[CONTRIBUTING.md](CONTRIBUTING.md) (setup, branches, lanes, red/green, the nevers),
+[TESTING](docs/TESTING.md), [RUNNING-LOCALLY](docs/RUNNING-LOCALLY.md),
+[DEPLOYING](docs/DEPLOYING.md), and [the index of every doc](docs/README.md).
+
+## The kernel
+
 Bodies and tools are plugins on one HTTP device protocol; the kernel owns
-identity, memory, the journal and authorization, and never gets a shell of its
-own. [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) is its first
-device.
+identity, memory, the journal and authorization, and never gets a shell of its own.
 
 - **Protocol:** [docs/PROTOCOL.md](docs/PROTOCOL.md), device protocol v1 (**draft**).
 - **Conformance:** [conformance/](conformance/), a black-box HTTP suite any kernel must pass unchanged.
 - **Core:** [sage/](sage/), Python 3.12 standard library only.
 - **Design:** [docs/BLUEPRINT.md](docs/BLUEPRINT.md), [docs/DECISIONS.md](docs/DECISIONS.md),
   [docs/ROADMAP.md](docs/ROADMAP.md). Changes: [CHANGELOG.md](CHANGELOG.md).
-- **Devices:** [devices/reachy-mini/](devices/reachy-mini/), the Reachy Mini voice app, pet and simulator.
-- **Apps:** [apps/](apps/), other programs built on Sage. **Experiments:** [experiments/](experiments/), e.g. the Rust `sage-os`.
 
-## Quick start
+### Quick start
 
 You need Docker with Compose v2, `make`, and [Ollama](https://ollama.com) on the
 same machine. No GPU is needed for the tests.
@@ -34,7 +50,7 @@ Ollama at `SAGE_MODEL_URL` (default `http://host.docker.internal:11434`, the hos
 as seen from the container). `make down` stops it; its journal stays in the
 `kernel-data` volume.
 
-## A first device
+### A first device
 
 A device is anything that can speak HTTP: it says hello with its manifest,
 posts events and long-polls for effects. With the device's token in
@@ -54,19 +70,19 @@ Every delivered effect gets one `result`. Tools (an `emote`, a move) are
 declared in the manifest, shaped like an MCP tool list. The full contract,
 including streaming, Stop, timing and errors, is in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
-## Tests
+### Tests
 
 ```sh
 make check         # unit tests, then the conformance suite, in Docker (Python 3.12)
 make lint          # ruff, in Docker
-make hygiene       # lint, vuln, secrets and check: what CI runs
+make hygiene       # lint, vuln, secrets and check; CI runs this after the source-tree checks
 ```
 
 Tests never touch the live kernel: they run in their own compose project
 (`compose.test.yaml`) with throwaway state. `make eval` replays conversations
 through the kernel against a real Ollama model and is opt-in.
 
-## Writing your own kernel
+### Writing your own kernel
 
 The conformance suite starts any kernel as a subprocess, configures it only
 through environment variables, and gives it a fake Ollama. To test yours:
@@ -82,7 +98,7 @@ is on the [roadmap](docs/ROADMAP.md).
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) (test-first, `make check`),
+See [CONTRIBUTING.md](CONTRIBUTING.md) (test-first, before a PR),
 [SECURITY.md](SECURITY.md) (how to report a vulnerability) and the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 

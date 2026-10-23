@@ -1,10 +1,10 @@
-# reachy-mini-lab
+# Reachy Mini
 
 Apps, diagnostics and experiments for a Reachy Mini robot.
 
 ## Setup
 
-Requires [uv](https://docs.astral.sh/uv/). One virtualenv at the repo root covers
+Requires [uv](https://docs.astral.sh/uv/). One virtualenv at `devices/reachy-mini` covers
 every app in the workspace:
 
 ```sh
@@ -16,7 +16,6 @@ uv sync
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `REACHY_MINI_HOST` | `reachy-mini.local` | Daemon hostname or IP |
-
 | `REACHY_MINI_PORT` | `8000` | Daemon port |
 | `TESTBENCH_DATA_DIR` | `/tmp/reachy_mini_testbench` | Where captures and recordings are written |
 

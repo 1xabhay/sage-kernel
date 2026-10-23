@@ -2,7 +2,7 @@
 
 Historical component-selection proposal. The owner's subsequent direction is
 to hand-code a first-person, humanlike companion with OSS as reference code and
-tests. See [the active fundamentals](docs/FUNDAMENTALS.md). The product requirements
+tests. See [the active fundamentals](FUNDAMENTALS.md). The product requirements
 below remain useful references; OpenClaw ownership is no longer the active design.
 
 Research date: October 13, 2026  

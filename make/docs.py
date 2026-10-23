@@ -33,7 +33,8 @@ FENCE = re.compile(r"^\s*(```|~~~)")
 CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 REF_DEF = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s|$)")
-MAKE = re.compile(r"(?<![\w/.$-])make((?:\s+\S+)*)")
+MAKE = re.compile(r"(?<![\w/.$-])make(?![\w/.-])((?:\s+\S+)*)")
+COMMENT = re.compile(r"(^|\s)#.*")  # a shell comment: prose, not a command
 TARGET = re.compile(r"[A-Za-z0-9_][\w.-]*")
 
 
@@ -57,7 +58,7 @@ def scan(text: str):
 
 def make_calls(code: str):
     """(dirs given with -C, targets) for each `make` invocation in a piece of shell."""
-    for m in MAKE.finditer(code):
+    for m in MAKE.finditer(COMMENT.sub("", code)):
         try:
             words = shlex.split(m.group(1))
         except ValueError:  # an unbalanced quote: good enough to find the targets
@@ -153,9 +154,9 @@ def selftest() -> None:
         (r / "sub" / "README.md").write_text(
             "[up](../README.md) [gone](../NOPE.md) [web](https://x.y) [here](#a) [dir](../sub/)\n"
             "`make run` `make test`\n"  # sub's Makefile: run resolves, test does not
-            "```sh\nmake -C .. test   # root\nFOO=1 make -C .. nope && echo\nmake run X=\"a b\"\n```\n"
+            "```sh\nmake -C .. test   # root, not make nope\nFOO=1 make -C .. nope && echo\nmake run X=\"a b\"\n```\n"
             "`make deploy` (coming: C4)\n"
-            "`[not](a/link.md)` and `cmake build`\n"
+            "`[not](a/link.md)` and `cmake build` and `make/docs.py --check`\n"
         )
         (r / "README.md").write_text("[sub](sub/README.md) [ref]\n\n[ref]: sub/missing.md\n")
         (r / "docs" / "history").mkdir(parents=True)

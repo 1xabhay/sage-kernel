@@ -91,7 +91,7 @@ def check(schema, value, where="input") -> str:
     """What is wrong with `value` under `schema`, or "" when nothing is.
 
     ponytail: a JSON Schema subset (type, enum, required, properties, additionalProperties: false,
-    items); other keywords are ignored. Add them when a device declares one that matters.
+    items, minItems, maxItems); other keywords are ignored. Add them when a device declares one that matters.
     """
     if not isinstance(schema, dict):
         return ""
@@ -116,6 +116,10 @@ def check(schema, value, where="input") -> str:
             elif schema.get("additionalProperties") is False:
                 return f"{where}.{key} is not allowed"
     if isinstance(value, list):
+        if _number(schema.get("maxItems")) and len(value) > schema["maxItems"]:
+            return f"{where} must have at most {schema['maxItems']} item{'s' * (schema['maxItems'] != 1)}"
+        if _number(schema.get("minItems")) and len(value) < schema["minItems"]:
+            return f"{where} must have at least {schema['minItems']} item{'s' * (schema['minItems'] != 1)}"
         for index, item in enumerate(value):
             if problem := check(schema.get("items"), item, f"{where}[{index}]"):
                 return problem

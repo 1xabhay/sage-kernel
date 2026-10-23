@@ -345,9 +345,10 @@ class ReleaseTests(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text()
         self.assertRegex(makefile, r"(?m)^PROJECTS := \. devices/reachy-mini experiments/sage-os "
                                    r"\$\(wildcard apps/music-telling experiments/music-telling\)$")
+        self.assertIn("for p in $(PROJECTS); do", makefile)
         for target in ("test-all", "hygiene-all"):
             with self.subTest(target=target):
-                self.assertIn("$(PROJECTS)", recipe(target))
+                self.assertIn(f"$(call FAN_OUT,{target.split('-')[0]})", recipe(target))
         self.assertIn("make/conventions.py", recipe("conventions"))
 
     def test_smoke_walks_the_readme_against_a_throwaway_kernel(self):

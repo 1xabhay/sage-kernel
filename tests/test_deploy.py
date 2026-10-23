@@ -2,6 +2,7 @@
 
 import re
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -112,12 +113,12 @@ class PublishTests(unittest.TestCase):
                 self.assertIn(pattern, ignored)
 
     def test_no_tracked_file_names_a_lan_address_or_a_home_folder(self):
-        for path in self.git("ls-files").stdout.split():
-            if (ROOT / path).is_file():
-                with self.subTest(path=path):
-                    self.assertEqual(re.findall(r"\b192\.168\.\d{1,3}\.\d{1,3}\b|/Users/[a-z]|/home/[a-z]",
-                                                (ROOT / path).read_text(errors="ignore")), [])
-
+        # The same scanner the pre-push hook runs over the added lines: one list of patterns.
+        for mode in ("--self-test", "--tree"):
+            with self.subTest(mode=mode):
+                run = subprocess.run([sys.executable, ".githooks/hygiene.py", mode], check=False, cwd=ROOT,
+                                     capture_output=True, text=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
 
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,16 @@ class Authorization(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertTrue(manifest.check(schema, bad))
 
+    def test_an_array_s_length_is_checked_against_its_bounds(self):
+        plan = {"type": "object", "properties": {"steps": {"type": "array", "minItems": 1, "maxItems": 4,
+                                                           "items": {"type": "string"}}}}
+        tools = ({"name": "body_plan", "inputSchema": plan},)
+        self.assertEqual(manifest.authorize("body_plan", {"steps": ["look"] * 4}, tools), "")
+        self.assertEqual(manifest.authorize("body_plan", {"steps": ["look"] * 5}, tools),
+                         "invalid input, input.steps must have at most 4 items")
+        self.assertEqual(manifest.authorize("body_plan", {"steps": []}, tools),
+                         "invalid input, input.steps must have at least 1 item")
+
     def test_a_malformed_manifest_is_refused(self):
         self.assertEqual(manifest.check_manifest({"senses": ["speech"], "tools": [EMOTE]}), MANIFEST)
         self.assertEqual(manifest.check_manifest({})["tools"], ())

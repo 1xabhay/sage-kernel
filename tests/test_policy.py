@@ -487,6 +487,17 @@ class Senses(unittest.TestCase):
         self.assertEqual(policy.false_senses("I can see you.", ("speech", "vision")), [])
         self.assertEqual(policy.false_senses("I can hear you.", ("vision",)), ["speech"])
 
+    def test_a_camera_it_cannot_see_through_yet_is_no_claim_of_sight(self):
+        """A body may say what hardware it has (manifest body) and move its head; only seeing is a claim."""
+        for honest in ("I have a camera.", "I can't see yet.", "I have a camera, but I can't see through it yet.",
+                       "I'll look left.", "Okay, I'll turn around and look for you."):
+            with self.subTest(honest=honest):
+                self.assertEqual(policy.false_senses(honest, self.HEARING), [])
+                self.assertFalse(policy.may_claim(honest, self.HEARING))
+        for claim in ("I can see you.", "I see a red shirt.", "I'm looking at you."):
+            with self.subTest(claim=claim):
+                self.assertEqual(policy.false_senses(claim, self.HEARING), ["vision"])
+
     def test_only_the_false_sentence_is_replaced_worded_per_missing_sense(self):
         self.assertEqual(policy.honest("Hello there. I see you. Nice day!", self.HEARING),
                          "Hello there. I can't see yet; I can only hear you. Nice day!")

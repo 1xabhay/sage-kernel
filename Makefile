@@ -4,7 +4,7 @@ RUFF_IMAGE := ghcr.io/astral-sh/ruff:0.17.1-alpine@sha256:b527bd3e15c43b4fb9fc3c
 SOURCES := sage tests conformance evals pyproject.toml
 # Tests use their own compose project, never the live one: see compose.test.yaml.
 TEST := docker compose -f compose.test.yaml
-.PHONY: hooks up down check unit conformance eval lint vuln secrets hygiene
+.PHONY: hooks up down test check unit conformance eval lint vuln secrets hygiene
 
 # Tracked git hooks: the push guard and the red/green commit gate (.githooks/).
 hooks:
@@ -17,8 +17,10 @@ up:
 down:
 	docker compose down
 
-# Unit tests, then the conformance suite, both in Docker on Python 3.12.
-check: unit conformance
+# Unit tests, then the conformance suite, both in Docker on Python 3.12. `check` is the old name.
+test: unit conformance
+
+check: test
 
 unit:
 	$(TEST) run --build --rm conformance python -m unittest discover -s tests -v
@@ -55,4 +57,4 @@ secrets:
 	  --entrypoint sh $(GITLEAKS_IMAGE) -c 'mkdir /tmp/repo && cd /tmp/repo && tar -x --no-same-owner \
 	  && git config --global --add safe.directory /tmp/repo && gitleaks git --redact --no-banner .'
 
-hygiene: lint vuln secrets check
+hygiene: lint vuln secrets test

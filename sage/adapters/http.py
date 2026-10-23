@@ -20,7 +20,7 @@ STATUS = {"invalid": 400, "unauthorized": 401, "not_found": 404, "busy": 409, "u
           "forbidden": 409, "stale": 409, "reset": 409, "protocol_mismatch": 426, "rate_limited": 429}
 ROUTES = {("POST", "/v1/hello"), ("POST", "/v1/events"), ("GET", "/v1/effects")}
 NAME = re.compile(r"[a-z0-9_-]{1,64}")
-MAX_BODY = 8192
+MAX_BODY = 131072  # notes carry a document (64 passages of 600 characters, JSON-escaped)
 
 
 def parse_devices(spec: str) -> dict[str, str]:

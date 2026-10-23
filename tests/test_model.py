@@ -15,7 +15,7 @@ MANIFEST = {"senses": ("speech",), "tools": (EMOTE,)}
 
 
 class FakeOllama:
-    def __init__(self, pieces, status=200):
+    def __init__(self, pieces, status=200, final=None):
         self.requests = []
         fake = self
 
@@ -28,7 +28,7 @@ class FakeOllama:
                 for index, piece in enumerate(pieces):
                     done = index == len(pieces) - 1
                     self.wfile.write(json.dumps({"message": {"role": "assistant", "content": piece},
-                                                 "done": done}).encode() + b"\n")
+                                                 "done": done, **((final or {}) if done else {})}).encode() + b"\n")
                     self.wfile.flush()
 
             def log_message(self, *args):
@@ -71,6 +71,29 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(instruct, qwen)
         self.assertEqual((phi["temperature"], "presence_penalty" in phi), (0.4, False))
         self.assertEqual({qwen["num_ctx"], phi["num_ctx"]}, {4096})
+
+    def test_the_final_chunk_s_own_timings_come_back_with_the_answer(self):
+        prompt = policy.compile_prompt(Companion(turn=Turn("r1", "reachy", "active", "Hi")), "reachy", MANIFEST)
+        final = {"total_duration": 1_800_000_000, "load_duration": 12_400_000, "prompt_eval_count": 2337,
+                 "prompt_eval_duration": 450_200_000, "eval_count": 36, "eval_duration": 1_216_800_000}
+        fake = FakeOllama(['{"reply": "Hi"}', ""], final=final)
+        self.addCleanup(fake.close)
+        raw = provider(fake.url, "qwen3:4b-instruct")(prompt, lambda piece: None)
+        self.assertEqual((raw, raw.timing), ('{"reply": "Hi"}', {"prompt_tokens": 2337, "prefill_ms": 450,
+                                                               "gen_tokens": 36, "decode_ms": 1217, "load_ms": 12}))
+        plain = FakeOllama(['{"reply": "Hi"}'])
+        self.addCleanup(plain.close)
+        self.assertIsNone(provider(plain.url, "qwen3:4b-instruct")(prompt, lambda piece: None).timing)
+
+    def test_a_warm_call_asks_for_one_token_with_the_same_options_and_keep_alive(self):
+        fake = FakeOllama(['{"reply": "Hi"}'])
+        self.addCleanup(fake.close)
+        prompt = policy.compile_prompt(Companion(), "reachy", MANIFEST)
+        provider(fake.url, "qwen3:4b-instruct")(prompt, lambda piece: None)
+        provider(fake.url, "qwen3:4b-instruct", num_predict=1)(prompt, lambda piece: None)
+        (_, real), (_, warm) = fake.requests
+        self.assertEqual(warm["options"], {**real["options"], "num_predict": 1})
+        self.assertEqual({k: v for k, v in warm.items() if k != "options"}, {k: v for k, v in real.items() if k != "options"})
 
     def test_an_ollama_error_fails_the_decision(self):
         fake = FakeOllama([], status=404)

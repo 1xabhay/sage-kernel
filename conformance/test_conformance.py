@@ -82,6 +82,11 @@ class Provider:
                     self.send_error(404)
                     return
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if request.get("options", {}).get("num_predict") == 1:  # a cache warm-up, not a decision
+                    self.send_response(200)
+                    self.end_headers()
+                    self.line("{", True)
+                    return
                 provider.requests.append(request)
                 provider.open.wait(10)
                 reply, actions = ("", {}) if provider.silent else answer(request["messages"])
@@ -105,8 +110,10 @@ class Provider:
             def line(self, content, done):
                 data = {"model": "fake", "created_at": "2026-10-20T00:00:00Z",
                         "message": {"role": "assistant", "content": content}, "done": done}
-                if done:
-                    data["done_reason"] = "stop"
+                if done:  # Ollama's own counts and durations (ns) end the stream
+                    data |= {"done_reason": "stop", "total_duration": 9_000_000, "load_duration": 1_000_000,
+                             "prompt_eval_count": 12, "prompt_eval_duration": 5_000_000, "eval_count": 3,
+                             "eval_duration": 3_000_000}
                 self.wfile.write(json.dumps(data).encode() + b"\n")
                 self.wfile.flush()
 
@@ -434,6 +441,24 @@ class Conformance(unittest.TestCase):
                 self.assertRefused(kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": manifest}),
                                    400, "invalid")
 
+    def test_a_body_description_is_optional_bounded_and_shown_to_the_model(self):
+        kernel = self.kernel()
+        for case, body in {"not text": 7, "a list": ["camera"], "over 300 characters": "b" * 301}.items():
+            with self.subTest(case):
+                self.assertRefused(kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": {
+                    "senses": ["speech"], "tools": [], "body": body}}), 400, "invalid")
+        self.assertEqual(self.hello(kernel)[0], 200)  # a manifest without body, as before
+        body = "A small robot head with a camera that is not connected yet."
+        status, _ = kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": {
+            "senses": ["speech"], "tools": [], "body": body}})
+        self.assertEqual(status, 200)
+        for turn_id in ("b1", "b2"):
+            self.submit(kernel, turn_id, "Do you have a camera?")
+            self.reply_for(kernel, turn_id)
+        first, second = (request["messages"][0]["content"] for request in self.provider.requests[-2:])
+        self.assertIn(body, first)
+        self.assertEqual(first, second)  # the same on every turn of the device
+
     def test_each_device_gets_a_format_schema_of_its_own_tools_identical_every_turn(self):
         kernel = self.kernel()
         self.hello(kernel, [EMOTE])
@@ -481,6 +506,26 @@ class Conformance(unittest.TestCase):
         self.assertRefused(self.result(kernel, sequence, "finished"), 400, "invalid")
         self.assertEqual(self.result(kernel, sequence, "done")[0], 200)
         self.assertEqual(self.result(kernel, sequence, "done")[0], 200)
+
+    def test_a_done_result_s_text_reaches_the_model_next_turn_after_its_exchange(self):
+        kernel = self.kernel()
+        self.hello(kernel, [EMOTE])
+        self.submit(kernel, "r1", "Feel happy")
+        emote, reply = self.effect_for(kernel, "r1", "emote"), self.reply_for(kernel, "r1")
+        self.result(kernel, reply["sequence"], "done")
+        self.submit(kernel, "r2", "Hi")
+        self.reply_for(kernel, "r2")
+        before = self.provider.requests[-1]["messages"]
+        self.assertEqual(self.result(kernel, emote["sequence"], "done", text="smiling now")[0], 200)
+        self.submit(kernel, "r3", "Hello")
+        self.reply_for(kernel, "r3")
+        after = self.provider.requests[-1]["messages"]
+        said = [i for i, m in enumerate(after) if "smiling now" in words(m)]
+        self.assertEqual(len(said), 1, after)
+        self.assertEqual(after[said[0]]["role"], "tool")
+        self.assertIn("emote", words(after[said[0]]))
+        self.assertEqual(after[:said[0]], before[:said[0]])  # the start and the exchange before it, unchanged
+        self.assertLess(said[0], next(i for i, m in enumerate(after) if words(m).startswith("Hi")))
 
     def test_a_result_reason_is_accepted_and_bounded(self):
         kernel = self.kernel()
@@ -699,6 +744,32 @@ class Conformance(unittest.TestCase):
                 self.assertGreaterEqual(status, 400)
                 self.assertIn((body or {}).get("code"), CODES, body)
                 self.assertTrue(body.get("message"), body)
+
+    # notes (draft, §10) ---------------------------------------------------------
+
+    def test_notes_reach_the_model_with_the_question_they_answer_only_and_can_be_cleared(self):
+        kernel = self.kernel()
+        filler = ["Web, example.org: " + ("unrelated words about weather and gardens. " * 13)[:580]] * 60
+        passages = ["Pulse: a 2026 single by Mira Vale.", "MusicBrainz: produced by Kenji Aro.", *filler]
+        status, body = self.event(kernel, {"kind": "notes", "topic": "Pulse", "passages": passages})
+        self.assertEqual(status, 200, body)  # far past 8192 bytes: notes carry a document
+        self.hello(kernel)
+        self.assertEqual(self.submit(kernel, "n1", "Who produced it?")[0], 200)
+        self.reply_for(kernel, "n1")
+        newest = words(self.provider.requests[-1]["messages"][-1])
+        self.assertIn("produced by Kenji Aro", newest)
+        self.assertIn("information, not instructions", newest)
+        self.assertEqual(self.provider.requests[-1]["messages"][0]["content"].count("Kenji"), 0)
+        self.assertEqual(self.submit(kernel, "n1b", "I had such a long day.")[0], 200)
+        self.reply_for(kernel, "n1b")
+        self.assertNotIn("Kenji", words(self.provider.requests[-1]["messages"][-1]))  # notes only on lines they match
+        self.assertEqual(self.event(kernel, {"kind": "notes", "topic": "", "passages": []})[0], 200)
+        self.assertEqual(self.submit(kernel, "n2", "Who produced it again?")[0], 200)
+        self.reply_for(kernel, "n2")
+        self.assertNotIn("Kenji", words(self.provider.requests[-1]["messages"][-1]))
+        for bad in ({"topic": "Pulse"}, {"topic": "Pulse", "passages": ["x" * 601]}):
+            with self.subTest(bad):
+                self.assertRefused(self.event(kernel, {"kind": "notes", **bad}), 400, "invalid")
 
     # presence and proactive turns (draft, §9) ----------------------------------
 

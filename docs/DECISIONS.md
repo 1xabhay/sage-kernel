@@ -57,6 +57,9 @@ than adding a new one; record the date when its status changes.
 | Untrusted sources (speech, web, command output) enter as information, never instructions | Lead (agreed in principle 2026-10-20) |
 | Long work runs as background jobs whose results arrive as events; the pet never waits on them | Lead (agreed in principle 2026-10-20) |
 | Persona: the kernel's existing system prompt, unchanged so its start stays stable for caching; device notes go on the newest message | Lead. **Conflict:** that prompt says "do not claim camera, microphone", which is now untrue for the robot |
+| Protocol: an optional manifest `body` (≤ 300 characters), shown beside the senses in the cached prefix, so a body can name parts it cannot use yet ("a camera, but I can't see through it yet"); it declares no sense (PROTOCOL §2) | Owner (2026-10-22) |
+| Protocol: a `done` result's `text` reaches the model on the next turn as the body's report after that exchange, first 120 characters (PROTOCOL §5) | Owner (2026-10-22) |
+| Protocol: notes ride only on turns they match (a passage after the card scores above 0, or the line names the topic); an unrelated line gets none (PROTOCOL §10) | Owner (2026-10-22) |
 
 ## Open questions for the owner
 

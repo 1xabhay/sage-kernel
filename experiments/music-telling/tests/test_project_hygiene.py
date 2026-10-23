@@ -8,7 +8,12 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.skipif(
+    not (ROOT / "Makefile").exists(), reason="checks the source tree, not the image"
+)
 
 
 def make_n(target: str) -> str:
@@ -39,7 +44,8 @@ def test_dockerfile_pinned_and_copies_src_before_install():
     assert ":latest" not in dockerfile
     assert "||" not in dockerfile  # no silent fallback that drops mood support
     for stage in dockerfile.split("FROM base AS ")[1:]:
-        assert stage.index("COPY src") < stage.index("uv sync"), stage
+        # The project itself is installed only after its source is copied in.
+        assert stage.index("COPY src") < stage.rindex("uv sync --locked"), stage
 
 
 def test_uv_is_locked_and_project_scoped():

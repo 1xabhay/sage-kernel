@@ -2,7 +2,9 @@
 # Everything runs through uv; `make setup` is the only prerequisite.
 
 UV      ?= uv
-PY      := $(UV) run
+# Always this project's own .venv, even when another venv is active (VIRTUAL_ENV).
+export UV_PROJECT_ENVIRONMENT := $(CURDIR)/.venv
+PY      := $(UV) run --locked --project $(CURDIR)
 THEME   ?= leaving home for the first time
 LENGTH  ?= 8
 POOL    ?= 40
@@ -11,19 +13,18 @@ MODEL   ?= qwen2.5:7b
 
 .DEFAULT_GOAL := help
 .PHONY: help setup setup-mood ollama tell doctor test lint fmt clean clean-cache \
-        docker-build tell-docker docker-shell up down logs tell-fast serve image-test
+        docker-build tell-docker docker-shell up down logs tell-fast serve image-test \
+        vuln secrets imports
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-setup: ## Create the uv venv and install the package (no mood models)
-	$(UV) venv
-	$(UV) pip install -e ".[dev]"
+setup: ## Create .venv from uv.lock (no mood models)
+	$(UV) sync --locked --project $(CURDIR)
 
 setup-mood: ## Install with Essentia mood models (heavier: TensorFlow)
-	$(UV) venv
-	$(UV) pip install -e ".[dev,mood]"
+	$(UV) sync --locked --project $(CURDIR) --extra mood
 
 ollama: ## Install Ollama and pull the local model (free, no API key)
 	@command -v ollama >/dev/null || brew install ollama
@@ -53,6 +54,16 @@ test: ## Run the test suite (no network, no API key needed)
 lint: ## Lint with ruff
 	$(PY) ruff check src tests
 
+vuln: ## Audit the locked dependencies for known vulnerabilities (pip-audit, needs the internet)
+	$(UV) export --locked --project $(CURDIR) --all-extras --no-emit-project --format requirements-txt -o .audit-requirements.txt -q
+	$(UV) tool run pip-audit@2.9.0 --strict --disable-pip -r .audit-requirements.txt; s=$$?; rm -f .audit-requirements.txt; exit $$s
+
+secrets: ## Scan the whole repo's history for secrets (root gitleaks target)
+	$(MAKE) -C ../.. secrets
+
+imports: ## Import boundaries
+	@echo "n/a: no boundary (a standalone CLI with one package)"
+
 fmt: ## Format with ruff
 	$(PY) ruff format src tests
 	$(PY) ruff check --fix src tests
@@ -73,14 +84,14 @@ docker-build: ## Build the image
 up: ## Run `doctor` in the container (compose)
 	docker compose run --rm music-telling doctor
 
-tell-docker: ## Build a story inside the container
-	docker compose run --rm music-telling tell "$(THEME)" --length $(LENGTH) --out /app/out/story.md
+tell-docker: ## Build a story inside the container (Markdown on stdout)
+	docker compose run --rm music-telling tell "$(THEME)" --length $(LENGTH)
 
 docker-shell: ## Interactive shell in the container
 	docker compose run --rm --entrypoint bash music-telling
 
-down: ## Stop and remove compose resources
-	docker compose down -v
+down: ## Stop and remove the containers (named volumes are kept)
+	docker compose down
 
 logs: ## Tail compose logs
 	docker compose logs -f

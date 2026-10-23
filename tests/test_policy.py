@@ -3,6 +3,7 @@
 import json
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from sage import manifest, policy
 from sage.policy import Companion, Refused
@@ -725,6 +726,42 @@ class NotesTests(unittest.TestCase):
         state, _ = answered(asked("Who produced it?", state=state))
         self.assertEqual(policy.compile_prompt(asked("Thanks.", turn_id="r2", state=state), "reachy",
                                                MANIFEST).context[0]["content"], "Who produced it?")
+
+
+# The voice app's manifest as it declares it (reachy_sage_voice kernel.manifest(moves, song=True), 59 emotes
+# described from the Pollen emotions library, 2026-10-22), plus the commands lane's body_plan.
+VOICE = json.loads((Path(__file__).parent / "voice_manifest.json").read_text())
+BODY_PLAN = {"name": "body_plan", "max_s": 60, "interruptible": True,
+             "description": "Move your head when asked: look or turn somewhere, search for the person, track "
+                            "them, stop. Steps run in order; a step may last until a face is found or it times out.",
+             "inputSchema": {"type": "object", "required": ["steps"], "properties": {"steps": {
+                 "type": "array", "minItems": 1, "maxItems": 4, "items": {
+                     "type": "object", "required": ["skill"], "additionalProperties": False, "properties": {
+                         "skill": {"enum": ["look", "turn", "search_face", "track_face", "stop", "listen"]},
+                         "arg": {"type": "string", "maxLength": 16},
+                         "until": {"enum": ["face_found", "timeout"]}}}}}}}
+NUM_CTX = 4096
+
+
+class Budget(unittest.TestCase):
+    # Over budget (2026-10-22): an owner decision, not a silent cut. See the K3 commit for the cheapest cut.
+    @unittest.expectedFailure
+    def test_the_worst_case_prompt_leaves_room_to_answer_in_the_context(self):
+        """num_ctx is 4096; under 3600 tokens leaves room for the answer. ponytail: chars/4, not the
+        model's tokenizer (qwen3 runs ~3.5-4 chars a token on English); measure with Ollama if it gets close."""
+        declared = manifest.check_manifest({**VOICE, "tools": VOICE["tools"] + [BODY_PLAN], "body": "b" * 300})
+        state = noted(passages=tuple(f"{i} " + "x" * (policy.MAX_PASSAGE - 2) for i in range(10)))[0]
+        line, answer = "y" * 160, output("z" * manifest.MAX_REPLY, emote={"name": "enthusiastic2"})
+        for index in range(policy.WINDOW):
+            state = asked(line, turn_id=f"r{index}", state=state)
+            prompt = policy.compile_prompt(state, "reachy", declared)
+            state = policy.decided(state, f"r{index}", prompt, answer, declared["tools"], 10, 1.0)[0]
+        self.assertEqual(len(state.exchanges), policy.WINDOW)
+        prompt = policy.compile_prompt(asked(line + " 1 2 3", turn_id="r9", state=state), "reachy", declared)
+        self.assertEqual(sum(p in prompt.context[-1]["content"] for p in state.notes), 1 + policy.NOTES_SHOWN)
+        # The format is a grammar, not prompt text; each message costs a few tokens of chat template.
+        tokens = sum(len(m["content"]) for m in prompt.messages()) / 4 + 4 * len(prompt.messages())
+        self.assertLess(tokens, 3600, f"{tokens:.0f} estimated tokens")
 
 
 if __name__ == "__main__":

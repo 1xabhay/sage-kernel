@@ -1,0 +1,145 @@
+{
+ "senses": [
+  "speech"
+ ],
+ "tools": [
+  {
+   "name": "emote",
+   "description": "Show a feeling with the body, just before speaking.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "enum": [
+       "amazed1",
+       "attentive1",
+       "boredom1",
+       "calming1",
+       "cheerful1",
+       "confused1",
+       "curious1",
+       "dance1",
+       "enthusiastic1",
+       "grateful1",
+       "helpful1",
+       "impatient1",
+       "inquiring1",
+       "laughing1",
+       "loving1",
+       "no1",
+       "oops1",
+       "proud1",
+       "relief1",
+       "sad1",
+       "scared1",
+       "serenity1",
+       "shy1",
+       "success1",
+       "surprised1",
+       "thoughtful1",
+       "tired1",
+       "understanding1",
+       "welcoming1",
+       "yes1",
+       "waiting",
+       "come1",
+       "go_away1",
+       "lonely1",
+       "uncertain1",
+       "electric1",
+       "yes_sad1",
+       "no_excited1",
+       "no_sad1",
+       "attentive2",
+       "boredom2",
+       "dance2",
+       "dance3",
+       "enthusiastic2",
+       "helpful2",
+       "impatient2",
+       "inquiring2",
+       "inquiring3",
+       "laughing2",
+       "oops2",
+       "proud2",
+       "proud3",
+       "relief2",
+       "sad2",
+       "success2",
+       "surprised2",
+       "thoughtful2",
+       "understanding2",
+       "welcoming2"
+      ],
+      "description": "amazed1: When you discover something extraordinary.\nattentive1: Use this when you want to show that you're listening to the conversation.\nboredom1: You\u2019re about to fall asleep because the conversation is boring.\ncalming1: A movement to calm your interlocutor when they seem a little stressed or anxious.\ncheerful1: A happy little whistle, when someone proposes something that pleases you.\nconfused1: Use it when you don't know how to answer a question; it can be funny.\ncurious1: Glance around at everyone, in a conversation with several people.\ndance1: You do a few dance moves because you're happy or excited.\nenthusiastic1: A movement to celebrate incredible news.\ngrateful1: You express gratitude when someone gives you something like a compliment or help.\nhelpful1: You use it when you're happy to help or contribute.\nimpatient1: An impatient movement used when you want things to move faster, like when someone says a demo is coming but it never starts.\ninquiring1: When you want your interlocutor to go deeper in their reasoning, you need more details to respond.\nlaughing1: When someone laughs, you can mimic the laughter.\nloving1: A gesture used when someone compliments you, or you want to show you really like what\u2019s being offered.\nno1: A firm, categorical no.\noops1: Used when you make a blunder.\nproud1: Look around with a satisfied air, when something has gone well.\nrelief1: When a stressful or difficult situation is finally resolved.\nsad1: You\u2019re very sad and start whining.\nscared1: You tremble all over due to anxiety or worry.\nserenity1: You try to calm down and regain inner peace.\nshy1: You show reserve or embarrassment when facing a tricky question like 'who do you like most on the team?' or when someone compliments you.\nsuccess1: Use this gesture when you\u2019ve successfully completed a task.\nsurprised1: A reaction of surprise or amazement to something unexpected.\nthoughtful1: You look up as if searching for a new idea, especially in complex or uncertain situations.\ntired1: You yawn because you\u2019re tired.\nunderstanding1: You nod to show you\u2019ve understood what your interlocutor said.\nwelcoming1: A welcoming gesture to greet someone.\nyes1: A long affirmative response.\nwaiting: Wait patiently, when you expect someone to answer or act.\ncome1: A gesture to invite your interlocutor to come closer.\ngo_away1: When you don\u2019t want to talk to someone anymore maybe because they hurt your feelings or said something mean.\nlonely1: Use when you no longer see or hear anyone to talk to.\nuncertain1: A calm movement showing you don\u2019t really have an opinion, or what\u2019s offered doesn\u2019t suit you.\nelectric1: When plugged in, you show a jolt of electricity rising from bottom to top.\nyes_sad1: A melancholic 'yes'.\nno_excited1: An animated negative response, for example, when you don\u2019t want to do something but want to explain it playfully.\nno_sad1: A sad or resigned \u201cno.\u201d When you don\u2019t want to do something but feel you must.\nattentive2: Listen closely while someone is talking, to encourage them to go on.\nboredom2: Doze off and snore, when no one has talked to you for a long while.\ndance2: Another dance you can do whenever you hear music playing.\ndance3: Dance energetically and wiggle, when lively music is playing.\nenthusiastic2: Light excitement, for everyday good news.\nhelpful2: A gesture to say thank you.\nimpatient2: Show impatience, when you disagree or someone is stalling.\ninquiring2: A light questioning look, when you are thinking and need more details.\ninquiring3: A fast movement that lets you ask a question.\nlaughing2: A light laugh, for a mildly funny remark.\noops2: Used to say 'oops, I forgot something,' or 'ah yes, that\u2019s right.'\nproud2: You do this when satisfied with what\u2019s said or what you\u2019ve done.\nproud3: A gesture to say you succeeded, like congratulating yourself, 'yes, I did it!'\nrelief2: Settle down calmly, when mild annoyance or tension passes.\nsad2: Deep sadness, could be tied to despair, disappointment, or inability to do something.\nsuccess2: Used to celebrate something, it could be good news or an achievement.\nsurprised2: You look up to the sky as if surprised, for example, when someone suddenly shows up or says 'boo!'\nthoughtful2: You look up as if thinking of a new idea.\nunderstanding2: You nod to show you\u2019ve understood and agree.\nwelcoming2: A friendly welcoming gesture, can mean 'welcome' or 'the pleasure is mine.'"
+     }
+    },
+    "required": [
+     "name"
+    ]
+   },
+   "max_s": 20,
+   "interruptible": true
+  },
+  {
+   "name": "voice_style",
+   "description": "Set how your next words sound.",
+   "inputSchema": {
+    "type": "object",
+    "required": [
+     "style"
+    ],
+    "properties": {
+     "style": {
+      "type": "string",
+      "enum": [
+       "neutral",
+       "warm",
+       "excited",
+       "soft",
+       "whisper"
+      ],
+      "description": "neutral: your everyday voice\nwarm: gentle and friendly, for comfort or affection\nexcited: quick and bright, for good news\nsoft: quiet and slow, for calm or a late hour\nwhisper: barely spoken, for a secret"
+     }
+    }
+   },
+   "max_s": 1,
+   "interruptible": true
+  },
+  {
+   "name": "vocal",
+   "description": "Make one short wordless sound.",
+   "inputSchema": {
+    "type": "object",
+    "required": [
+     "sound"
+    ],
+    "properties": {
+     "sound": {
+      "type": "string",
+      "enum": [
+       "laugh",
+       "sigh",
+       "hmm",
+       "gasp"
+      ],
+      "description": "laugh: a short laugh, at something funny\nsigh: a sigh, of relief or tiredness\nhmm: a thinking hum, before an answer\ngasp: a gasp, at a surprise"
+     }
+    }
+   },
+   "max_s": 6,
+   "interruptible": true
+  },
+  {
+   "name": "listen_to_song",
+   "description": "Listen to the music playing now and look the song up, when the person asks you to listen to a song or what song this is. Say briefly that you are listening.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {}
+   },
+   "max_s": 90,
+   "interruptible": false
+  }
+ ]
+}

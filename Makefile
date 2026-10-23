@@ -10,7 +10,7 @@ LANE := $(if $(LINKED),$(notdir $(CURDIR)),main)
 MAIN_ONLY = @[ -z "$(LINKED)" ] || { echo "make $@: the live kernel runs only from the main checkout, not lane $(LANE)." >&2; exit 1; }
 # Tests use their own compose project, never the live one: see compose.test.yaml.
 TEST := LANE=$(LANE) docker compose -p sage-kernel-test-$(LANE) -f compose.test.yaml
-.PHONY: hooks up down test check unit conformance eval lint vuln secrets hygiene
+.PHONY: hooks up down test check unit conformance eval source lint vuln secrets hygiene
 
 # Tracked git hooks: the push guard and the red/green commit gate (.githooks/).
 hooks:
@@ -49,6 +49,11 @@ eval:
 	$(TEST) run --build --rm -e SAGE_EVAL_MODEL_URL=http://host.docker.internal:11434 -e SAGE_MODEL conformance \
 	  python -m unittest discover -s evals -v
 
+# Source-tree checks on the host (sealed containers, ignore files, hooks, no machine names, the core's
+# imports); they need the checkout, so they skip inside the image.
+source:
+	$(PYTHON) -m unittest tests.test_deploy tests.test_boundary
+
 # The code is streamed in, never mounted: the Colima VM cannot see this folder.
 lint:
 	COPYFILE_DISABLE=1 tar -c $(SOURCES) | docker run --rm -i --network none --read-only --tmpfs /tmp $(RUFF_IMAGE) \
@@ -67,4 +72,5 @@ secrets:
 	  && cd /tmp/repo && git fetch -q /tmp/all.bundle "+refs/*:refs/*" && rm /tmp/all.bundle \
 	  && gitleaks git --redact --no-banner .'
 
-hygiene: lint vuln secrets test
+# What CI runs.
+hygiene: source lint vuln secrets test

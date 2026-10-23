@@ -90,6 +90,16 @@ the longest the body may take to perform it (no `max_s`, no timeout), and
 `invalid`. Replies are not a tool: every device receives the replies to its
 own turns.
 
+**Body.** A manifest may also carry `body`, the body's own description in at
+most 300 characters: its parts, including any it cannot use yet, such as a
+camera not connected (`"body": "A Reachy Mini: a head that turns, two
+antennas, a speaker, microphones, and a camera that is not connected yet."`).
+Anything but text of at most 300 characters is `invalid`; without `body` a
+manifest works as before. The kernel shows it to the model beside the senses,
+the same on every turn of that device, as information about the body. It
+declares no sense: a sense the manifest does not list is still one the body
+lacks, and the model may say it has the part but cannot use it yet.
+
 Each device's turns offer exactly that device's manifest tools, identical on
 every turn of that device, so the start of the prompt never changes and stays
 cacheable. A tool call the turn's device did not declare is never delivered;
@@ -118,6 +128,8 @@ needs explicit approval.
 not native tool calls (bench: 24/24 valid against 0–7/24).
 **Decided (lead):** failed or unavailable tool calls reach the model as
 tool errors on the next turn. `max_s` is optional.
+**Decided (owner, 2026-10-22):** an optional `body` of at most 300 characters,
+shown beside the senses, so a body can name parts it cannot use yet.
 
 ## 3. Events
 

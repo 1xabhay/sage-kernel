@@ -10,6 +10,7 @@ MAX_TOOLS = 64
 SENSES = {"vision": "see", "speech": "hear", "touch": "feel touch"}
 MAX_REPLY = 160  # characters: one or two short spoken sentences, enforced by the decoder
 MAX_FACT = 120  # characters of one remembered fact
+MAX_BODY = 300  # characters of a body's own description: its parts, including ones it cannot use yet
 # The kernel's own answer fields, after the device's tools; a device tool of the same name is the device's.
 MEMORY = {"remember": {"type": "string", "maxLength": MAX_FACT}, "forget": {"type": "string", "maxLength": MAX_FACT}}
 TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
@@ -26,6 +27,8 @@ def check_manifest(manifest) -> dict:
     senses, tools = manifest.get("senses", []), manifest.get("tools", [])
     if not isinstance(senses, list) or not all(isinstance(sense, str) for sense in senses):
         raise ValueError("manifest.senses must be a list of names")
+    if "body" in manifest and not (isinstance(manifest["body"], str) and len(manifest["body"]) <= MAX_BODY):
+        raise ValueError(f"manifest.body must be text of at most {MAX_BODY} characters")
     if not isinstance(tools, list) or len(tools) > MAX_TOOLS:
         raise ValueError(f"manifest.tools must be a list of at most {MAX_TOOLS} tools")
     names = set()
@@ -46,7 +49,8 @@ def check_manifest(manifest) -> dict:
             raise ValueError(f"Tool {name}: interruptible must be true or false")
     return {"senses": tuple(senses),
             "tools": tuple({key: tool[key] for key in ("name", "description", "inputSchema", "max_s", "interruptible")
-                            if key in tool} for tool in tools)}
+                            if key in tool} for tool in tools),
+            **({"body": manifest["body"]} if "body" in manifest else {})}
 
 
 def format_schema(tools) -> dict:
@@ -59,13 +63,17 @@ def format_schema(tools) -> dict:
 
 
 def describe(device: str, manifest: dict) -> str:
-    """The body a turn comes from, for the newest message: its senses and its tools as declared."""
+    """The body a turn comes from, for the system message: its description, senses and tools as declared."""
     tools = "; ".join(f"{tool['name']}: {tool.get('description') or 'no description'} "
                       f"Input: {json.dumps(tool['inputSchema'])}" for tool in manifest["tools"]) or "none"
     missing = [verb for sense, verb in SENSES.items() if sense not in manifest["senses"]]
-    cannot = (f" This body cannot {', '.join(missing[:-1])}{' or ' if len(missing) > 1 else ''}{missing[-1]}; "
-              "if asked, say so." if missing else "")
-    return (f'[Body "{device}". Senses: {", ".join(manifest["senses"]) or "none"}.{cannot} '
+    verbs = f"{', '.join(missing[:-1])}{' or ' if len(missing) > 1 else ''}{missing[-1]}" if missing else ""
+    body = manifest.get("body")
+    # With a description, a part it cannot use yet (a camera not connected) is named, not denied (owner, 2026-10-22).
+    cannot = ("" if not missing else f" Whatever its parts, it cannot {verbs} yet; if asked, say what it has and "
+              "what it cannot do yet." if body else f" This body cannot {verbs}; if asked, say so.")
+    described = f", described by its maker: {json.dumps(body, ensure_ascii=False)}" if body else "."
+    return (f'[Body "{device}"{described} Senses: {", ".join(manifest["senses"]) or "none"}.{cannot} '
             f"Tools, to add to your answer only when one helps: {tools}.]")
 
 

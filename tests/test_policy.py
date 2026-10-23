@@ -218,6 +218,21 @@ class Results(unittest.TestCase):
         self.assertEqual(body_notes(state), [])
         self.assertEqual(body_notes(self.state), [])  # nor those still running
 
+    def test_what_a_done_action_reports_reaches_the_model_after_its_exchange(self):
+        """A body_plan done "tracking you": the model knows what its body is doing (owner, 2026-10-22)."""
+        state, _ = self.report(self.reply, "done")
+        before = policy.compile_prompt(asked("Look at me", turn_id="r2", state=state), "reachy", MANIFEST).context
+        state, _ = self.report(self.emote, "done", "  tracking\nyou  ", state=state)
+        after = policy.compile_prompt(asked("Look at me", turn_id="r2", state=state), "reachy", MANIFEST).context
+        self.assertEqual(after[:2], before[:2])  # the exchange before it, byte for byte
+        self.assertEqual(after[2], {"role": "tool", "content": "(your reachy body: emote done: tracking you)"})
+        self.assertEqual(after[3:], before[2:])
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        long, _ = self.report(self.emote, "done", "x" * 4000, state=state)
+        self.assertEqual(body_notes(long), [f"(your reachy body: emote done: {'x' * policy.DONE_TEXT})"])
+        failed, _ = self.report(self.emote, "failed", "stuck")
+        self.assertEqual(body_notes(failed), ["(your reachy body could not do emote: stuck)"])  # as before
+
     def test_a_reply_with_no_result_times_out_30_s_after_it_was_delivered(self):
         state, rows = policy.sweep(self.state, 100.0 + 30.01)
         self.assertEqual(state.open, ())

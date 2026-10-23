@@ -500,6 +500,26 @@ class Conformance(unittest.TestCase):
         self.assertEqual(self.result(kernel, sequence, "done")[0], 200)
         self.assertEqual(self.result(kernel, sequence, "done")[0], 200)
 
+    def test_a_done_result_s_text_reaches_the_model_next_turn_after_its_exchange(self):
+        kernel = self.kernel()
+        self.hello(kernel, [EMOTE])
+        self.submit(kernel, "r1", "Feel happy")
+        emote, reply = self.effect_for(kernel, "r1", "emote"), self.reply_for(kernel, "r1")
+        self.result(kernel, reply["sequence"], "done")
+        self.submit(kernel, "r2", "Hi")
+        self.reply_for(kernel, "r2")
+        before = self.provider.requests[-1]["messages"]
+        self.assertEqual(self.result(kernel, emote["sequence"], "done", text="smiling now")[0], 200)
+        self.submit(kernel, "r3", "Hello")
+        self.reply_for(kernel, "r3")
+        after = self.provider.requests[-1]["messages"]
+        said = [i for i, m in enumerate(after) if "smiling now" in words(m)]
+        self.assertEqual(len(said), 1, after)
+        self.assertEqual(after[said[0]]["role"], "tool")
+        self.assertIn("emote", words(after[said[0]]))
+        self.assertEqual(after[:said[0]], before[:said[0]])  # the start and the exchange before it, unchanged
+        self.assertLess(said[0], [i for i, m in enumerate(after) if words(m).startswith("Hi")][0])
+
     def test_a_result_reason_is_accepted_and_bounded(self):
         kernel = self.kernel()
         sequences = []

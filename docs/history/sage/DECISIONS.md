@@ -29,7 +29,7 @@ than adding a new one; record the date when its status changes.
 | Model call | non-streaming, ≤ 256 output tokens, 30 s timeout | Lead (inherited) |
 | Context window | last 10 exchanges | Lead (inherited); slice 6 adds memory tiers |
 | Mic deaf after speaking | 1.0 s (`REACHY_PET_TAIL_GATE`); barge-in off | Lead |
-| Robot address | fixed IP 192.168.1.213 in `REACHY_MINI_HOST` | Lead; router reservation is an owner action |
+| Robot address | a fixed LAN IP in `REACHY_MINI_HOST` | Lead; router reservation is an owner action |
 
 ## Architecture
 

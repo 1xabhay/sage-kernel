@@ -27,7 +27,7 @@ sense, one new effect, or one new rule, never new plumbing.
 
 ## Owner actions (no code)
 
-1. Router: reserve 192.168.1.212 for the Mac and 192.168.1.213 for the robot
+1. Router: reserve fixed LAN addresses for the Mac and the robot
    (`88:a2:9e:e6:76:7a`). Then ask to persist the robot firewall rule.
 2. Review and merge `sage-light-client` in reachy-mini (pet-side client, echo fix).
 3. Decide: regenerate the gateway `requirements.lock` (8 pillow advisories,

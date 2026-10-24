@@ -39,8 +39,9 @@ the owner's 12 command-like lines from 2026-10-23 (the lines stay local; ids onl
 
 - **Every model talks instead of acting.** Not a JSON problem (`format` holds: 0 malformed in 205 answers).
   The misses are pure talk that narrates the action: "Okay!", "Got it!", "Searching... found you!", "Turning
-  around to look for you...". No model chose a wrong skill on a fixture command; the few plans were wrong in
-  args (`turn left, turn right` for "turn around", `track_face` for "look at me").
+  around to look for you...". The one hit for `qwen2.5:7b` and `llama3.1:8b` is "Search for me, then track
+  me." (llama's args: `"Lena"`, the prompt example's name); the other plans were wrong (`turn left, turn right`
+  for "turn around", `track_face` for "look at me", `turn 180` + `look around`, `turn left` for "Look left.").
 - **History decides it.** In one session the first command sets the pattern: the fixture session opens with
   "Look left." (marked `(may be misheard)`: 4 words or fewer) and gets "Huh? You want me to look left?", and
   every later command copies the no-plan answer. The owner session's first line got a plan and the same model

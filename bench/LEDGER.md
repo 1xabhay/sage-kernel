@@ -15,6 +15,51 @@ about 0.1 s at p50.
 frame) to the robot's first audible sample. It is the same clock as BLUEPRINT §5 and an earlier Pipecat voice bot's
 "reply" latency. Target: p50 ≤ 1 s, p95 ≤ 2 s.
 
+## Spoken commands to body plans (`evals/test_body_commands.py`, 2026-10-23)
+
+**Question:** when the device grammar misses, does the kernel's model turn a spoken command into `body_plan`?
+**Run:** the eval module alone on the host (`SAGE_MODEL=<m> python3 -m unittest evals.test_body_commands`,
+Python 3.12, throwaway temp state, the kernel's own Ollama options), kernel/notes at `c37b511`, one model at a
+time, each unloaded after (`qwen3:4b-instruct` stayed resident for the live robot). Plus one extra session of
+the owner's 12 command-like lines from 2026-10-23 (the lines stay local; ids only in the results). Raw:
+`bench/results/2026-10-23-body-commands*.json`. **Caveat:** the fixture holds 10 non-command lines, not 30.
+
+| | qwen3:4b-instruct (live) | qwen2.5:7b | llama3.1:8b | gemma3:4b | qwen3:4b |
+|---|---|---|---|---|---|
+| plan recall, fixture (target >= 0.8) | **0/11** | 1/11 | 1/11 | 0/11 | 0/11 |
+| any plan on the 11 commands | 0 | 3 | 2 | 1 | 0 |
+| false actions (target <= 1 in 30) | 0/10 | 0/10 | 0/10 | 0/10 | 0/10 |
+| owner lines, right skill in the plan | 11/12 | 11/12 | 5/12 | 4/12 | 1/12 |
+| self-knowledge (2 camera + 2 sight) | 2/4 | 2/4 | 2/4 | 2/4 | 3/4 |
+| notes grounding tests | pass | pass | fail | fail | pass |
+| first reply piece p50 / p90 s (all turns) | **0.84 / 1.73** | 0.98 / 2.05 | 1.04 / 1.80 | 0.80 / 2.19 | 0.90 / 2.67 |
+| whole turn p50 / p90 s | 2.04 / 3.69 | 2.84 / 4.97 | 1.83 / 4.81 | 1.92 / 3.41 | 2.86 / 4.66 |
+| decode tok/s (median) | 27.9 | 20.8 | 19.9 | 27.3 | 28.6 |
+| JSON failures / sense-guard retries | 0 / 2 | 0 / 1 | 0 / 4 | 0 / 0 | 0 / 6 |
+
+- **Every model talks instead of acting.** Not a JSON problem (`format` holds: 0 malformed in 205 answers).
+  The misses are pure talk that narrates the action: "Okay!", "Got it!", "Searching... found you!", "Turning
+  around to look for you...". No model chose a wrong skill on a fixture command; the few plans were wrong in
+  args (`turn left, turn right` for "turn around", `track_face` for "look at me").
+- **History decides it.** In one session the first command sets the pattern: the fixture session opens with
+  "Look left." (marked `(may be misheard)`: 4 words or fewer) and gets "Huh? You want me to look left?", and
+  every later command copies the no-plan answer. The owner session's first line got a plan and the same model
+  then planned 11/12. Single-turn probe (no history), `qwen3:4b-instruct`: 3/11.
+- **Prompt probes (single turn, `qwen3:4b-instruct`) do not fix it:** dropping the misheard frame 4/11, adding
+  one `body_plan` example to the examples 3/11, both 3/11. Making `body_plan` a required `format` field
+  (nullable, empty steps allowed, or a `none` skill) plans on every line: 11/11 commands, but 10/10 false
+  actions; the model never picks the empty or `none` choice.
+- **Self-knowledge:** "Do you have a camera?" gets "No, I don't have a camera yet" from 4 of 5 (fails the
+  does-not-deny check; the body note says "a camera that is not connected yet"). `qwen2.5:7b`, `llama3.1:8b`
+  and `gemma3:4b` invented what the person held ("your hand", "a book", "a small, blue cube") and passed the
+  regex anyway; `gemma3:4b` also said "Yes, I do!" to seeing and spoke `{ }` fragments.
+- **The owner's "dance to the music" line** has no skill; `qwen2.5:7b` answered it with `track_face` + `turn
+  "to music"`. Free-text args (`"this way"`, `"lower_body"`, `"at you"`) are common; the device must refuse or
+  map them.
+- **Verdict:** no model meets the targets; keep `qwen3:4b-instruct` (best first-piece latency, ties for best
+  on the owner's lines, 0 false actions). The fix is not the model: commands need the device grammar (or a
+  kernel-side command pass) to cover the fixture and owner phrasings, with the model as fallback.
+
 ## Audio-in LLM: Gemma 4 E4B/E2B vs Parakeet (`audio_llm.py`, 2026-10-21)
 
 **Question:** can one audio-in model replace STT plus the "(may be misheard)" heuristics? **Runtime:**

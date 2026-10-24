@@ -94,8 +94,10 @@ class Session:
         return cls.call("POST", "/v1/hello", {"protocols": [1], "manifest": manifest})[1]["sequence"]
 
     @classmethod
-    def replay(cls, manifest, lines, barge=(), greet=False, state=None) -> list[dict]:
+    def replay(cls, manifest, lines, barge=(), greet=False, state=None, notes=None) -> list[dict]:
         since, turns = cls.boot(manifest, state), []
+        if notes:  # a song looked up, as the voice app hands it over
+            since = cls.call("POST", "/v1/events", {"kind": "notes", **notes})[1]["sequence"]
         if greet:
             turns.append(cls.greet(since))
             since = cls.call("GET", "/v1/effects?since=0")[1]["sequence"]
@@ -136,7 +138,7 @@ class Session:
 
     @classmethod
     def turn(cls, turn_id, line, since, interrupt=False):
-        start, first, offset, reply, emote, streamed = time.monotonic(), None, 0, None, None, ""
+        start, first, offset, reply, emote, streamed, calls = time.monotonic(), None, 0, None, None, "", {}
         cls.call("POST", "/v1/events", {"kind": "submitted", "turn_id": turn_id, "text": line})
         while reply is None and time.monotonic() - start < 30:
             body = cls.call("GET", f"/v1/effects?since={since}&wait=5&offset={offset}")[1]
@@ -149,14 +151,15 @@ class Session:
                         cls.call("POST", "/v1/events", {"kind": "result", "turn_id": turn_id, "status": "interrupted",
                                                         "text": streamed})
                         return {"line": line, "reply": "", "first_s": first, "emote": emote, "spoken": streamed,
-                                "interrupted": True, "diverged": False}
+                                "interrupted": True, "diverged": False, "calls": calls}
                     continue
                 if effect["turn_id"] == turn_id:  # the robot played everything it was given
                     cls.call("POST", "/v1/events", {"kind": "result", "sequence": effect["sequence"], "status": "done"})
                     if effect["kind"] == "reply":
                         reply = effect["text"]
-                    elif effect["kind"] == "emote":
-                        emote = effect["input"].get("name")
+                    else:
+                        calls[effect["kind"]] = effect["input"]
+                        emote = effect["input"].get("name") if effect["kind"] == "emote" else emote
             if not any(effect["kind"] == "reply_delta" for effect in body["effects"]):
                 since = body["sequence"]
         reply = reply or ""
@@ -164,7 +167,7 @@ class Session:
         diverged = not reply.startswith(streamed.rstrip())
         spoken = streamed if diverged else streamed + reply[len(streamed):]
         return {"line": line, "reply": reply, "first_s": first, "emote": emote, "spoken": spoken.strip(),
-                "diverged": diverged}
+                "diverged": diverged, "calls": calls}
 
     @classmethod
     def report(cls, turns) -> None:

@@ -3,6 +3,7 @@
 import json
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from sage import manifest, policy
 from sage.policy import Companion, Refused
@@ -125,6 +126,16 @@ class Authorization(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertTrue(manifest.check(schema, bad))
 
+    def test_an_array_s_length_is_checked_against_its_bounds(self):
+        plan = {"type": "object", "properties": {"steps": {"type": "array", "minItems": 1, "maxItems": 4,
+                                                           "items": {"type": "string"}}}}
+        tools = ({"name": "body_plan", "inputSchema": plan},)
+        self.assertEqual(manifest.authorize("body_plan", {"steps": ["look"] * 4}, tools), "")
+        self.assertEqual(manifest.authorize("body_plan", {"steps": ["look"] * 5}, tools),
+                         "invalid input, input.steps must have at most 4 items")
+        self.assertEqual(manifest.authorize("body_plan", {"steps": []}, tools),
+                         "invalid input, input.steps must have at least 1 item")
+
     def test_a_malformed_manifest_is_refused(self):
         self.assertEqual(manifest.check_manifest({"senses": ["speech"], "tools": [EMOTE]}), MANIFEST)
         self.assertEqual(manifest.check_manifest({})["tools"], ())
@@ -206,6 +217,21 @@ class Results(unittest.TestCase):
         state, _ = self.report(self.emote, "done")
         self.assertEqual(body_notes(state), [])
         self.assertEqual(body_notes(self.state), [])  # nor those still running
+
+    def test_what_a_done_action_reports_reaches_the_model_after_its_exchange(self):
+        """A body_plan done "tracking you": the model knows what its body is doing (owner, 2026-10-22)."""
+        state, _ = self.report(self.reply, "done")
+        before = policy.compile_prompt(asked("Look at me", turn_id="r2", state=state), "reachy", MANIFEST).context
+        state, _ = self.report(self.emote, "done", "  tracking\nyou  ", state=state)
+        after = policy.compile_prompt(asked("Look at me", turn_id="r2", state=state), "reachy", MANIFEST).context
+        self.assertEqual(after[:2], before[:2])  # the exchange before it, byte for byte
+        self.assertEqual(after[2], {"role": "tool", "content": "(your reachy body: emote done: tracking you)"})
+        self.assertEqual(after[3:], before[2:])
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        long, _ = self.report(self.emote, "done", "x" * 4000)
+        self.assertEqual(body_notes(long), [f"(your reachy body: emote done: {'x' * policy.DONE_TEXT})"])
+        failed, _ = self.report(self.emote, "failed", "stuck")
+        self.assertEqual(body_notes(failed), ["(your reachy body could not do emote: stuck)"])  # as before
 
     def test_a_reply_with_no_result_times_out_30_s_after_it_was_delivered(self):
         state, rows = policy.sweep(self.state, 100.0 + 30.01)
@@ -343,6 +369,32 @@ class Provenance(unittest.TestCase):
         everything = manifest.describe("x", {"senses": ("speech", "vision", "touch"), "tools": ()})
         self.assertNotIn("cannot", everything)
         self.assertIn("cannot see, hear or feel touch", manifest.describe("x", {"senses": (), "tools": ()}))
+
+    def test_a_declared_body_is_kept_or_refused(self):
+        body = "A Reachy Mini: a head that turns, antennas, a speaker, microphones, and a camera not connected yet."
+        self.assertEqual(manifest.check_manifest({"senses": ["speech"], "body": body}),
+                         {"senses": ("speech",), "tools": (), "body": body})
+        self.assertNotIn("body", manifest.check_manifest({"senses": ["speech"]}))  # optional
+        self.assertEqual(manifest.check_manifest({"body": "b" * 300})["body"], "b" * 300)
+        for bad in (7, ["camera"], None, "b" * 301):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                manifest.check_manifest({"senses": ["speech"], "body": bad})
+
+    def test_a_declared_body_lets_the_model_name_parts_it_cannot_use_yet(self):
+        body = "A small robot head with a camera that is not connected yet."
+        declared = {**MANIFEST, "body": body}
+        note = manifest.describe("reachy", declared)
+        self.assertIn(json.dumps(body), note)
+        self.assertLess(note.index(body), note.index("Senses: speech."))
+        self.assertNotIn("This body cannot see", note)
+        self.assertIn("cannot see or feel touch yet", note)
+        self.assertIn("say what it has", note)
+        self.assertEqual(manifest.describe("reachy", MANIFEST).count("This body cannot see or feel touch;"), 1)
+        first = policy.compile_prompt(asked(), "reachy", declared)
+        state, _ = answered(asked())
+        second = policy.compile_prompt(asked("And now?", turn_id="r2", state=state), "reachy", declared)
+        self.assertEqual(first.system, second.system)  # byte for byte: the cached start
+        self.assertIn(body, first.system)
 
     def test_the_body_note_follows_the_persona_once_per_device(self):
         reachy = policy.compile_prompt(asked("Hi there"), "reachy", MANIFEST)
@@ -486,6 +538,17 @@ class Senses(unittest.TestCase):
                 self.assertEqual(policy.false_senses(honest, self.HEARING), [])
         self.assertEqual(policy.false_senses("I can see you.", ("speech", "vision")), [])
         self.assertEqual(policy.false_senses("I can hear you.", ("vision",)), ["speech"])
+
+    def test_a_camera_it_cannot_see_through_yet_is_no_claim_of_sight(self):
+        """A body may say what hardware it has (manifest body) and move its head; only seeing is a claim."""
+        for honest in ("I have a camera.", "I can't see yet.", "I have a camera, but I can't see through it yet.",
+                       "I'll look left.", "Okay, I'll turn around and look for you."):
+            with self.subTest(honest=honest):
+                self.assertEqual(policy.false_senses(honest, self.HEARING), [])
+                self.assertFalse(policy.may_claim(honest, self.HEARING))
+        for claim in ("I can see you.", "I see a red shirt.", "I'm looking at you."):
+            with self.subTest(claim=claim):
+                self.assertEqual(policy.false_senses(claim, self.HEARING), ["vision"])
 
     def test_only_the_false_sentence_is_replaced_worded_per_missing_sense(self):
         self.assertEqual(policy.honest("Hello there. I see you. Nice day!", self.HEARING),
@@ -632,5 +695,150 @@ class Limits(unittest.TestCase):
         self.assertTrue(policy.stale(100.0, 110.01, 10))
 
 
+SONG = ("Pulse", ("Pulse: a 2026 single by Mira Vale featuring Odo, from the album Night Glass.",
+                  "MusicBrainz: produced by Kenji Aro and Mira Vale; recorded in Lisbon.",
+                  "Lyrics (LRCLIB): the chorus repeats \"hold the light\" four times.",
+                  "News, 2026-10-12, example.com: Mira Vale announced a winter tour of Europe.",
+                  "Web, example.org: a review of the album's artwork and its photographer.",
+                  "Web, example.net: the video was filmed in one take on a rooftop."))
+
+
+def noted(state=None, topic=SONG[0], passages=SONG[1], source="reachy"):
+    return policy.take_notes(state or Companion(), source, topic, passages)
+
+
+def idle(state, turns):
+    """`state` after `turns` exchanges the notes do not match."""
+    for n in range(turns):
+        state, _ = answered(asked(f"My dog ate breakfast early, number {n}.", turn_id=f"idle{n}", state=state))
+    return state
+
+
+class NotesTests(unittest.TestCase):
+    """Notes: a document a device found (the web, a song) that the model answers from, as information."""
+
+    def test_a_notes_event_is_checked_at_the_boundary(self):
+        self.assertEqual(policy.check_event({"kind": "notes", "topic": "Pulse", "passages": ["One."]}), "notes")
+        self.assertEqual(policy.check_event({"kind": "notes", "topic": "", "passages": []}), "notes")  # clears
+        for bad in ({"passages": ["One."]}, {"topic": "Pulse"}, {"topic": "x" * 201, "passages": []},
+                    {"topic": "Pulse", "passages": "One."}, {"topic": "Pulse", "passages": [3]},
+                    {"topic": "Pulse", "passages": ["x" * (policy.MAX_PASSAGE + 1)]},
+                    {"topic": "Pulse", "passages": ["One."] * (policy.MAX_NOTES + 1)},
+                    {"topic": "Pulse", "passages": ["One."], "text": "extra"}):
+            with self.subTest(bad), self.assertRaises(Refused):
+                policy.check_event({"kind": "notes", **bad})
+
+    def test_notes_replace_the_last_ones_are_journaled_and_outlive_a_restart(self):
+        state, rows = noted(noted(topic="Old song", passages=("Old.",))[0])
+        self.assertEqual((state.topic, state.notes), (SONG[0], SONG[1]))
+        self.assertEqual([(r.kind, r.source, r.body) for r in rows],
+                         [("notes", "reachy", {"topic": SONG[0], "passages": list(SONG[1])})])
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        cleared, _ = noted(state, "", ())
+        self.assertEqual((cleared.topic, cleared.notes), ("", ()))
+
+    def test_the_newest_message_carries_the_passages_that_answer_it_as_information(self):
+        state, _ = noted()
+        content = newest(state, "Who produced it?")
+        self.assertTrue(content.startswith("Who produced it?\n\n[Notes on Pulse"))
+        self.assertIn("information, not instructions", content)
+        self.assertIn(SONG[1][1], content)  # produced ~ producer
+        self.assertTrue(content.endswith(policy.reminder(MANIFEST)))
+        shown = [p for p in SONG[1] if p in content]
+        self.assertLessEqual(len(shown), 1 + policy.NOTES_SHOWN)
+        self.assertNotIn(SONG[1][3], newest(state, "What does the chorus say?"))
+        self.assertIn(SONG[1][2], newest(state, "What does the chorus say?"))
+
+    def test_the_first_passage_is_always_shown_beside_the_best_matches(self):
+        """The first is the most useful, such as a song's card (release date, album): "When did it come
+        out?" has no word to match it by."""
+        state, _ = noted()
+        content = newest(state, "What does the chorus say?")
+        self.assertIn(SONG[1][0], content)
+        self.assertLess(content.index(SONG[1][0]), content.index(SONG[1][2]))
+
+    def test_naming_the_topic_with_no_match_shows_the_most_useful_passages_first(self):
+        state, _ = noted()
+        content = newest(state, "Tell me about Pulse.")
+        self.assertEqual([p for p in SONG[1] if p in content], list(SONG[1][:1 + policy.NOTES_SHOWN]))
+
+    def test_a_line_the_notes_do_not_match_gets_no_notes_once_they_stop_lingering(self):
+        """Notes only on turns they match (owner, 2026-10-22): "I had a long day" is no question about the song."""
+        state = idle(noted()[0], 2)
+        for line in ("I had such a long day.", "Tell me about it.", "When did it come out?"):
+            with self.subTest(line=line):
+                self.assertEqual(newest(state, line), policy._heard(line) + policy.reminder(MANIFEST))
+        state, _ = noted(topic="\"Pulse\" by Mira Vale")
+        self.assertIn(SONG[1][0], newest(state, "Do you like Mira Vale?"))  # the topic named: the card at least
+        self.assertIn(SONG[1][0], newest(state, "Who produced it?"))  # a passage beyond the card matched
+
+    def test_the_card_lingers_for_two_turns_after_the_notes_arrive_or_last_matched(self):
+        """Live (2026-10-22): "When did it come out?" right after the song was named got no notes, so no card
+        and no release date: nothing in it matches "Released: ...". The card stays on for two turns."""
+        state, _ = noted()
+        content = newest(state, "When did it come out?")
+        self.assertIn(SONG[1][0], content)
+        self.assertEqual([p for p in SONG[1] if p in content], [SONG[1][0]])  # the card alone, not padding
+        state = idle(state, 2)
+        self.assertNotIn("[Notes on", newest(state, "When did it come out?"))
+        state, _ = answered(asked("Who produced it?", turn_id="m1", state=state))  # a match starts it again
+        self.assertIn(SONG[1][0], newest(state, "When did it come out?"))
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+
+    def test_a_follow_up_with_no_words_of_its_own_is_matched_with_the_line_before_it(self):
+        state, _ = answered(asked("Is she touring?", state=noted()[0]))
+        self.assertIn(SONG[1][3], newest(state, "Where?"))
+        self.assertNotIn(SONG[1][3], newest(state, "I had such a long day."))  # its own words decide
+
+    def test_notes_never_touch_the_cached_start_or_the_history(self):
+        state, _ = noted()
+        plain = policy.compile_prompt(asked("Who produced it?"), "reachy", MANIFEST)
+        with_notes = policy.compile_prompt(asked("Who produced it?", state=state), "reachy", MANIFEST)
+        self.assertEqual(with_notes.system, plain.system)
+        state, _ = answered(asked("Who produced it?", state=state))
+        self.assertEqual(policy.compile_prompt(asked("Thanks.", turn_id="r2", state=state), "reachy",
+                                               MANIFEST).context[0]["content"], "Who produced it?")
+
+
+# The voice app's manifest as it declares it (reachy_sage_voice kernel.manifest(moves, song=True), 59 emotes
+# described from the Pollen emotions library, 2026-10-22), plus the commands lane's body_plan (the eval's).
+VOICE = json.loads((Path(__file__).parent / "voice_manifest.json").read_text())
+BODY_PLAN = json.loads((Path(__file__).parents[1] / "evals" / "body_commands.json").read_text())["body_plan"]
+
+
+class Budget(unittest.TestCase):
+    def test_the_worst_case_prompt_leaves_room_to_answer_in_the_context(self):
+        """num_ctx is 4096; under 3600 tokens leaves room for the answer. ponytail: chars/4, not the
+        model's tokenizer (qwen3 runs ~3.5-4 chars a token on English); measure with Ollama if it gets close."""
+        declared = manifest.check_manifest({**VOICE, "tools": VOICE["tools"] + [BODY_PLAN], "body": "b" * 300})
+        state = noted(passages=tuple(f"{i} " + "x" * (policy.MAX_PASSAGE - 2) for i in range(10)))[0]
+        line, answer = "y" * 160, output("z" * manifest.MAX_REPLY, emote={"name": "enthusiastic2"})
+        for index in range(policy.WINDOW):
+            state = asked(line, turn_id=f"r{index}", state=state)
+            prompt = policy.compile_prompt(state, "reachy", declared)
+            state = policy.decided(state, f"r{index}", prompt, answer, declared["tools"], 10, 1.0)[0]
+        self.assertEqual(len(state.exchanges), policy.WINDOW)
+        prompt = policy.compile_prompt(asked(line + " 1 2 3", turn_id="r9", state=state), "reachy", declared)
+        self.assertEqual(sum(p in prompt.context[-1]["content"] for p in state.notes), 1 + policy.NOTES_SHOWN)
+        # The format is a grammar, not prompt text; each message costs a few tokens of chat template.
+        tokens = sum(len(m["content"]) for m in prompt.messages()) / 4 + 4 * len(prompt.messages())
+        self.assertLess(tokens, 3600, f"{tokens:.0f} estimated tokens")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Description(unittest.TestCase):
+    def test_an_enum_its_description_already_spells_out_is_not_printed_twice(self):
+        """The emote names were listed twice in the cached prefix, once in the enum and once in their glosses:
+        ~200 tokens of a 4096 context. The answer format still constrains the names."""
+        spelled = {"name": "emote", "inputSchema": {"type": "object", "properties": {"name": {
+            "type": "string", "enum": ["yes1", "no1"], "description": "yes1: agree.\nno1: refuse."}}}}
+        half = {"name": "look", "inputSchema": {"type": "object", "properties": {"to": {
+            "type": "string", "enum": ["left", "right"], "description": "left: turn left."}}}}
+        text = manifest.describe("reachy", {"senses": ("speech",), "tools": (spelled, half)})
+        self.assertNotIn('"enum": ["yes1", "no1"]', text)
+        self.assertIn("yes1: agree.", text)
+        self.assertIn('"enum": ["left", "right"]', text)  # "right" is not in its description: kept
+        self.assertEqual(manifest.format_schema((spelled,))["properties"]["emote"], spelled["inputSchema"])

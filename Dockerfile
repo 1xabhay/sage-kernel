@@ -6,5 +6,6 @@ COPY sage ./sage
 COPY tests ./tests
 COPY conformance ./conformance
 COPY evals ./evals
+COPY bench/latency.py ./bench/latency.py
 USER 1000:1000
 CMD ["python", "-m", "sage"]

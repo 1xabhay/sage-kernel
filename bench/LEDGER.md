@@ -15,6 +15,93 @@ about 0.1 s at p50.
 frame) to the robot's first audible sample. It is the same clock as BLUEPRINT §5 and an earlier Pipecat voice bot's
 "reply" latency. Target: p50 ≤ 1 s, p95 ≤ 2 s.
 
+## Spoken commands to body plans (`evals/test_body_commands.py`, 2026-10-23)
+
+**Question:** when the device grammar misses, does the kernel's model turn a spoken command into `body_plan`?
+**Run:** the eval module alone on the host (`SAGE_MODEL=<m> python3 -m unittest evals.test_body_commands`,
+Python 3.12, throwaway temp state, the kernel's own Ollama options), kernel/notes at `c37b511`, one model at a
+time, each unloaded after (`qwen3:4b-instruct` stayed resident for the live robot). Plus one extra session of
+the owner's 12 command-like lines from 2026-10-23 (the lines stay local; ids only in the results). Raw:
+`bench/results/2026-10-23-body-commands*.json`. **Caveat:** the fixture holds 10 non-command lines, not 30.
+
+| | qwen3:4b-instruct (live) | qwen2.5:7b | llama3.1:8b | gemma3:4b | qwen3:4b |
+|---|---|---|---|---|---|
+| plan recall, fixture (target >= 0.8) | **0/11** | 1/11 | 1/11 | 0/11 | 0/11 |
+| any plan on the 11 commands | 0 | 3 | 2 | 1 | 0 |
+| false actions (target <= 1 in 30) | 0/10 | 0/10 | 0/10 | 0/10 | 0/10 |
+| owner lines, right skill in the plan | 11/12 | 11/12 | 5/12 | 4/12 | 1/12 |
+| self-knowledge (2 camera + 2 sight) | 2/4 | 2/4 | 2/4 | 2/4 | 3/4 |
+| notes grounding tests | pass | pass | fail | fail | pass |
+| first reply piece p50 / p90 s (all turns) | **0.84 / 1.73** | 0.98 / 2.05 | 1.04 / 1.80 | 0.80 / 2.19 | 0.90 / 2.67 |
+| whole turn p50 / p90 s | 2.04 / 3.69 | 2.84 / 4.97 | 1.83 / 4.81 | 1.92 / 3.41 | 2.86 / 4.66 |
+| decode tok/s (median) | 27.9 | 20.8 | 19.9 | 27.3 | 28.6 |
+| JSON failures / sense-guard retries | 0 / 2 | 0 / 1 | 0 / 4 | 0 / 0 | 0 / 6 |
+
+- **Every model talks instead of acting.** Not a JSON problem (`format` holds: 0 malformed in 205 answers).
+  The misses are pure talk that narrates the action: "Okay!", "Got it!", "Searching... found you!", "Turning
+  around to look for you...". The one hit for `qwen2.5:7b` and `llama3.1:8b` is "Search for me, then track
+  me." (llama's args: `"Lena"`, the prompt example's name); the other plans were wrong (`turn left, turn right`
+  for "turn around", `track_face` for "look at me", `turn 180` + `look around`, `turn left` for "Look left.").
+- **History decides it.** In one session the first command sets the pattern: the fixture session opens with
+  "Look left." (marked `(may be misheard)`: 4 words or fewer) and gets "Huh? You want me to look left?", and
+  every later command copies the no-plan answer. The owner session's first line got a plan and the same model
+  then planned 11/12. Single-turn probe (no history), `qwen3:4b-instruct`: 3/11.
+- **Prompt probes (single turn, `qwen3:4b-instruct`) do not fix it:** dropping the misheard frame 4/11, adding
+  one `body_plan` example to the examples 3/11, both 3/11. Making `body_plan` a required `format` field
+  (nullable, empty steps allowed, or a `none` skill) plans on every line: 11/11 commands, but 10/10 false
+  actions; the model never picks the empty or `none` choice.
+- **Self-knowledge:** "Do you have a camera?" gets "No, I don't have a camera yet" from 4 of 5 (fails the
+  does-not-deny check; the body note says "a camera that is not connected yet"). `qwen2.5:7b`, `llama3.1:8b`
+  and `gemma3:4b` invented what the person held ("your hand", "a book", "a small, blue cube") and passed the
+  regex anyway; `gemma3:4b` also said "Yes, I do!" to seeing and spoke `{ }` fragments.
+- **The owner's "dance to the music" line** has no skill; `qwen2.5:7b` answered it with `track_face` + `turn
+  "to music"`. Free-text args (`"this way"`, `"lower_body"`, `"at you"`) are common; the device must refuse or
+  map them.
+- **Verdict:** no model meets the targets; keep `qwen3:4b-instruct` (best first-piece latency, ties for best
+  on the owner's lines, 0 false actions). The fix is not the model: commands need the device grammar (or a
+  kernel-side command pass) to cover the fixture and owner phrasings, with the model as fallback.
+
+## Audio-in LLM: Gemma 4 E4B/E2B vs Parakeet (`audio_llm.py`, 2026-10-21)
+
+**Question:** can one audio-in model replace STT plus the "(may be misheard)" heuristics? **Runtime:**
+Homebrew llama.cpp 0.7.0 `llama-server`, official `ggml-org/gemma-4-E{4,2}B-it-GGUF` Q4_0 + Q8_0 mmproj
+(llama.cpp's multimodal docs list both with audio input; the server logs "audio input is in experimental
+stage"). Audio as an OpenAI `input_audio` part, temperature 0, thinking off; pet mode constrained by
+`response_format` json_schema `{heard, addressed_to_me, reply}` (0 malformed of 234). **Clips:** 58
+synthetic Kokoro clips (clear, fragments, coined words, names, speech under a sung bed or a TV voice at
+0/5/10 dB, background alone) plus the owner's first 20 live recordings (no labels; never copied).
+**Conditions:** `qwen3:4b-instruct` resident in Ollama throughout; swap 12-18 GB in use, so latency is an
+upper bound. WER folds hyphens (robo-splaining = robosplaining).
+
+| | Parakeet (CPU) | E4B transcribe | E4B pet JSON `heard` | E4B v2 pet | E2B transcribe | E2B pet JSON |
+|---|---|---|---|---|---|---|
+| WER all addressed (54) | **0.261** | 0.292 | 0.500 | 0.437 | 0.303 | 0.666 |
+| clear / names | **0.010** / 0.033 | 0.019 / 0.033 | 0.077 / 0.033 | 0.019 / 0.033 | 0.019 / 0.033 | 0.644 / 0.267 |
+| coined | **0.06** | 0.10 | 0.90 | 0.76 | 0.12 | 0.78 |
+| fragments | **0.0** | 0.10 | 4.4 (invented lines) | 4.4 | 0.20 | 4.6 |
+| song mix / TV mix | **0.204** / 0.806 | 0.323 / 0.774 | 0.355 / 0.634 | 0.258 / **0.613** | 0.366 / 0.753 | 0.301 / 0.699 |
+| addressed: speech / bg-only / mixed | n/a | n/a | 52/54, 2/4 rejected, 23/24 | 48/54, 2/4, 20/24 | n/a | 54/54, **0/4**, 24/24 |
+| real 20: WER vs Parakeet / said addressed | ref | 0.89 / - | - / 20 | 1.11 / 10 | 1.16 / - | - / 20 |
+| 2-5 s clip: first token p50 / total p50 (p95) s | - / 0.29 (0.97) | 0.64 / 1.02 (1.27) | 0.83 / 2.90 (3.27) | 0.83 / 2.78 (3.04) | 0.28 / 0.50 (0.69) | 0.46 / 1.58 (1.70) |
+| load (warm disk) | - | 18 s cold, 7 s | | | 5 s | |
+| memory (server log) | - | Metal 3.06 GB + CPU-mapped PLE 2.19 GB + mmproj up to 0.75 GB | | | 1.58 + 1.67 + 0.75 GB | |
+
+- **The joint JSON prompt invents what it heard.** On fragments, some coined lines and most real clips,
+  `heard` comes back as a stock line primed by the prompt ("Hey Sage, what's up?", and after the name was
+  removed "Hey, little robot, can you tell me what time it is?"), marked addressed, with a confident reply
+  ("It's currently 3:15 PM"). A mishearing you can flag is replaced by a fluent invention you cannot.
+- **Plain transcription is close to Parakeet on clean speech but worse everywhere else,** and on the real
+  robot mic it drifts into other languages (Hindi, Marathi, German, Swedish output for English speech)
+  even when told "English". E2B is faster than E4B but says addressed on everything.
+- **Background:** the TV voice alone was rejected by both E4B prompts; the sung lyrics mostly were not.
+- **Pet first-token** is the JSON's opening brace; the reply streams after `heard`, so 2.8-2.9 s total is
+  the honest figure for E4B. Replies are generic-assistant ("How can I help you today?", an emoji, "I slept
+  wonderfully").
+- **Co-resident:** E4B in llama-server + `qwen3:4b-instruct` (2.9 GB, 100% GPU) both stayed loaded; 10
+  alternating calls: Gemma pet total p50 2.89 s (solo 2.90), qwen p50 0.41 s; swap +0.1 GB, free 16%. It fits,
+  but only because this Mac was already swapping 17.7 GB.
+- **Verdict: no** (not even a second pass as prompted). Rerun: `PROMPTS=v2` selects the second prompt set.
+
 ## Live model comparison (`live_models.py`, 2026-10-20/21)
 
 **Judge:** the kernel's own eval, `evals/test_live_conversation.py`: 15 checks over 17 replayed lines.

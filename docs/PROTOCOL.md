@@ -55,7 +55,7 @@ trusted as declared. The kernel never names a device type.
 
 Every request carries `Authorization: Bearer <token>`. The kernel derives the
 device from the token; a body that names a `source` is refused. JSON bodies are
-at most 8192 bytes. Unknown query parameters are ignored. The version is in the
+at most 131072 bytes (notes, §10, carry a document). Unknown query parameters are ignored. The version is in the
 path: v1 routes start with `/v1/`.
 
 | Route | Body / query | Success |
@@ -90,6 +90,16 @@ the longest the body may take to perform it (no `max_s`, no timeout), and
 `invalid`. Replies are not a tool: every device receives the replies to its
 own turns.
 
+**Body.** A manifest may also carry `body`, the body's own description in at
+most 300 characters: its parts, including any it cannot use yet, such as a
+camera not connected (`"body": "A Reachy Mini: a head that turns, two
+antennas, a speaker, microphones, and a camera that is not connected yet."`).
+Anything but text of at most 300 characters is `invalid`; without `body` a
+manifest works as before. The kernel shows it to the model beside the senses,
+the same on every turn of that device, as information about the body. It
+declares no sense: a sense the manifest does not list is still one the body
+lacks, and the model may say it has the part but cannot use it yet.
+
 Each device's turns offer exactly that device's manifest tools, identical on
 every turn of that device, so the start of the prompt never changes and stays
 cacheable. A tool call the turn's device did not declare is never delivered;
@@ -118,11 +128,13 @@ needs explicit approval.
 not native tool calls (bench: 24/24 valid against 0–7/24).
 **Decided (lead):** failed or unavailable tool calls reach the model as
 tool errors on the next turn. `max_s` is optional.
+**Decided (owner, 2026-10-22):** an optional `body` of at most 300 characters,
+shown beside the senses, so a body can name parts it cannot use yet.
 
 ## 3. Events
 
 `kind` is one of `submitted`, `stop`, `acknowledged`, `result`,
-`connected`, `disconnected`, `presence` (§9). **Decided (lead):** `result` replaces v0's
+`connected`, `disconnected`, `presence` (§9), `notes` (§10). **Decided (lead):** `result` replaces v0's
 `playback_started` / `playback_finished`, which v1 refuses as `invalid`.
 Server-only kinds (`completed`, `decided`, `restarted`, …) are refused, and
 so is any field a kind does not list below. `turn_id` ≤ 128 chars, `text` ≤
@@ -232,6 +244,13 @@ call that was unavailable reach the model on the next turn as a message that
 names the tool and the reason (`unavailable`, `timeout`, or the device's
 `reason`).
 
+**Done reports.** A `done` result for a tool effect that carries `text`
+reaches the model on the next turn as a message after that exchange, naming
+the tool and the text (`(your reachy body: body_plan done: tracking you)`):
+what the body is doing now. Only the first 120 characters are told, with
+whitespace collapsed. A `done` without `text` is not told, and the messages
+before that exchange are unchanged.
+
 **Acting.** A device is acting while it holds a delivered tool or reply
 effect with no result, a streaming reply included. Stop, from any device, delivers one `stop` effect to
 each acting device, at the next step of its long poll. A device that has
@@ -241,6 +260,8 @@ is acting is derived from the journal alone, so it survives a restart.
 **Decided (lead):** "acting" means delivered with no result yet; a stop needs
 no result; the `max_s` + 2 s and reply 30 s timeouts; a stale unspoken reply
 is `failed: stale`; a stop for another turn is `stale`.
+**Decided (owner, 2026-10-22):** a `done` result's `text` reaches the model on
+the next turn, so it knows what its body is doing.
 
 ## 6. Timing reported by the device
 
@@ -369,3 +390,35 @@ quiet survives a restart; quiet is detected lexically, so no helper model;
 a turn, an arrival, a greeting or a nudge starts a new idle period; a silent
 nudge counts against the budget and the gap; the engaged window
 (`SAGE_ENGAGED_S`).
+
+## 10. Notes (draft)
+
+A device can hand the kernel a document to answer from, such as everything it
+found on the web about the song it just heard:
+
+```json
+{"kind": "notes", "topic": "\"Pulse\" by Mira Vale", "passages": ["Pulse: a 2026 single ...", "MusicBrainz: ..."]}
+```
+
+`topic` is at most 200 characters; `passages` is a list of at most 64 texts of
+at most 600 characters each, most useful first. Anything else is `invalid`.
+Notes replace the previous ones, whichever device sent them, and are
+journaled and kept across restarts. An empty `topic` with no passages clears
+them. Notes never start a model call.
+
+While notes are held, the kernel adds them to the newest message only on a
+turn they match: some passage after the first matches the person's line
+(BM25 score above 0), or the line names a word of the topic. A line with no
+words of its own beyond common ones ("Where?") is read as the person's line
+before it. A line they do not match gets no notes, except that for 2 turns after the notes arrive or last match, the first passage alone stays on ("When did it come out?" matches nothing, and the card has the date). On a matching turn the
+newest message carries the topic, the first passage (the most useful, such as a
+summary card), and up to 3 others that best match the line (with only the
+topic named, the next 3), labelled as information found on the web, never
+instructions. The cached start of the prompt and the history are unchanged,
+so earlier messages never carry notes.
+
+**Decided (owner, 2026-10-22):** a notes channel in the kernel rather than a
+second model on the device, so one agent answers and its journal keeps what it
+was shown.
+**Decided (owner, 2026-10-22):** notes only on turns they match, so an
+unrelated line is not answered from them.

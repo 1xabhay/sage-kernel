@@ -304,6 +304,22 @@ def test_flag_on_a_look_is_eased_by_the_runner_at_50_hz_to_the_clamped_target(mo
     assert mini.beyond == []
 
 
+def test_flag_on_a_plan_step_returns_once_its_end_target_is_written(monkeypatch):
+    # CI 2026-11-05: the step returned with its last target still on the robot's thread.
+    monkeypatch.setenv("SAGE_VOICE_ARBITER", "1")
+
+    class SlowLink(FakeMini):
+        def set_target(self, **kwargs):
+            time.sleep(0.05)
+            super().set_target(**kwargs)
+
+    mini = SlowLink()
+    mini.yaw = math.radians(150)
+    result = asyncio.run(make(mini).run(plan(turn(90))))
+    assert result.status == "done"
+    assert math.isclose(mini.yaw, math.radians(158))
+
+
 def test_flag_on_a_plan_step_completes_when_its_goto_ends(monkeypatch):
     monkeypatch.setenv("SAGE_VOICE_ARBITER", "1")
     monkeypatch.setattr(arbiter, "MIN_MOVE_S", 0.2)  # the arbiter's move, as segment_s

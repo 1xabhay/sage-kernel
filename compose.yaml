@@ -45,5 +45,7 @@ services:
     cap_drop:
       - ALL
 
+# The journal volume that exists today, named outright so it never depends on the project or folder.
 volumes:
   kernel-data:
+    name: sage-kernel_kernel-data

@@ -5,7 +5,8 @@ name: sage-kernel-test
 
 services:
   conformance:
-    image: sage-kernel-test:0.1.0
+    # Per lane (make passes LANE), so parallel worktrees never test each other's build.
+    image: sage-kernel-test:${LANE:-main}
     build: .
     command: ["python", "-m", "unittest", "discover", "-s", "conformance", "-v"]
     extra_hosts:

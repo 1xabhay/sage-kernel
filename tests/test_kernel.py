@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import closing
@@ -10,17 +11,26 @@ from pathlib import Path
 
 from sage import disposition, policy
 from sage.journal import Journal
-from sage.kernel import Kernel
+from sage.kernel import Abandoned, Kernel
 
 
-def answers(*replies):
-    queue, prompts = [json.dumps({"reply": reply}) for reply in replies], []
+class Timed(str):
+    """A model answer with the model server's own timing, as the Ollama provider returns it."""
+
+
+def answers(*replies, consumed=None):
+    """A scripted model. A reply is a string, streamed in one piece, or a list of raw pieces streamed in turn.
+    `consumed`, if given, gets how many pieces each call streamed before it ended."""
+    queue, prompts = [r if isinstance(r, list) else [json.dumps({"reply": r})] for r in replies], []
 
     def decide(prompt, heard):
         prompts.append(prompt)
-        output = queue.pop(0)
-        heard(output)
-        return output
+        pieces = queue.pop(0)
+        for n, piece in enumerate(pieces):
+            if consumed is not None:
+                consumed[len(prompts) - 1:] = [n + 1]
+            heard(piece)
+        return "".join(pieces)
     return decide, prompts
 
 
@@ -65,7 +75,7 @@ class CappedStream(unittest.TestCase):
             output = json.dumps({"reply": long})
             for end in range(1, len(output) + 1):
                 heard(output[end - 1])
-                streamed.append(kernel.written)
+                streamed.append(kernel.written.get("reachy", ""))
             return output
         kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide)
         kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
@@ -77,6 +87,41 @@ class CappedStream(unittest.TestCase):
         self.assertEqual(reply, "Softer voices can be fun! I'll try my best to keep things light and engaging for you.")
         self.assertTrue(all(reply.startswith(piece.rstrip()) for piece in streamed), streamed[-1])
         self.assertEqual(kernel.state.exchanges[-1].reply, reply)  # history holds what was spoken
+
+
+class AbandonedCall(unittest.TestCase):
+    def test_a_stopped_turn_s_model_call_is_abandoned_so_the_next_turn_does_not_wait_behind_it(self):
+        """Live: each fragment of speech stopped the running turn, but its model call ran on to the end, and
+        Ollama answers one call at a time, so later turns queued behind them until they timed out at 30 s."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        consumed, started = [], threading.Event()  # pieces each call streamed, in call order
+
+        def decide(prompt, heard):
+            text = "second" if "Second" in prompt.context[-1]["content"] else "first"
+            output = json.dumps({"reply": f"About the {text}: " + "la " * 40})
+            consumed.append(0)
+            call = len(consumed) - 1
+            for n, piece in enumerate(output):
+                consumed[call] = n + 1
+                started.set()
+                heard(piece)
+                time.sleep(0.01)  # ~2 s for the whole answer
+            return output
+        kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide)
+        kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "First"})
+        started.wait(5)
+        time.sleep(0.1)
+        kernel.event("reachy", {"kind": "stop", "turn_id": "r1"})
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r2", "text": "Second"})
+        deadline = time.monotonic() + 5
+        while kernel.state.turn.status == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertLess(consumed[0], 40)  # abandoned within a few pieces of the stop, not run to the end
+        replies = [e["text"] for e in kernel.effects("reachy", 0, 0, 0)["effects"] if e["kind"] == "reply"]
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0].startswith("About the second"))
 
 
 class AskedToRepeat(unittest.TestCase):
@@ -150,6 +195,18 @@ class Proactive(unittest.TestCase):
         self.settle()
         self.assertEqual(len(self.prompts), 2)
 
+    def test_one_body_acting_never_holds_another_body_s_greeting(self):
+        self.kernel.hello("phone", {"protocols": [1], "manifest": {"senses": [], "tools": []}})
+        self.kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        self.settle()  # the reply to r1 has no result yet: reachy is acting
+        self.presence("lost", device="phone")
+        self.now[0] += 11
+        self.presence("seen", device="phone")
+        self.kernel.tick()
+        self.settle()
+        [greeting] = [e for e in self.kernel.effects("phone", 0, 0, 0)["effects"] if e["kind"] == "reply"]
+        self.assertTrue(greeting["turn_id"].startswith("kernel-"))
+
     def test_a_nudge_answered_with_silence_still_counts_against_the_budget_and_gap(self):
         kernel = Kernel(Journal(self.kernel.journal.path.with_name("n.sqlite3")), answers("", "", "")[0],
                         clock=lambda: self.now[0],
@@ -175,10 +232,10 @@ class Proactive(unittest.TestCase):
 
 
 class SenseGuard(unittest.TestCase):
-    def run_turn(self, *replies):
+    def run_turn(self, *replies, consumed=None):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        decide, prompts = answers(*replies)
+        decide, prompts = answers(*replies, consumed=consumed)
         kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide)
         kernel.hello("reachy", {"protocols": [1], "manifest": {"senses": ["speech"], "tools": []}})
         kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "What do you see?"})
@@ -199,6 +256,23 @@ class SenseGuard(unittest.TestCase):
     def test_a_second_claim_has_only_its_false_sentence_replaced(self):
         replies, _, _ = self.run_turn("I see you.", "Hello! I can see you.")
         self.assertEqual(replies, ["Hello! I can't see yet; I can only hear you."])
+
+    def test_a_claim_after_a_streamed_piece_is_repaired_with_no_second_call(self):
+        """The device already plays "Hello!", and a retry's new answer could not start with it (bench: 5 of 8
+        retries were thrown away for the streamed fragment). The answer is repaired instead."""
+        replies, prompts, rejected = self.run_turn(['{"reply": "Hello! ', 'I can see you."}'])
+        self.assertEqual((replies, len(prompts), rejected), (["Hello! I can't see yet; I can only hear you."], 1, []))
+
+    def test_a_claim_held_back_ends_its_call_once_certain_and_retries_at_once(self):
+        """Bench: a rejected decode ran to its end (~1.1 s) before the retry. "I can see" stays a claim
+        whatever follows, so the call ends at the piece after it: the word "see" is then whole."""
+        consumed = []
+        replies, prompts, rejected = self.run_turn(
+            ['{"reply": "', "I ", "can ", "see ", "you ", "and ", "your ", "red ", 'hat."}'],
+            "I can only hear you.", consumed=consumed)
+        self.assertEqual((replies, len(prompts), rejected),
+                         (["I can only hear you."], 2, ["claims a sense this body lacks: vision"]))
+        self.assertEqual(consumed[0], 5)  # ended at "you ", not run on to "hat."
 
 
 class RepeatGuard(unittest.TestCase):
@@ -228,6 +302,25 @@ class RepeatGuard(unittest.TestCase):
         self.assertEqual(prompts[2].context[:-1], prompts[1].context[:-1])
         self.assertIn('"Hello there!"', prompts[2].context[-1]["content"])  # the note quotes the repeat
         self.assertEqual(self.rejected(kernel), ["repeat of a recent reply"])
+
+    def test_a_repeat_after_a_streamed_piece_is_delivered_whole_with_no_second_call(self):
+        kernel, prompts = self.kernel("It is good to hear you.", ['{"reply": "Oh wow! ', 'It is good to hear you."}'])
+        self.turn(kernel, "r1")
+        self.assertEqual([e["text"] for e in self.turn(kernel, "r2")], ["Oh wow! It is good to hear you."])
+        self.assertEqual((len(prompts), self.rejected(kernel)), (2, []))
+
+    def test_a_template_repeat_held_back_ends_its_call_after_four_words_and_retries_at_once(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        consumed = []
+        decide, prompts = answers("It is good to hear you.",
+                                  ['{"reply": "', "It ", "is ", "good ", "to ", "hear ", "from ", "you ", 'again."}'],
+                                  "Nice to see you.", consumed=consumed)
+        kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide)
+        self.turn(kernel, "r1")
+        self.assertEqual([e["text"] for e in self.turn(kernel, "r2")], ["Nice to see you."])
+        self.assertEqual((len(prompts), self.rejected(kernel)), (3, ["repeat of a recent reply"]))
+        self.assertEqual(consumed[1], 6)  # ended once "to" was whole, not run on to "again."
 
     def test_a_second_repeat_is_delivered_anyway(self):
         kernel, prompts = self.kernel("Hello there.", "Hello there.", "hello, there")
@@ -261,6 +354,138 @@ class Remembering(unittest.TestCase):
         with closing(sqlite3.connect(path)) as connection:
             self.assertEqual(connection.execute("SELECT body, target FROM journal WHERE kind = 'remember'").fetchall(),
                              [('{"fact": "Their name is Juno."}', None)])
+
+
+def until(condition):
+    deadline = time.monotonic() + 5
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def settle(kernel):
+    until(lambda: kernel.state.turn.status != "active")
+
+
+VOICE = {"senses": ["speech"], "tools": []}
+
+
+class Prewarm(unittest.TestCase):
+    """A cold prompt prefill cost ~6 s on the first turn after a restart and after a body change: a changed
+    manifest warms the model's prompt cache in the background, so the next real turn starts warm."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.warmed, self.release, self.outcomes = [], threading.Event(), []
+        self.release.set()
+
+        def warm(prompt, heard):
+            self.warmed.append(prompt)
+            self.release.wait(5)  # the prefill
+            try:
+                heard("{")
+                self.outcomes.append("warm")
+            except Abandoned:
+                self.outcomes.append("abandoned")
+                raise
+            return "{"
+        self.decide, self.prompts = answers("Hello!", "Again!")
+        self.kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), self.decide, warm=warm)
+
+    def test_each_changed_manifest_warms_once_with_the_next_turn_s_prefix_and_journals_nothing(self):
+        kernel, head = self.kernel, self.kernel.journal.head
+        body = {**VOICE, "body": "A small robot."}
+        for manifest, n in ((VOICE, 1), (VOICE, 1), (body, 2), (body, 2)):
+            kernel.hello("reachy", {"protocols": [1], "manifest": manifest})
+            until(lambda n=n: len(self.outcomes) >= n)
+        time.sleep(0.05)
+        self.assertEqual((len(self.warmed), self.outcomes), (2, ["warm", "warm"]))
+        self.assertEqual(kernel.journal.head, head)
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        settle(kernel)
+        self.assertEqual(self.prompts[0].system, self.warmed[-1].system)
+        self.assertEqual(self.prompts[0].format, self.warmed[-1].format)
+
+    def test_no_warm_starts_during_a_turn_and_a_turn_that_starts_abandons_it_without_waiting(self):
+        kernel, gate = self.kernel, threading.Event()
+
+        def slow(prompt, heard):
+            gate.wait(5)
+            return self.decide(prompt, heard)
+        kernel.decide = slow
+        kernel.hello("reachy", {"protocols": [1], "manifest": VOICE})
+        until(lambda: len(self.outcomes) == 1)
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        kernel.hello("reachy", {"protocols": [1], "manifest": {**VOICE, "body": "A small robot."}})  # mid-turn
+        gate.set()
+        settle(kernel)
+        time.sleep(0.05)
+        until(lambda: len(self.outcomes) == 2)
+        self.assertEqual(len(self.warmed), 2)  # the first hello's and the one after the reply, not the mid-turn hello's
+
+        self.release.clear()  # the next warm is still prefilling when a turn arrives
+        kernel.hello("reachy", {"protocols": [1], "manifest": {**VOICE, "body": "A tall robot."}})
+        until(lambda: len(self.warmed) == 3)
+        gate.clear()
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r2", "text": "Hi again"})
+        self.release.set()
+        until(lambda: len(self.outcomes) == 3)
+        self.assertEqual(self.outcomes[-1], "abandoned")
+        gate.set()
+        settle(kernel)
+        self.assertEqual(kernel.state.turn.status, "completed")
+
+    def test_a_reply_and_a_trim_prefill_the_next_turn_s_prefix_and_a_turn_mid_prefill_is_served(self):
+        """The next turn's prefix (this exchange, a trim, a new fact) is prefilled while the body speaks:
+        ~150 ms on every turn, ~600 ms after a trim."""
+        kernel = self.kernel
+        kernel.decide, self.prompts = answers(*(f"Reply {i}." for i in range(policy.WINDOW + 2)))
+        kernel.hello("reachy", {"protocols": [1], "manifest": VOICE})
+        until(lambda: len(self.outcomes) == 1)
+        for index in range(policy.WINDOW + 1):  # the last one trims the window
+            kernel.event("reachy", {"kind": "submitted", "turn_id": f"r{index}", "text": f"Line {index}."})
+            settle(kernel)
+            until(lambda n=index + 2: len(self.outcomes) == n)
+            nxt = policy.compile_prompt(kernel.state, "reachy", VOICE)
+            self.assertEqual(self.warmed[-1].messages()[:-1], nxt.messages()[:-1])
+        self.assertEqual(len(kernel.state.exchanges), policy.KEPT)
+
+        self.release.clear()  # a turn arrives while the next prefill still runs
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "late", "text": "Still there?"})
+        settle(kernel)
+        self.assertEqual(kernel.state.turn.status, "completed")
+        self.assertTrue(self.prompts[-1].context[-1]["content"].startswith("Still there?"))
+        self.release.set()
+
+    def test_a_real_turn_right_after_a_hello_does_not_wait_for_the_warm(self):
+        kernel = self.kernel
+        self.release.clear()
+        kernel.hello("reachy", {"protocols": [1], "manifest": VOICE})
+        until(lambda: len(self.warmed) == 1)
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        settle(kernel)
+        self.assertEqual(kernel.state.turn.status, "completed")  # while the warm still holds
+        self.release.set()
+
+
+class ModelTiming(unittest.TestCase):
+    def test_the_decided_row_carries_the_model_s_own_timing(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path, timing = Path(directory.name) / "k.sqlite3", {"prompt_tokens": 2337, "prefill_ms": 450,
+                                                            "gen_tokens": 36, "decode_ms": 1217, "load_ms": 12}
+
+        def decide(prompt, heard):
+            answer = Timed(json.dumps({"reply": "Hello!"}))
+            answer.timing = timing
+            return answer
+        kernel = Kernel(Journal(path), decide)
+        kernel.hello("reachy", {"protocols": [1], "manifest": VOICE})
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "r1", "text": "Hi"})
+        settle(kernel)
+        with closing(sqlite3.connect(path)) as connection:
+            body = json.loads(connection.execute("SELECT body FROM journal WHERE kind = 'decided'").fetchone()[0])
+        self.assertEqual(body["model_timing"], timing)
 
 
 if __name__ == "__main__":

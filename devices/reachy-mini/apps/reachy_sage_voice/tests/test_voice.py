@@ -9,11 +9,11 @@ import asyncio
 
 from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.tests.utils import SleepFrame, run_test
-from test_kernel import MOVES
+from test_manifest import MOVES
 from test_sage_processor import FakeSession, delta, heard, make, run, spoken
 from test_tts import line, ndjson
 
-from reachy_sage_voice.kernel import manifest
+from reachy_sage_voice.manifest import manifest
 from reachy_sage_voice.sage import Playback, SageProcessor
 from reachy_sage_voice.tts import KokoroTTSService
 from reachy_sage_voice.voice import (
@@ -76,7 +76,7 @@ def test_kokoro_vocals_are_a_moves_own_sound_or_a_written_hmm():
 
 
 def test_every_vocal_sound_is_a_declared_move():
-    from reachy_sage_voice.kernel import EMOTIONS
+    from reachy_sage_voice.manifest import EMOTIONS
 
     for kind, value in KOKORO["vocals"].values():
         assert kind == "say" or value in EMOTIONS
@@ -107,7 +107,7 @@ def styles_in(down):
 
 def test_a_voice_style_reaches_tts_before_the_words_it_colours():
     session = FakeSession([{"effects": [style_effect(41, "excited"), delta(0, "Wow, great!")]}])
-    down, _ = run(make(session), [heard("I won"), SleepFrame(0.1)])
+    down, _ = run(make(session), [heard("I won the game."), SleepFrame(0.1)])
     assert styles_in(down) == [style_settings(KOKORO, "excited")]
     kinds = [type(f).__name__ for f in down if type(f).__name__ in ("VoiceStyleFrame",
                                                                     "LLMTextFrame")]
@@ -117,7 +117,7 @@ def test_a_voice_style_reaches_tts_before_the_words_it_colours():
 
 def test_a_whisper_is_done_softly():
     session = FakeSession([{"effects": [style_effect(41, "whisper")]}])
-    down, _ = run(make(session), [heard("shh"), SleepFrame(0.1)])
+    down, _ = run(make(session), [heard("Please be quiet now."), SleepFrame(0.1)])
     assert styles_in(down) == [style_settings(KOKORO, "soft")]
     assert {"sequence": 41, "status": "done"} in session.results
 
@@ -129,7 +129,7 @@ def test_an_engine_that_cannot_do_a_style_reports_unsupported():
     async def no_move(name, sound):
         pass
     down, _ = run(SageProcessor(session, no_move, Playback(), engine=bare),
-                  [heard("hi"), SleepFrame(0.1)])
+                  [heard("Tell me about your day."), SleepFrame(0.1)])
     assert styles_in(down) == []
     assert {"sequence": 41, "status": "failed", "reason": "unsupported"} in session.results
     assert {"sequence": 42, "status": "failed", "reason": "unsupported"} in session.results
@@ -152,7 +152,7 @@ def test_a_laugh_is_the_moves_own_sound():
         played.append(name)
     session = FakeSession([{"effects": [vocal_effect(41, "laugh")]}])
     run(SageProcessor(session, no_move, Playback(), play_sound=play_sound),
-        [heard("a joke"), SleepFrame(0.1)])
+        [heard("Tell me a joke."), SleepFrame(0.1)])
     assert played == ["laughing2"]
     assert {"sequence": 41, "status": "done"} in session.results
 

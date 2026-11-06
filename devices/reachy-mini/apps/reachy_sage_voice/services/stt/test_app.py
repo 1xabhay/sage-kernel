@@ -5,13 +5,14 @@
 import io
 import pathlib
 import re
+import tempfile
 import unittest
+from unittest import mock
 
+import app
 import numpy as np
 import soundfile as sf
 from fastapi.testclient import TestClient
-
-import app
 
 # SYNTHETIC: Kokoro bf_emma saying these words, 16 kHz mono (made by sage-kernel bench/).
 FIXTURE = pathlib.Path(__file__).parent / "fixtures/good-morning-little-robot.wav"
@@ -21,6 +22,12 @@ def wav(audio, rate):
     buf = io.BytesIO()
     sf.write(buf, audio, rate, format="WAV")
     return buf.getvalue()
+
+
+class NoVoiceprint(unittest.TestCase):
+    def test_the_speaker_model_stays_out_of_memory_until_a_voiceprint_needs_it(self):
+        with mock.patch.object(app, "load"), mock.patch.object(app, "load_speaker") as speaker, TestClient(app.app):
+            speaker.assert_not_called()
 
 
 class TranscriptionContract(unittest.TestCase):
@@ -37,7 +44,7 @@ class TranscriptionContract(unittest.TestCase):
                                 data={"model": "parakeet-tdt-0.6b-v2", **fields})
 
     def test_health_is_ready_once_the_model_is_loaded(self):
-        self.assertEqual(self.client.get("/health").json(), {"ready": True})
+        self.assertEqual(self.client.get("/health").json(), {"ready": True, "enrolled": False})
 
     def test_speech_comes_back_as_its_words(self):
         r = self.post(FIXTURE.read_bytes())
@@ -62,6 +69,52 @@ class TranscriptionContract(unittest.TestCase):
 
     def test_a_format_it_cannot_answer_is_a_400(self):
         self.assertEqual(self.post(FIXTURE.read_bytes(), response_format="srt").status_code, 400)
+
+
+def noise(seconds=2.0):
+    return np.random.default_rng(0).normal(0, 0.05, int(16000 * seconds)).astype("float32")
+
+
+class OwnerVoice(unittest.TestCase):
+    """With a voiceprint enrolled, only the owner's voice is transcribed (reachy_sage_voice/owner.py)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app.app).__enter__()
+        cls.recordings = tempfile.TemporaryDirectory()
+        sf.write(pathlib.Path(cls.recordings.name) / "turn-1.wav", sf.read(FIXTURE, dtype="float32")[0], 16000)
+        sf.write(pathlib.Path(cls.recordings.name) / "too-short.wav", np.zeros(4000, dtype="float32"), 16000)
+        cls.voiceprint = pathlib.Path(cls.recordings.name) / "owner.npy"
+        cls.report = app.enroll(pathlib.Path(cls.recordings.name), cls.voiceprint)
+        app._voiceprint = np.load(cls.voiceprint)
+
+    @classmethod
+    def tearDownClass(cls):
+        app._voiceprint = None
+        cls.client.__exit__(None, None, None)
+        cls.recordings.cleanup()
+
+    def verify(self, data: bytes):
+        return self.client.post("/v1/speaker/verify", files={"file": ("a.wav", data, "audio/wav")}).json()
+
+    def test_enrolling_averages_the_recordings_long_enough_to_judge(self):
+        self.assertEqual([name for name, _ in self.report], ["turn-1.wav"])
+        self.assertEqual(np.load(self.voiceprint).shape, (256,))
+
+    def test_health_says_a_voiceprint_is_enrolled(self):
+        self.assertEqual(self.client.get("/health").json(), {"ready": True, "enrolled": True})
+
+    def test_the_owner_is_verified_and_transcribed(self):
+        answer = self.verify(FIXTURE.read_bytes())
+        self.assertTrue(answer["owner"] and answer["enrolled"])
+        self.assertGreater(answer["similarity"], app.THRESHOLD)
+        r = self.client.post("/v1/audio/transcriptions", files={"file": ("a.wav", FIXTURE.read_bytes(), "audio/wav")})
+        self.assertIn("morning", r.json()["text"].lower())
+
+    def test_any_other_sound_is_not_the_owner_and_comes_back_as_no_text(self):
+        self.assertFalse(self.verify(wav(noise(), 16000))["owner"])
+        r = self.client.post("/v1/audio/transcriptions", files={"file": ("a.wav", wav(noise(), 16000), "audio/wav")})
+        self.assertEqual((r.status_code, r.json()["text"]), (200, ""))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
-# Lint, the dependency check, a secret scan, unit tests and the conformance suite: `make hygiene`, as locally.
-# Everything runs in Docker on the runner, so no GPU and no model are needed (the suite uses a fake Ollama).
+# Source-tree checks, lint, the dependency check, a secret scan, unit tests and the conformance suite:
+# `make hygiene`, exactly as locally.
+# Past the host checks everything runs in Docker on the runner, so no GPU and no model are needed (the suite uses a fake Ollama).
 name: CI
 
 on:
@@ -23,8 +24,5 @@ jobs:
         with:
           fetch-depth: 0 # the secret scan reads the whole history
           persist-credentials: false
-      # The source-tree checks (sealed containers, ignore files, no machine names) skip inside the image.
-      - name: Source-tree checks
-        run: python3 -m unittest -v tests.test_deploy tests.test_boundary
       - name: make hygiene
         run: make hygiene

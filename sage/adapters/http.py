@@ -7,6 +7,7 @@ the manifest it last sent.
 import hmac
 import json
 import math
+import os
 import re
 import sqlite3
 import sys
@@ -17,10 +18,11 @@ from sage.kernel import Kernel
 from sage.policy import Refused
 
 STATUS = {"invalid": 400, "unauthorized": 401, "not_found": 404, "busy": 409, "unknown_pending": 409,
-          "forbidden": 409, "stale": 409, "reset": 409, "protocol_mismatch": 426, "rate_limited": 429}
-ROUTES = {("POST", "/v1/hello"), ("POST", "/v1/events"), ("GET", "/v1/effects")}
+          "forbidden": 409, "stale": 409, "reset": 409, "hello_first": 409, "protocol_mismatch": 426,
+          "rate_limited": 429}
+ROUTES = {("POST", "/v1/hello"), ("POST", "/v1/events"), ("GET", "/v1/effects"), ("GET", "/v1/health")}
 NAME = re.compile(r"[a-z0-9_-]{1,64}")
-MAX_BODY = 8192
+MAX_BODY = 131072  # notes carry a document (64 passages of 600 characters, JSON-escaped)
 
 
 def parse_devices(spec: str) -> dict[str, str]:
@@ -35,7 +37,48 @@ def parse_devices(spec: str) -> dict[str, str]:
     return devices
 
 
-def serve(kernel: Kernel, devices: dict[str, str], host: str, port: int) -> ThreadingHTTPServer:
+class Devices:
+    """SAGE_DEVICES, plus SAGE_DEVICES_FILE re-read whenever it changes: checked on every request, no restart.
+
+    The file holds the same `name=token` entries, one per line or comma-separated, `#` starts a comment.
+    A missing file holds no tokens; a file that does not parse keeps the tokens already in use.
+    """
+
+    def __init__(self, spec: str, path: str = ""):
+        self.spec, self.path = spec, path
+        self.seen = self.stamp()
+        self.tokens = self.read()  # at start, a bad file stops the kernel instead
+
+    def stamp(self):
+        try:
+            stat = os.stat(self.path) if self.path else None
+        except OSError:
+            return None
+        return stat and (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+    def read(self) -> dict[str, str]:
+        text = ""
+        try:
+            if self.path:
+                with open(self.path) as file:
+                    text = file.read()
+        except FileNotFoundError:
+            pass
+        return parse_devices(",".join([self.spec, *(line.partition("#")[0] for line in text.splitlines())]))
+
+    def current(self) -> dict[str, str]:
+        # ponytail: no lock; two requests may both re-read a changed file, and the last one wins with the same tokens.
+        stamp = self.stamp()
+        if stamp != self.seen:
+            self.seen = stamp  # once per change, so a bad file is reported once, not on every request
+            try:
+                self.tokens = self.read()
+            except (OSError, ValueError) as error:
+                print(f"sage: SAGE_DEVICES_FILE not reloaded, the old tokens stay: {error}", file=sys.stderr)
+        return self.tokens
+
+
+def serve(kernel: Kernel, devices: Devices, host: str, port: int) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def send(self, status: int, data: dict) -> None:
             body = json.dumps(data).encode()
@@ -53,7 +96,7 @@ def serve(kernel: Kernel, devices: dict[str, str], host: str, port: int) -> Thre
             header = self.headers.get("Authorization", "")
             given = header.removeprefix("Bearer ").encode() if header.startswith("Bearer ") else b""
             # Compare against every token so the time taken says nothing about which one is close.
-            matches = [name for token, name in devices.items() if hmac.compare_digest(token.encode(), given)]
+            matches = [name for token, name in devices.current().items() if hmac.compare_digest(token.encode(), given)]
             if not given or not matches:
                 raise Refused("unauthorized", "Send Authorization: Bearer <device token>")
             return matches[0]
@@ -76,9 +119,14 @@ def serve(kernel: Kernel, devices: dict[str, str], host: str, port: int) -> Thre
             url = urlparse(self.path)
             try:
                 if (method, url.path) not in ROUTES:
-                    raise Refused("not_found", "Device routes are POST /v1/hello, POST /v1/events "
-                                               "and GET /v1/effects")
-                source = self.device()
+                    raise Refused("not_found", "Device routes are POST /v1/hello, POST /v1/events, "
+                                               "GET /v1/effects and GET /v1/health")
+                source = self.device()  # health too: a 401 already tells a stranger the kernel is up
+                if url.path == "/v1/health":
+                    return self.send(200, kernel.health())
+                if url.path in ("/v1/events", "/v1/effects") and source not in kernel.manifests:
+                    raise Refused("hello_first", "This kernel has not had your hello since it started. "
+                                                 "Send hello, then retry.")
                 if url.path == "/v1/effects":
                     return self.send(200, kernel.effects(source, *self.cursor(parse_qs(url.query))))
                 data = self.body()

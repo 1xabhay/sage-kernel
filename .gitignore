@@ -7,5 +7,10 @@ __pycache__/
 .local/
 .backups/
 dist/
+*.egg-info/
 # Live robot conversations (the owner's own speech): evals read them first when present, never commit them.
 evals/local/
+.deploy/
+.claude/worktrees/
+# Logged owner speech for the golden set (test_grammar reads it when present).
+devices/reachy-mini/apps/reachy_sage_voice/tests/data/local/

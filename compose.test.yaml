@@ -5,8 +5,9 @@ name: sage-kernel-test
 
 services:
   conformance:
-    image: sage-kernel-test:0.1.0
-    build: .
+    # The image make deploy runs: make test passes the commit's tag (a dirty tree tests dev-<lane>).
+    image: sage-kernel:${SAGE_TAG:?set by make test}
+    pull_policy: never
     command: ["python", "-m", "unittest", "discover", "-s", "conformance", "-v"]
     extra_hosts:
       - "host.docker.internal:host-gateway"

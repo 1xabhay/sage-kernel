@@ -9,9 +9,11 @@ import wave
 
 import numpy as np
 from pipecat.audio.vad.vad_analyzer import VADState
+from sage_device.hearing import unfinished
 
 from reachy_sage_voice.turn_end import (
     CANDIDATES_MS,
+    DEFAULT_MS,
     choose_turn_end_ms,
     load_pcm16,
     pause_table,
@@ -48,11 +50,30 @@ def test_the_chosen_turn_end_waits_through_almost_every_real_pause():
 
 
 def test_with_no_recordings_the_default_stands():
-    assert choose_turn_end_ms([]) == 450
+    # 600, measured on the owner's live turns (eval/reports/turn-taking-2026-10-23.md).
+    assert DEFAULT_MS == 600
+    assert choose_turn_end_ms([]) == 600
 
 
 def test_candidates_include_the_default():
-    assert 450 in CANDIDATES_MS
+    assert DEFAULT_MS in CANDIDATES_MS
+
+
+def test_a_transcript_without_closing_punctuation_is_unfinished():
+    assert unfinished("Remind me to call")
+    assert unfinished("So I was going to say, uh")
+    assert unfinished("Play something we could dance to,")
+
+
+def test_a_sentence_closing_on_a_word_no_sentence_ends_on_is_unfinished():
+    assert unfinished("I want to go and.")
+    assert unfinished("So, um.")
+
+
+def test_a_finished_sentence_or_nothing_is_not_unfinished():
+    for text in ("Is it raining today?", "Turn the lights on.", "I think so.", "No.", "Wow!",
+                 "", "  ", "..."):
+        assert not unfinished(text)
 
 
 def test_recordings_load_as_mono_16k(tmp_path):
@@ -77,4 +98,4 @@ def test_the_script_runs_silero_over_recordings_and_prints_the_setting(tmp_path,
         w.setframerate(16000)
         w.writeframes(np.zeros(16000, dtype=np.int16).tobytes())
     main([str(path)])
-    assert capsys.readouterr().out.strip().endswith("SAGE_VOICE_TURN_END_MS=450")
+    assert capsys.readouterr().out.strip().endswith("SAGE_VOICE_TURN_END_MS=600")

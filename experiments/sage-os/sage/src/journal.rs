@@ -25,9 +25,12 @@ pub struct Journal {
     file: File,
 }
 
+/// One recorded step: its time and the facts it produced.
+pub type Step = (f64, Vec<Fact>);
+
 impl Journal {
     /// Opens or creates the journal; returns it with every step already recorded.
-    pub fn open(path: &Path) -> io::Result<(Journal, Vec<(f64, Vec<Fact>)>)> {
+    pub fn open(path: &Path) -> io::Result<(Journal, Vec<Step>)> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }

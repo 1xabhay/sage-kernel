@@ -4,7 +4,6 @@ Settings come from the environment and .env as for ``make run`` (README.md, "Set
 except the robot's address: the daemon connects to the robot itself.
 """
 
-import logging
 import os
 import threading
 
@@ -23,7 +22,9 @@ class ReachySageVoice(ReachyMiniApp):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    from reachy_sage_voice.__main__ import configure_logging
+
+    configure_logging()
     app = ReachySageVoice()
     try:
         app.wrapped_run()

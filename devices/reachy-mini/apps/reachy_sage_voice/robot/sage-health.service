@@ -1,0 +1,26 @@
+# The robot's health line every 10 s, to the journal (sage_health.py). Sealed: no
+# privileges beyond reading vcgencmd (group video), netlink for iw, and the daemon on localhost.
+[Unit]
+Description=Sage robot health line every 10 s
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/sage/sage_health.py
+Restart=always
+RestartSec=5
+DynamicUser=yes
+SupplementaryGroups=video
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+IPAddressAllow=localhost
+IPAddressDeny=any
+MemoryMax=32M
+
+[Install]
+WantedBy=multi-user.target

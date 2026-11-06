@@ -1,0 +1,56 @@
+name: music-telling
+
+x-ollama-image: &ollama-image ollama/ollama:0.12.6@sha256:a61a8fd395dbb931cc8cb1b5da7a2510746575c87113fdc45b647ee59ef7f808
+
+services:
+  # Free, local, open-weights model server. No key, no account.
+  # Published on loopback only; MT_OLLAMA_PORT moves it off a host Ollama on 11434.
+  ollama:
+    image: *ollama-image
+    ports:
+      - "127.0.0.1:${MT_OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # One-shot: pulls the model into the shared volume, then exits.
+  model-pull:
+    image: *ollama-image
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ollama-models:/root/.ollama
+    entrypoint: ["sh", "-c", "ollama pull ${MUSIC_TELLING_MODEL:-qwen2.5:7b}"]
+
+  music-telling:
+    build:
+      context: .
+      # `full` adds Essentia mood models; its wheels are amd64-only.
+      target: ${MT_TARGET:-lite}
+    image: music-telling:local
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      MUSIC_TELLING_PROVIDER: ${MUSIC_TELLING_PROVIDER:-ollama}
+      MUSIC_TELLING_MODEL: ${MUSIC_TELLING_MODEL:-qwen2.5:7b}
+      MUSIC_TELLING_CACHE: /cache
+      OLLAMA_HOST: http://ollama:11434
+      # Only needed if you switch MUSIC_TELLING_PROVIDER=anthropic.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    # Code is baked into the image (Colima cannot see this folder); rebuild after edits.
+    volumes:
+      - mt-cache:/cache         # lyrics, previews and model weights persist
+    working_dir: /app
+
+volumes:
+  mt-cache:
+  ollama-models:

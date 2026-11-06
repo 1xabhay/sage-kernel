@@ -11,7 +11,7 @@ from huggingface_hub import snapshot_download
 from huggingface_hub.errors import LocalEntryNotFoundError
 from reachy_mini.motion.recorded_move import DEFAULT_EMOTIONS_DATASET, RecordedMoves
 
-from reachy_sage_voice.kernel import (
+from reachy_sage_voice.manifest import (
     DESCRIPTIONS,
     EMOTIONS,
     NO_SOUND,

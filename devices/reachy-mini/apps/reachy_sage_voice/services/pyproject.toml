@@ -1,16 +1,26 @@
 [project]
 name = "reachy-sage-voice-services"
 version = "0.1.0"
-description = "The voice's senses as local services: Parakeet STT and Kokoro TTS, OpenAI-compatible"
+description = "The voice's senses as local services: Parakeet STT and Pocket TTS, OpenAI-compatible, and song research"
 requires-python = "==3.12.*"
 dependencies = ["fastapi", "uvicorn", "numpy", "httpx"]
 
 # One environment for native runs and tests; each image installs only its own group,
-# exported with hashes into stt/requirements.lock and tts/requirements.lock (make lock).
+# exported with hashes into <service>/requirements.lock (make lock).
 [dependency-groups]
 stt = ["onnx-asr[cpu,hub]==0.12.*", "soundfile", "python-multipart"]
-tts = ["kokoro-onnx==0.6.*", "huggingface-hub"]
+tts = ["pocket-tts==4.0.*", "torch"]  # torch named only to pick its index, below
+research = ["shazamio==0.8.1", "python-multipart"]
 
 [tool.uv]
-default-groups = ["stt", "tts"]
+default-groups = ["stt", "tts", "research"]
 package = false
+
+# On Linux, PyPI's torch is the CUDA build (gigabytes of nvidia wheels); the image runs on CPU.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]

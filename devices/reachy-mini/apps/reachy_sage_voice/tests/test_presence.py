@@ -7,6 +7,7 @@ time passed in; the send sits behind one function.
 
 import asyncio
 
+from reachy_sage_voice.perception.face import Face
 from reachy_sage_voice.presence import Presence, watch_presence
 
 
@@ -58,8 +59,9 @@ def test_never_seen_is_never_lost():
     assert run(Presence(), [(t, False) for t in range(20)]) == []
 
 
-def test_the_watch_sends_only_edges_through_one_function():
-    faces = iter([True, True, False, True] + [False] * 100)
+def watch(faces):
+    """Watch ``faces`` (Face percepts, then stale ones) for 20 s; return the states sent."""
+    faces = iter(faces)
     clock = {"t": 0.0}
     sent = []
 
@@ -69,6 +71,20 @@ def test_the_watch_sends_only_edges_through_one_function():
     async def send(event):
         sent.append(event["state"])
 
-    asyncio.run(watch_presence(lambda: next(faces, None), send, lambda: clock["t"], sleep,
+    asyncio.run(watch_presence(lambda: next(faces, STALE), send, lambda: clock["t"], sleep,
                                period_s=0.25, until=lambda: clock["t"] > 20))
-    assert sent == ["seen", "lost"]
+    return sent
+
+
+SEEN, EMPTY = Face(True, True, 0.0, 0.0), Face(False, True, None, 0.0)
+STALE = Face(False, False, None, 0.0)  # an old stamp, or the detector off: nothing known
+
+
+def test_the_watch_sends_only_edges_through_one_function():
+    assert watch([SEEN, SEEN, EMPTY, SEEN] + [EMPTY] * 100) == ["seen", "lost"]
+
+
+def test_presence_is_unknown_never_lost_when_the_face_is_not_fresh():
+    # The detector runs only at weight > 0 (LAYERS F1, O3 a): a stopped one is no empty room.
+    assert watch([SEEN, SEEN]) == ["seen"]  # then stale for 20 s: no lost
+    assert watch([STALE] * 100) == []

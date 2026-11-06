@@ -96,7 +96,7 @@ down: ## Stop and remove the containers (named volumes are kept)
 logs: ## Tail compose logs
 	docker compose logs -f
 
-IMAGE_TEST_TAG ?= music-telling-image-test:$(shell date +%s)
+IMAGE_TEST_TAG := music-telling-image-test:$(shell date +%s)
 image-test: ## Build the lite image, check its entrypoint and tests offline, then remove it
 	docker build -q --target lite -t $(IMAGE_TEST_TAG) . >/dev/null
 	docker run --rm --network none $(IMAGE_TEST_TAG) --help >/dev/null \

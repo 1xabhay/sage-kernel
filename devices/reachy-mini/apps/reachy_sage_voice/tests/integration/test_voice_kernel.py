@@ -18,6 +18,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -89,7 +90,8 @@ class Rig:
             question = conformance.words(messages[-1])
             # The kernel quotes the transcript ('heard (may be misheard): "..."').
             return next((said for asked, said in self.replies.items() if asked in question),
-                        None) or fallback(messages)
+                        None) or fallback([*messages[:-1], {
+                            **messages[-1], "content": re.sub(r"\s*\[[^\]]*\]", "", question)}])
         conformance.answer = answer  # the fake Ollama looks it up per request
 
     # --- driving ---------------------------------------------------------------
@@ -302,17 +304,16 @@ def test_someone_seen_is_greeted(rig):
 
 
 def test_a_busy_kernel_is_retried_then_one_moment(rig):
-    rig.provider.open.clear()  # another device's turn is thinking
-    assert rig.device("POST", "/v1/hello", {"protocols": [1], "manifest": {"senses": []}},
-                      device="mock")[0] == 200
-    assert rig.device("POST", "/v1/events", {"kind": "submitted", "turn_id": "mock-1",
-                                             "text": "Hold on."}, device="mock")[0] == 200
+    rig.provider.open.clear()  # another turn on this body's lane is thinking
+    assert rig.device("POST", "/v1/hello", {"protocols": [1], "manifest": {"senses": []}})[0] == 200
+    assert rig.device("POST", "/v1/events", {"kind": "submitted", "turn_id": "other-1",
+                                             "text": "Hold on."})[0] == 200
     started = time.monotonic()
     down = rig.run([heard("Are you there?"), SleepFrame(2.0)], retry_s=1.0)
     assert time.monotonic() - started >= 1.0
     assert rig.tts_inputs() == ["One moment."]
     assert spoken(down) == ["One", "moment."]
-    assert [r["source"] for r in rig.journal("submitted")] == ["mock"]  # busy admits nothing
+    assert [r["turn_id"] for r in rig.journal("submitted")] == ["other-1"]  # busy admits nothing
     assert rig.journal("stop") == []  # and the other turn was left alone
 
 
@@ -331,7 +332,7 @@ def test_a_reply_cut_at_the_cap_streams_only_what_is_journaled(rig):
 
 
 def test_an_emote_result_carries_how_long_the_move_took(rig):
-    down = rig.run([heard("Feel happy"), SleepFrame(2.0)])
+    down = rig.run([heard("Feel happy today, little robot."), SleepFrame(2.0)])
     assert rig.robot.moves == ["cheerful1"]
     (emote,) = rig.journal("emote")
     (result,) = [r for r in rig.journal("result") if r.get("sequence") == emote["sequence"]]

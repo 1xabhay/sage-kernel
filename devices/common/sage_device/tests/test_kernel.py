@@ -4,73 +4,14 @@ Only the wire is real here; clocks and sleeps are injected so retries run instan
 """
 
 import asyncio
-import json
-import re
-from typing import NamedTuple
 
 import pytest
-
-from reachy_sage_voice.kernel import (
-    EMOTIONS,
-    KernelClient,
-    KernelUnavailableError,
-    Session,
-    manifest,
-)
-
 from conftest import TOKEN
 
-# --- manifest -----------------------------------------------------------------
+from sage_device.kernel import KernelClient, KernelUnavailableError, Session, acted
 
-
-class Move(NamedTuple):
-    duration: float
-    description: str
-
-
-#: A stand-in library: the real one is checked in test_vocabulary.py.
-MOVES = {name: Move(2.0, f"Look {name}. Use it sparingly.") for name in EMOTIONS}
-MOVES["boredom1"] = Move(15.7, "You're about to fall asleep because the conversation is boring. "
-                               "Use it when no one talks to you for 2 minutes.")
-
-
-def test_manifest_offers_emote_as_an_mcp_tool_over_the_declared_moves():
-    m = manifest(MOVES)
-    assert m["senses"] == ["speech"]
-    emote = m["tools"][0]
-    assert emote["name"] == "emote"
-    assert emote["inputSchema"]["type"] == "object"
-    assert emote["inputSchema"]["required"] == ["name"]
-    assert emote["inputSchema"]["properties"]["name"]["enum"] == list(EMOTIONS)
-    assert len(EMOTIONS) == len(set(EMOTIONS)) and "cheerful1" in EMOTIONS
-    assert emote["interruptible"] is True
-    assert re.fullmatch(r"[a-z][a-z0-9_]{0,63}", emote["name"])
-
-
-def test_max_s_fits_the_longest_declared_move_with_a_second_to_spare():
-    assert manifest(MOVES)["tools"][0]["max_s"] == 17  # ceil(15.7) + 1
-    short = {name: MOVES[name] for name in ("cheerful1", "yes1")}
-    assert manifest(short)["tools"][0]["max_s"] == 3  # ceil(2.0) + 1
-
-
-def test_each_name_carries_the_first_line_of_its_library_description():
-    name = manifest(MOVES)["tools"][0]["inputSchema"]["properties"]["name"]
-    assert "boredom1: You're about to fall asleep because the conversation is boring." \
-        in name["description"]
-    assert "2 minutes" not in name["description"]  # one line each: the bench's finding
-    assert all(f"{n}:" in name["description"] for n in EMOTIONS)
-
-
-def test_the_schema_stays_in_the_subset_the_kernel_and_ollama_check():
-    """Use enum, which the kernel validates and reads to keep labels unspoken.
-
-    The kernel's checker ignores oneOf/const, so an oneOf vocabulary would let any
-    name through. Ollama's format grammar takes enum. Descriptions are plain text.
-    """
-    name = manifest(MOVES)["tools"][0]["inputSchema"]["properties"]["name"]
-    assert set(name) == {"type", "enum", "description"} and name["type"] == "string"
-    assert json.loads(json.dumps(manifest(MOVES))) == manifest(MOVES)
-
+#: Any body's manifest: the client only carries it.
+MANIFEST = {"senses": ["speech"], "tools": []}
 
 # --- the client ---------------------------------------------------------------
 
@@ -81,10 +22,10 @@ def client(kernel, **kw):
 
 def test_hello_declares_v1_and_the_manifest_with_the_token(kernel):
     kernel.script("POST", "/v1/hello", (200, {"protocol": 1, "sequence": 7}))
-    assert client(kernel).hello(manifest(MOVES)) == (200, {"protocol": 1, "sequence": 7})
+    assert client(kernel).hello(MANIFEST) == (200, {"protocol": 1, "sequence": 7})
     (req,) = kernel.requests
     assert req["headers"]["Authorization"] == f"Bearer {TOKEN}"
-    assert req["body"] == {"protocols": [1], "manifest": manifest(MOVES)}
+    assert req["body"] == {"protocols": [1], "manifest": MANIFEST}
 
 
 def test_effects_long_polls_from_a_cursor_and_a_reply_offset(kernel):
@@ -106,14 +47,14 @@ def test_rate_limited_events_wait_retry_after_then_go_through(kernel):
 def test_an_unreachable_kernel_is_not_an_oserror():
     dead = KernelClient("http://127.0.0.1:9", TOKEN, timeout_s=0.5)
     with pytest.raises(KernelUnavailableError) as caught:
-        dead.hello(manifest(MOVES))
+        dead.hello(MANIFEST)
     assert not isinstance(caught.value, OSError)
 
 
 def test_a_garbled_answer_is_an_outage_too(kernel):
     kernel.script("POST", "/v1/hello", (200, b"<html>proxy error</html>"))
     with pytest.raises(KernelUnavailableError):
-        client(kernel).hello(manifest(MOVES))
+        client(kernel).hello(MANIFEST)
 
 
 def test_a_coded_error_comes_back_as_its_status_and_body(kernel):
@@ -138,7 +79,7 @@ def session(kernel, clock=None):
     async def sleep(s):
         clock.t += s
 
-    return Session(client(kernel), manifest(MOVES), retry_s=5.0, clock=clock, sleep=sleep)
+    return Session(client(kernel), MANIFEST, retry_s=5.0, clock=clock, sleep=sleep)
 
 
 def hello_ok(kernel, sequence=40):
@@ -154,6 +95,155 @@ def test_submitting_says_hello_first_then_sends_the_turn_with_timing(kernel):
     assert kernel.events() == [{"kind": "submitted", "turn_id": "reachy-1", "text": "hi",
                                 "timing": {"stt_ms": 180}}]
     assert s.cursor == 40  # a fresh body starts at the head, never replaying old replies
+
+
+#: What a v1.1 kernel serves (sage-kernel docs/PROTOCOL.md §1).
+V11 = ["acted", "body", "done_text", "health", "input", "notes", "presence"]
+
+
+def hello_v11(kernel, sequence=40):
+    kernel.script("POST", "/v1/hello",
+                  (200, {"protocol": 1, "sequence": sequence, "features": V11}))
+
+
+def test_hello_is_once_per_connect_not_once_per_turn(kernel):
+    hello_ok(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+    kernel.script("GET", "/v1/effects", (200, {"sequence": 41, "effects": []}))
+    s = session(kernel)
+
+    async def go():
+        await s.start("reachy-1", "hi", {})
+        await s.poll(offset=0, wait=0)
+        await s.start("reachy-2", "again", {})
+    asyncio.run(go())
+    assert [r["path"] for r in kernel.requests] == [
+        "/v1/hello", "/v1/events", "/v1/effects", "/v1/events"]
+
+
+def test_an_outage_says_hello_again_the_kernel_may_have_forgotten_the_manifest(kernel):
+    hello_ok(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}),
+                  (200, b"<html>proxy error</html>"), (200, {"sequence": 43}))
+    s = session(kernel)
+
+    async def go():
+        await s.start("reachy-1", "hi", {})
+        with pytest.raises(KernelUnavailableError):
+            await s.start("reachy-2", "hi", {})
+        await s.start("reachy-3", "hi", {})
+    asyncio.run(go())
+    assert [r["path"] for r in kernel.requests] == [
+        "/v1/hello", "/v1/events", "/v1/events", "/v1/hello", "/v1/events"]
+
+
+def test_a_reset_journal_says_hello_again(kernel):
+    hello_ok(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+    kernel.script("GET", "/v1/effects", (409, {"code": "reset", "sequence": 12}))
+    s = session(kernel)
+
+    async def go():
+        await s.start("reachy-1", "hi", {})
+        await s.poll(offset=0, wait=0)
+        await s.start("reachy-2", "hi", {})
+    asyncio.run(go())
+    assert [r["path"] for r in kernel.requests] == [
+        "/v1/hello", "/v1/events", "/v1/effects", "/v1/hello", "/v1/events"]
+    assert s.cursor == 12  # the reset's, not the new hello's head
+
+
+HELLO_FIRST = (409, {"code": "hello_first", "message": "say hello first"})
+
+
+def test_hello_first_says_hello_again_and_retries_the_request_once(kernel):
+    hello_ok(kernel)
+    kernel.script("POST", "/v1/events", HELLO_FIRST, (200, {"sequence": 41}))
+    kernel.script("GET", "/v1/effects", HELLO_FIRST, (200, {"sequence": 42, "effects": []}))
+    s = session(kernel)
+
+    async def go():
+        admitted = await s.start("reachy-1", "hi", {})
+        return admitted, await s.poll(offset=0, wait=0)
+    admitted, polled = asyncio.run(go())
+    assert admitted == "admitted" and polled["sequence"] == 42
+    assert [r["path"] for r in kernel.requests] == [
+        "/v1/hello", "/v1/events", "/v1/hello", "/v1/events",
+        "/v1/effects", "/v1/hello", "/v1/effects"]
+    hellos = [r["body"] for r in kernel.requests if r["path"] == "/v1/hello"]
+    assert all(h["manifest"] == MANIFEST for h in hellos)
+
+
+def test_hello_first_twice_in_a_row_gives_up_instead_of_looping(kernel):
+    hello_ok(kernel)
+    kernel.script("POST", "/v1/events", HELLO_FIRST)
+    s = session(kernel)
+    assert asyncio.run(s.start("reachy-1", "hi", {})) == "refused"
+    assert [r["path"] for r in kernel.requests] == [
+        "/v1/hello", "/v1/events", "/v1/hello", "/v1/events"]
+
+
+def test_features_come_from_hello_and_a_kernel_without_them_is_plain_v1(kernel):
+    hello_ok(kernel)
+    s = session(kernel)
+    assert s.features is None  # nothing said yet
+    asyncio.run(s.hello())
+    assert s.features == frozenset()
+    hello_v11(kernel)
+    asyncio.run(s.hello())
+    assert s.features == frozenset(V11)
+
+
+def test_a_v11_kernel_hears_how_the_line_came_in(kernel):
+    hello_v11(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+    asyncio.run(session(kernel).start("reachy-1", "hi", {}, {"medium": "speech"}))
+    assert kernel.events() == [{"kind": "submitted", "turn_id": "reachy-1", "text": "hi",
+                                "input": {"medium": "speech"}}]
+
+
+def test_a_plain_v1_kernel_never_sees_input(kernel):
+    hello_ok(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+    asyncio.run(session(kernel).start("reachy-1", "hi", {}, {"medium": "speech"}))
+    assert kernel.events() == [{"kind": "submitted", "turn_id": "reachy-1", "text": "hi"}]
+
+
+def test_acts_go_to_a_kernel_that_serves_them(kernel):
+    hello_v11(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+    s = session(kernel)
+    act = acted("act-1", "aside", "done", said="One moment.")
+
+    async def go():
+        await s.act(act)  # before any hello: what the kernel serves is unknown, so nothing
+        await s.hello()
+        await s.act(act)
+    asyncio.run(go())
+    assert kernel.events() == [act]
+
+
+def test_a_plain_v1_kernel_never_sees_acts(kernel):
+    hello_ok(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+    s = session(kernel)
+
+    async def go():
+        await s.hello()
+        await s.act(acted("act-1", "aside", "done", said="One moment."))
+    asyncio.run(go())
+    assert kernel.events() == []
+
+
+def test_acted_is_the_v11_event_with_unset_fields_left_out():
+    assert acted("act-1", "aside", "done", said="Looking for you.") == {
+        "kind": "acted", "act_id": "act-1", "origin": "reflex", "what": "aside",
+        "status": "done", "said": "Looking for you."}
+    plan = {"steps": [{"skill": "search_face", "until": "face_found"}]}
+    event = acted("act-2", "body_plan", "failed", input=plan, reason="x" * 100,
+                  said="y" * 5000)
+    assert event["input"] == plan
+    assert len(event["reason"]) == 64 and len(event["said"]) == 4000  # the kernel's limits
 
 
 def test_busy_retries_the_same_turn_id(kernel):
@@ -247,11 +337,3 @@ def test_presence_goes_out_as_an_event(kernel):
     assert kernel.events() == [{"kind": "presence", "state": "seen", "confidence": 1.0}]
 
 
-def test_a_presence_send_never_takes_the_voice_down():
-    from reachy_sage_voice.pipeline import report_presence
-
-    class Down:
-        async def presence(self, state, confidence):
-            raise KernelUnavailableError("refused")
-    asyncio.run(report_presence(Down(), {"kind": "presence", "state": "seen",
-                                         "confidence": 1.0}))

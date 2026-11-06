@@ -1,0 +1,6 @@
+# The owner's voice is biometric: recordings, and any audio, stay on this machine.
+recordings/
+*.wav
+
+# eval/replay.py: the public replay set, its source clips and its LibriSpeech download.
+replay/

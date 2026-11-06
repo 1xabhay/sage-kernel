@@ -1,115 +1,33 @@
-"""Device protocol v1 (sage-kernel docs/PROTOCOL.md) over stdlib HTTP.
+"""Device protocol v1 (sage-kernel docs/PROTOCOL.md) over stdlib HTTP, for any body.
 
 ``KernelClient`` is the wire: one call per route, every outage a
 ``KernelUnavailableError``, ``rate_limited`` waited out. ``Session`` is one
-body's conversation rules on top: hello before each turn, busy and
-``unknown_pending`` handled, the effects cursor kept. Blocking HTTP runs in a
-thread so the Pipecat loop never waits on it.
+body's conversation rules on top: hello once per connect, busy and
+``unknown_pending`` handled, the effects cursor kept. The body's manifest is
+data the caller hands in. Blocking HTTP runs in a thread so the event loop
+never waits on it.
 """
 
 import asyncio
 import json
 import logging
-import math
-import re
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Awaitable, Callable, Mapping
-
-from reachy_sage_voice import voice
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-#: The body language the model may choose, all from the robot's recorded-moves
-#: library: the pet's 30 (reachy_mini_pet/live.py), the expressive moves the
-#: owner added, and every variant of an offered move. Never a negative one
-#: (rage, furious, contempt, disgusted, dying, reprimand, irritated, displeased,
-#: frustrated): owner. Copied, not imported: this app never loads the pet.
-EMOTIONS = (
-    # the pet's 30
-    "amazed1", "attentive1", "boredom1", "calming1", "cheerful1", "confused1", "curious1",
-    "dance1", "enthusiastic1", "grateful1", "helpful1", "impatient1", "inquiring1",
-    "laughing1", "loving1", "no1", "oops1", "proud1", "relief1", "sad1", "scared1",
-    "serenity1", "shy1", "success1", "surprised1", "thoughtful1", "tired1",
-    "understanding1", "welcoming1", "yes1",
-    # expressive moves
-    "waiting", "come1", "go_away1", "lonely1", "uncertain1", "electric1", "yes_sad1",
-    "no_excited1", "no_sad1",
-    # further variants of offered moves
-    "attentive2", "boredom2", "dance2", "dance3", "enthusiastic2", "helpful2", "impatient2",
-    "inquiring2", "inquiring3", "laughing2", "oops2", "proud2", "proud3", "relief2", "sad2",
-    "success2", "surprised2", "thoughtful2", "understanding2", "welcoming2",
-)
 
-#: Moves for the coming mood model, not the emote tool: declared so the
-#: vocabulary contract keeps them honest, never offered to the model yet.
-STATE_MOVES = ("sleep1", "mini-deep-sleep", "wake-mini-up", "toc-toc-toc")
+def acted(act_id: str, what: str, status: str, input: dict | None = None,
+          reason: str | None = None, said: str | None = None, origin: str = "reflex") -> dict:
+    """Build the v1.1 ``acted`` event: what the body did (``body_plan``) or said (``aside``) alone.
 
-#: Declared moves the library records without a sound; they always play muted.
-NO_SOUND = frozenset({"waiting"})
-
-#: One clear line for the moves whose library description is weak: it names
-#: another move, or does not say when to use it. The library stays the source
-#: for every other move.
-DESCRIPTIONS = {
-    "attentive2": "Listen closely while someone is talking, to encourage them to go on.",
-    "boredom2": "Doze off and snore, when no one has talked to you for a long while.",
-    "cheerful1": "A happy little whistle, when someone proposes something that pleases you.",
-    "confused1": "Use it when you don't know how to answer a question; it can be funny.",
-    "curious1": "Glance around at everyone, in a conversation with several people.",
-    "dance3": "Dance energetically and wiggle, when lively music is playing.",
-    "enthusiastic2": "Light excitement, for everyday good news.",
-    "impatient2": "Show impatience, when you disagree or someone is stalling.",
-    "inquiring2": "A light questioning look, when you are thinking and need more details.",
-    "laughing2": "A light laugh, for a mildly funny remark.",
-    "proud1": "Look around with a satisfied air, when something has gone well.",
-    "relief2": "Settle down calmly, when mild annoyance or tension passes.",
-    "waiting": "Wait patiently, when you expect someone to answer or act.",
-}
-
-
-def load_moves(vocabulary: tuple[str, ...] = EMOTIONS) -> dict:
-    """Load the declared moves from the robot's recorded-moves library, by name.
-
-    The library reads the local Hugging Face cache first (the robot daemon
-    preloads it) and downloads only if it is missing.
+    Unset fields are left out; ``reason`` and ``said`` are cut to the kernel's 64 and 4000.
     """
-    from reachy_mini.motion.recorded_move import DEFAULT_EMOTIONS_DATASET, RecordedMoves
-
-    library = RecordedMoves(DEFAULT_EMOTIONS_DATASET)
-    return {name: library.get(name) for name in vocabulary}
-
-
-def describe_move(name: str, move) -> str:
-    """One line on what a move means: the override, else the library's first sentence."""
-    if name in DESCRIPTIONS:
-        return DESCRIPTIONS[name]
-    return re.split(r"(?<=[.!?])\s", move.description.strip(), maxsplit=1)[0]
-
-
-def manifest(moves: Mapping) -> dict:
-    """Describe what this body can do, as MCP-shaped tools. Replies are not a tool in v1.
-
-    The tools are emote, then voice_style and vocal (``voice.py``).
-
-    ``moves`` maps each declared name to its recorded move (``.duration``,
-    ``.description``). ``max_s`` is the longest of them, rounded up, plus 1 s,
-    so the kernel never times out a move still playing. Each name's first
-    line (``describe_move``) rides beside the enum, which is what the kernel checks.
-    """
-    names = list(moves)
-    meanings = "\n".join(f"{name}: {describe_move(name, moves[name])}" for name in names)
-    return {"senses": ["speech"], "tools": [{
-        "name": "emote",
-        "description": "Show a feeling with the body, just before speaking.",
-        "inputSchema": {"type": "object",
-                        "properties": {"name": {"type": "string", "enum": names,
-                                                "description": meanings}},
-                        "required": ["name"]},
-        "max_s": math.ceil(max(m.duration for m in moves.values())) + 1,
-        "interruptible": True,
-    }, *voice.tools(moves)]}
+    event = {"kind": "acted", "act_id": act_id, "origin": origin, "what": what, "input": input,
+             "status": status, "reason": reason and reason[:64], "said": said and said[:4000]}
+    return {k: v for k, v in event.items() if v is not None}
 
 
 class KernelUnavailableError(Exception):
@@ -179,9 +97,25 @@ class Session:
         self.client, self.manifest = client, manifest
         self.retry_s, self.clock, self.sleep = retry_s, clock, sleep
         self.cursor: int | None = None
+        self.features: frozenset[str] | None = None  # what the kernel serves; None before hello
 
     async def _io(self, fn, *args):
-        return await asyncio.to_thread(fn, *args)
+        try:
+            answer = await asyncio.to_thread(fn, *args)
+            if fn != self.client.hello and answer[0] == 409 \
+                    and answer[1].get("code") == "hello_first":
+                self.features = None  # restarted between calls: hello again, retry once
+                await self.hello()
+                answer = await asyncio.to_thread(fn, *args)
+            return answer
+        except KernelUnavailableError:
+            self.features = None  # down, maybe restarted: it forgets manifests, so hello again
+            raise
+
+    async def _connect(self) -> None:
+        """Say hello once per connect: first, and after an outage or a reset."""
+        if self.features is None:
+            await self.hello()
 
     async def hello(self) -> None:
         """Declare this body; the first time, start the cursor at the journal's head."""
@@ -190,13 +124,20 @@ class Session:
             raise KernelUnavailableError(f"hello refused: {body}")
         if self.cursor is None:
             self.cursor = body["sequence"]  # start at the head: never replay old replies
+        self.features = frozenset(body.get("features", ()))  # none: a plain v1 kernel
 
-    async def start(self, turn_id: str, text: str, timing: dict) -> str:
-        """Submit a turn: "admitted", "busy" (gave up after ``retry_s``), or "refused"."""
-        await self.hello()  # before every turn: the kernel forgets manifests when it restarts
+    async def start(self, turn_id: str, text: str, timing: dict,
+                    input: dict | None = None) -> str:
+        """Submit a turn: "admitted", "busy" (gave up after ``retry_s``), or "refused".
+
+        ``input`` says how the line came in (v1.1), for a kernel whose features have it.
+        """
+        await self._connect()
         event = {"kind": "submitted", "turn_id": turn_id, "text": text}
         if timing:
             event["timing"] = timing
+        if input and "input" in self.features:
+            event["input"] = input
         deadline, acknowledged = self.clock() + self.retry_s, False
         while True:
             status, body = await self._io(self.client.event, event)
@@ -226,11 +167,11 @@ class Session:
 
     async def poll(self, offset: int, wait: float) -> dict:
         """One long poll. Advances the cursor; a ``reset`` restarts it and returns nothing."""
-        if self.cursor is None:
-            await self.hello()  # from the journal's head, never from 0: old replies stay old
+        await self._connect()  # the first: from the journal's head, never 0: old replies stay old
         status, body = await self._io(self.client.effects, self.cursor or 0, wait, offset)
         if status == 409 and body.get("code") == "reset":
             self.cursor = body["sequence"]
+            self.features = None  # a new journal: a new kernel, which never heard this body
             return {"sequence": self.cursor, "effects": []}
         if status != 200:
             raise KernelUnavailableError(f"effects refused: {status} {body}")
@@ -263,10 +204,22 @@ class Session:
             event["duration_ms"] = duration_ms
         await self._io(self.client.event, event)
 
+    async def act(self, event: dict) -> None:
+        """Send an ``acted`` event to a kernel whose features have it; to any other, nothing."""
+        if "acted" in (self.features or ()):
+            await self._io(self.client.event, event)
+
     async def presence(self, state: str, confidence: float) -> None:
         """Report someone seen or lost (contract draft: {kind: presence, state, confidence})."""
         await self._io(self.client.event,
                        {"kind": "presence", "state": state, "confidence": confidence})
+
+    async def notes(self, topic: str, passages: list[str]) -> None:
+        """Hand the kernel a document to answer from (§10); KernelUnavailableError if refused."""
+        status, body = await self._io(self.client.event,
+                                      {"kind": "notes", "topic": topic, "passages": passages})
+        if status != 200:
+            raise KernelUnavailableError(f"notes refused: {status} {body}")
 
     async def stop(self, turn_id: str) -> None:
         """Cancel this body's running turn."""

@@ -18,9 +18,12 @@ dependencies = [
     # The version an earlier voice bot measured its voice pipeline on. Silero's onset edge
     # drives barge-in.
     "pipecat-ai[silero]==1.12.0",
+    "reachy-mini-dances-library==0.2.1",
     # Settings from a .env, as Pollen's conversation app reads them.
     "python-dotenv>=1.2",
     "platformdirs>=4",
+    # Body-agnostic device code (docs/design/LAYERS.md §2.5), from this checkout.
+    "sage-device",
 ]
 
 [project.entry-points."reachy_mini_apps"]
@@ -32,7 +35,7 @@ reachy-sage-voice = "reachy_sage_voice.main:ReachySageVoice"
 sage-voice-turn-end = "reachy_sage_voice.turn_end:main"
 
 [project.urls]
-Source = "https://github.com/1xabhay/reachy-mini-lab/tree/main/apps/reachy_sage_voice"
+Source = "https://github.com/1xabhay/sage-kernel/tree/main/devices/reachy-mini/apps/reachy_sage_voice"
 Space = "https://huggingface.co/spaces/sabhay22/reachy_sage_voice"
 
 [dependency-groups]
@@ -65,6 +68,9 @@ constraint-dependencies = [
     "gstreamer-python==1.28.6",
 ]
 
+[tool.uv.sources]
+sage-device = { path = "../../../common/sage_device", editable = true }
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["reachy_sage_voice*"]
@@ -76,6 +82,7 @@ addopts = "-m 'not integration'"
 markers = [
     "integration: the voice against the real Sage kernel (make integration)",
     "kernel_env: kernel settings for one integration test",
+    "slew: keep the arbiter's real slew caps (conftest no_slew_limit)",
 ]
 
 [tool.ruff]

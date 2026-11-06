@@ -8,10 +8,12 @@ services/tts app serves them: NDJSON lines of base64 PCM plus
 import asyncio
 import base64
 import json
+import time
 
 import numpy as np
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
+    ErrorFrame,
     InterruptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
@@ -19,6 +21,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.tests.utils import SleepFrame, run_test
 
+from reachy_sage_voice import health
 from reachy_sage_voice.interruption import InterruptionTracker
 from reachy_sage_voice.sage import BotSpeech, Playback
 from reachy_sage_voice.transport import ReachyOutputTransport
@@ -123,3 +126,67 @@ def test_an_interrupted_reply_reports_only_the_words_already_played(http_server)
     heard = playback.text.split()
     assert heard == [f"w{i}" for i in range(len(heard))]  # a prefix, in order
     assert 2 <= len(heard) <= 7  # about 0.9 s of a 2 s reply, not all of it
+
+
+def test_a_name_is_said_as_respelled_and_heard_back_as_written(http_server):
+    """Kokoro reads "Mika" near "Mica"; the owner picked "Mee-kah". The history keeps "Mika"."""
+    from sage_device import names
+    http_server.script("POST", "/dev/captioned_speech", ndjson(
+        line(0.6, [("Hi", 0.0, 0.2), ("Mee-kah.", 0.2, 0.6)])))
+    service = tts(http_server, names=names.parse("Mika:Mee-kah:Micah"))
+    down, _ = asyncio.run(run_test(service, frames_to_send=[TTSSpeakFrame("Hi Mika."), SleepFrame(0.3)]))
+    (req,) = [r for r in http_server.requests if r["path"] == "/dev/captioned_speech"]
+    assert req["body"]["input"] == "Hi Mee-kah."
+    assert texts(down) == ["Hi", "Mika."]
+
+
+def test_three_silent_replies_do_not_silence_the_voice_for_good(http_server):
+    """2026-10-27: Pipecat wrote the service off after three, and Sage was mute for 5h45m."""
+    http_server.script("POST", "/dev/captioned_speech", (500, {}), (200, b""), (500, {}),
+                       ndjson(line(0.2, [("Back.", 0.0, 0.2)])))
+    service = tts(http_server)
+    service._stop_frame_timeout_s = 0.05  # so that a failed reply closes quickly before the fix too
+    down, _ = asyncio.run(run_test(service, frames_to_send=[
+        f for text in ("One.", "Two.", "Three.", "Back.")
+        for f in (TTSSpeakFrame(text), SleepFrame(0.2))]))
+    assert len([r for r in http_server.requests if r["path"] == "/dev/captioned_speech"]) == 4
+    assert any(isinstance(f, TTSAudioRawFrame) for f in down)
+    assert service.is_usable
+
+
+def test_a_reply_after_a_failed_one_does_not_wait_out_the_timeout(http_server):
+    http_server.script("POST", "/dev/captioned_speech", (500, {}),
+                       ndjson(line(0.2, [("Back.", 0.0, 0.2)])))
+    began = time.monotonic()
+    down, _ = asyncio.run(run_test(tts(http_server), frames_to_send=[
+        TTSSpeakFrame("Hello?"), SleepFrame(0.1), TTSSpeakFrame("Back."), SleepFrame(0.1)]))
+    assert any(isinstance(f, TTSAudioRawFrame) for f in down)
+    assert time.monotonic() - began < 2.5  # the default stop timeout alone is 3 s
+
+
+def test_a_slow_clause_is_not_a_silent_one(http_server):
+    """Past Pipecat's default wait of 3 s, a clause on its way counted as silence (2026-10-27)."""
+    def slowly(_):
+        time.sleep(3.3)
+        return ndjson(line(0.2, [("Slow.", 0.0, 0.2)]))
+    http_server.script("POST", "/dev/captioned_speech", slowly)
+    gestures = []
+    down, up = asyncio.run(run_test(tts(http_server, on_down=lambda: gestures.append("down")),
+                                    frames_to_send=[TTSSpeakFrame("Slow."), SleepFrame(0.3)]))
+    assert any(isinstance(f, TTSAudioRawFrame) for f in down)
+    assert not [f for f in up if isinstance(f, ErrorFrame)] and not gestures
+
+
+def test_a_silent_clause_shows_down_then_audio_shows_up(http_server):
+    """The server takes the request and says nothing: no error, yet the clause went unsaid."""
+    http_server.script("POST", "/dev/captioned_speech", (200, b""),
+                       ndjson(line(0.2, [("Back.", 0.0, 0.2)])))
+    gestures, seen = [], []
+
+    def on_down():
+        gestures.append("down")
+        seen.append(health.TABLE["voice.tts"].ok)
+    asyncio.run(run_test(tts(http_server, on_down=on_down), frames_to_send=[
+        TTSSpeakFrame("Hello?"), SleepFrame(0.1), TTSSpeakFrame("Back."), SleepFrame(0.1)]))
+    assert gestures == ["down"] and seen == [False]
+    assert health.TABLE["voice.tts"].ok

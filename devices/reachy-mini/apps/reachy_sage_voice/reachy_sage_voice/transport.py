@@ -8,6 +8,14 @@ Input (mic -> pipeline)
     in as the robot delivers them: the VAD and the segmented STT buffer to the
     sizes they need, so nothing here reframes to 320 samples.
 
+    The robot's mic delivers samples even in a silent room, so ``MIC_SILENT_S``
+    with none at all means the robot link is gone (live 2026-10-22: the WebRTC
+    stream died and the voice sat deaf for two hours). With ``recover``, a
+    quiet mic first gets up to ``RECOVER_ATTEMPTS`` media resets
+    (``media_reset.py``), each followed by ``RECOVER_LISTEN_S`` to hear audio
+    again; audio back starts the count over. Then ``on_silent`` hears it once,
+    and reading stops. A mic call that raises counts as no audio.
+
     With ``record_dir``, each VAD segment's raw stereo, with the same 1 s
     before it that Pipecat's segmented STT keeps, is saved there as a WAV for
     the offline channel A/B (``bench/mic_channels.py``). It is the owner's
@@ -31,6 +39,7 @@ Echo
 """
 
 import asyncio
+import logging
 import time
 import wave
 from collections import deque
@@ -51,16 +60,31 @@ from pipecat.frames.frames import (
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import TransportParams
+from sage_device.latency import LEAD_MS
+
+from reachy_sage_voice.song import KEEP_S
+
+logger = logging.getLogger(__name__)
 
 #: How long to wait before asking an empty mic again.
 _MIC_IDLE_S = 0.005
 
+#: Seconds without a single mic sample that mean the robot link is lost.
+MIC_SILENT_S = 5.0
+#: Media resets tried on a quiet mic before the link counts as lost.
+#: ponytail: 3 with doubling waits (media_reset.RELEASE_WAIT_S) covers ~30 s of a USB device
+#: coming back; raise it if the robot shows the device takes longer.
+RECOVER_ATTEMPTS = 3
+#: How long after a reset the mic gets to deliver. WebRTC renegotiates from scratch.
+#: ponytail: 10 s is a guess; measure a reconnect on the robot.
+RECOVER_LISTEN_S = 10.0
+
 #: How far ahead of real playback audio may be handed to the robot. Writes wait
 #: out the rest, so Pipecat's "bot speaking" matches what the speaker plays.
-#: ponytail: a guess at 150 ms. It must be measured live against the robot's
+#: ponytail: a guess, latency.LEAD_MS. It must be measured live against the robot's
 #: buffer depth: too small and the speaker starves between chunks, too large
 #: and an interruption still lets that much of the reply play.
-PLAYBACK_LEAD_S = 0.15
+PLAYBACK_LEAD_S = LEAD_MS / 1000
 
 #: The XVF3800's stereo is two processed outputs; which carries the ASR beam is
 #: undocumented, so the A/B decides. "mean" mixes both.
@@ -146,14 +170,22 @@ class ReachyInputTransport(BaseInputTransport):
     """The robot's microphone as Pipecat audio input."""
 
     def __init__(self, media: ReachyMedia, params: TransportParams, mic_channel: str = "mean",
-                 record_dir: str | None = None, **kwargs):
-        """Read ``mic_channel`` (one of ``MIC_CHANNELS``) from ``media``; maybe record."""
+                 record_dir: str | None = None,
+                 on_silent: Callable[[str], None] | None = None,
+                 recover: Callable[[int], Awaitable[None]] | None = None, **kwargs):
+        """Read ``mic_channel`` (one of ``MIC_CHANNELS``) from ``media``; maybe record.
+
+        ``on_silent(reason)`` is called once if the mic delivers nothing for ``MIC_SILENT_S``,
+        after ``recover(attempt)`` has been tried ``RECOVER_ATTEMPTS`` times.
+        """
         super().__init__(params, **kwargs)
-        self._media, self._mic_channel = media, mic_channel
+        self._media, self._mic_channel, self._on_silent = media, mic_channel, on_silent
+        self._recover = recover
         self._record_dir = record_dir
         self._recorder: UtteranceRecorder | None = None
         self._channels = 1
         self._reader: asyncio.Task | None = None
+        self._heard = bytearray()  # the last KEEP_S of the mic, for a song snippet
 
     async def start(self, frame: StartFrame):
         """Start recording and reading."""
@@ -184,6 +216,14 @@ class ReachyInputTransport(BaseInputTransport):
             if segment:
                 await asyncio.to_thread(self._recorder.write, *segment, self._channels)
 
+    def _keep(self, pcm: bytes, rate: int) -> None:
+        self._heard += pcm
+        del self._heard[:max(0, len(self._heard) - 2 * rate * KEEP_S)]
+
+    def snippet(self, seconds: float, rate: int | None = None) -> bytes:
+        """The mic's last ``seconds`` as 16-bit mono PCM (``song.SongListener``)."""
+        return bytes(self._heard[-2 * int((rate or self.sample_rate) * seconds):])
+
     async def _halt(self) -> None:
         if self._reader:
             await self.cancel_task(self._reader)
@@ -191,20 +231,40 @@ class ReachyInputTransport(BaseInputTransport):
             self._media.stop_recording()
 
     async def _read(self) -> None:
-        # ponytail: assumes get_audio_sample() does not block (it pulls from a
-        # GStreamer appsink); move it to a thread if the robot shows otherwise.
+        heard_at, attempts, failing = time.monotonic(), 0, False
         while True:
-            samples = self._media.get_audio_sample()
+            try:  # off the loop: a read blocks up to 20 ms (the SDK's get_sample), a motion tick
+                samples = await asyncio.to_thread(self._media.get_audio_sample)
+            except Exception as error:  # a dead media link: no audio, not a dead reader
+                if not failing:
+                    logger.warning("the robot's mic failed: %s", error)
+                samples, failing = None, True
             if samples is None:
+                limit = RECOVER_LISTEN_S if attempts else MIC_SILENT_S
+                if self._on_silent and time.monotonic() - heard_at > limit:
+                    if self._recover and attempts < RECOVER_ATTEMPTS:
+                        attempts += 1
+                        logger.warning("no audio from the robot's mic for %g s: resetting its "
+                                       "media (%d of %d)", limit, attempts, RECOVER_ATTEMPTS)
+                        await self._recover(attempts)
+                        heard_at = time.monotonic()
+                        continue
+                    tried = (f", nor after {attempts} media reset{'s' * (attempts > 1)} "
+                             "(release, acquire, reconnect)") if attempts else ""
+                    self._on_silent(f"no audio from the robot's mic for {MIC_SILENT_S:g} s{tried}")
+                    return
                 await asyncio.sleep(_MIC_IDLE_S)
                 continue
+            if attempts:
+                logger.warning("the robot's mic is back after %d media reset(s)", attempts)
+            heard_at, attempts, failing = time.monotonic(), 0, False
             if self._recorder:
                 self._recorder.feed(samples)
                 self._channels = samples.shape[1] if samples.ndim > 1 else 1
+            pcm = to_pcm16(samples, self._mic_channel)
+            self._keep(pcm, self.sample_rate)
             await self.push_audio_frame(InputAudioRawFrame(
-                audio=to_pcm16(samples, self._mic_channel), sample_rate=self.sample_rate,
-                num_channels=1))
-            await asyncio.sleep(0)  # a mic that always has audio must not starve the loop
+                audio=pcm, sample_rate=self.sample_rate, num_channels=1))
 
 
 class ReachyOutputTransport(BaseOutputTransport):

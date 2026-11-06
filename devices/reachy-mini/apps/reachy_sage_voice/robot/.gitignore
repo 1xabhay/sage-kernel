@@ -1,0 +1,4 @@
+# What make beam-on read from the chip, for make beam-off.
+.beam-before.json
+# ROBOT=user@host for the Makefile: local only.
+.env

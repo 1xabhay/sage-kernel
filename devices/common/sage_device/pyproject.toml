@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sage-device"
+version = "0.1.0"
+description = "Body-agnostic device code shared by every Sage body (docs/design/LAYERS.md §2.5)"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+# Stdlib only: a body's own pins (Pipecat's, the robot SDK's) never meet here.
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sage_device*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend = "../../reachy-mini/pyproject.toml"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D101", "D102", "D103", "D105", "D107"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sage_device"]

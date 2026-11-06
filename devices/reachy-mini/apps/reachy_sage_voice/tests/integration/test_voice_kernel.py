@@ -30,10 +30,11 @@ from pipecat.frames.frames import InterruptionFrame, TranscriptionFrame, TTSText
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.tests.utils import SleepFrame, run_test
 from pipecat.transports.base_transport import TransportParams
+from sage_device.kernel import KernelClient, Session
 
 from reachy_sage_voice import clause
 from reachy_sage_voice.interruption import InterruptionTracker
-from reachy_sage_voice.kernel import EMOTIONS, KernelClient, Session, manifest
+from reachy_sage_voice.manifest import EMOTIONS, manifest
 from reachy_sage_voice.pipeline import report_presence
 from reachy_sage_voice.sage import BotSpeech, Playback, SageProcessor
 from reachy_sage_voice.transport import ReachyOutputTransport
@@ -101,7 +102,7 @@ class Rig:
         client = KernelClient(f"http://127.0.0.1:{self.process.device_port}",
                               self.conformance.TOKENS["reachy"])
         self.session = Session(client, manifest(dict.fromkeys(EMOTIONS, Move())), retry_s=retry_s)
-        tts = KokoroTTSService(base_url=self.tts.url + "/v1", voice="af_heart")
+        tts = KokoroTTSService(base_url=self.tts.url + "/v1", voice="azelma")
         clause.install(tts)
         playback = Playback()
         pipeline = Pipeline([

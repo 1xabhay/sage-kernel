@@ -29,6 +29,62 @@ def no_real_dotenv(monkeypatch):
     monkeypatch.setattr(voice, "env_files", lambda: [])
 
 
+@pytest.fixture(autouse=True)
+def no_real_heartbeat(monkeypatch):
+    """No test writes the real heartbeat that `make status` reads, or keeps another's table."""
+    from reachy_sage_voice import health
+
+    monkeypatch.setattr(health, "start", lambda *args, **kwargs: None)
+    monkeypatch.setattr(health, "TABLE", {})
+
+
+@pytest.fixture(autouse=True)
+def single_writer():
+    """M1 (LAYERS.md §4): with the arbiter, every motion call a fake sees is the runner's send."""
+    from fake_mini import OFF_RUNNER
+
+    OFF_RUNNER.clear()
+    yield
+    assert not OFF_RUNNER, f"M1: motion calls off the runner: {sorted(set(OFF_RUNNER))}"
+
+
+@pytest.fixture(autouse=True)
+def no_slew_limit(request, monkeypatch):
+    """Outside test_arbiter (and tests marked ``slew``) the slew caps are off: quick gotos."""
+    if request.module.__name__.endswith("test_arbiter") or request.node.get_closest_marker("slew"):
+        return
+    from reachy_sage_voice.motion import arbiter
+
+    for caps in (arbiter.VMAX, arbiter.AMAX):
+        for key in caps:
+            monkeypatch.setitem(caps, key, 1e9)
+    if "real_speed" in request.fixturenames:
+        return
+    # and a move lasts as long as the old fixed one did (make's segment_s), not seconds
+    for key in arbiter.PEAK_SPEED:
+        monkeypatch.setitem(arbiter.PEAK_SPEED, key, 1e9)
+    monkeypatch.setattr(arbiter, "MIN_MOVE_S", 0.02)
+
+
+@pytest.fixture(autouse=True)
+def no_track_ramp(monkeypatch):
+    """Bring the tracker's weight up at once, but in the tests of its ramp (they set the time)."""
+    from reachy_sage_voice import executor
+
+    monkeypatch.setattr(executor, "TRACK_RAMP_S", 0.0, raising=False)
+
+
+@pytest.fixture
+def real_speed():
+    """Move at the robot's peak speeds and minimum duration (``no_slew_limit`` keeps them)."""
+
+
+@pytest.fixture(params=["0", "1"], ids=["arbiter-off", "arbiter-on"])
+def arbiter(request, monkeypatch):
+    """Run a test with the motion arbiter off and on (SAGE_VOICE_ARBITER), both paths kept."""
+    monkeypatch.setenv("SAGE_VOICE_ARBITER", request.param)
+
+
 class FakeKernel:
     def __init__(self):
         self.replies: dict[tuple[str, str], list[tuple[int, object]]] = {}

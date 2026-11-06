@@ -18,7 +18,7 @@ import sim
 from conftest import API, api, present
 
 APP = Path(__file__).parent.parent
-VOICE_KERNEL = APP.parent / "reachy_sage_voice" / "reachy_sage_voice" / "kernel.py"
+VOICE_KERNEL = APP.parent / "reachy_sage_voice" / "reachy_sage_voice" / "manifest.py"
 SAGE_KERNEL = APP.parents[3]
 
 

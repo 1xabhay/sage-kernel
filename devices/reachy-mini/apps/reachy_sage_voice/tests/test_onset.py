@@ -1,4 +1,4 @@
-"""Barge-in on the VAD's QUIET -> STARTING edge, several frames before SPEAKING.
+"""Barge-in once speech has lasted ``min_onset_ms``; with 0, on the VAD's first voiced frame.
 
 The analyzer here is Pipecat's own VADAnalyzer state machine with a scripted
 confidence, so the edge under test is the real one, not a stand-in.
@@ -15,7 +15,6 @@ from reachy_sage_voice.onset import (
     SpeechOnsetMixin,
     build_speech_onset_silero,
     make_speech_onset_handler,
-    speech_edge,
 )
 
 FRAME = 320  # samples per Reachy mic frame at 16 kHz
@@ -36,7 +35,7 @@ class ScriptedVAD(VADAnalyzer):
 
 
 class OnsetVAD(SpeechOnsetMixin, ScriptedVAD):
-    pass
+    min_onset_ms = 0  # the first voiced frame, as STARTING; each test sets it where it matters
 
 
 def run_frames(vad, n):
@@ -45,18 +44,38 @@ def run_frames(vad, n):
     return asyncio.run(go())
 
 
-def test_edges():
-    assert speech_edge(VADState.QUIET, VADState.STARTING) == "detected"
-    assert speech_edge(VADState.QUIET, VADState.SPEAKING) == "detected"
-    assert speech_edge(VADState.STARTING, VADState.SPEAKING) is None
-    assert speech_edge(VADState.SPEAKING, VADState.STOPPING) is None
-    assert speech_edge(VADState.STARTING, VADState.QUIET) == "cleared"
-    assert speech_edge(VADState.STOPPING, VADState.QUIET) == "cleared"
-    for s in VADState:
-        assert speech_edge(s, s) is None
+def test_barge_in_waits_until_speech_has_lasted_min_onset_ms():
+    # Live 2026-10-23: 20 of 43 barge-ins had no speech the VAD confirmed (a breath, a knock,
+    # the robot's own voice), 7 more no words. Speech must last before the robot stops.
+    vad = OnsetVAD([1.0] * 20)
+    vad.min_onset_ms = 200
+    fired_at: list[int] = []
+    frames: list[int] = []
+    vad.set_onset_handlers(on_detected=lambda: fired_at.append(len(frames)))
+
+    async def go():
+        for _ in range(20):
+            await vad.analyze_audio(LOUD)
+            frames.append(1)
+    asyncio.run(go())
+    assert fired_at == [9]  # the tenth 20 ms frame: 200 ms of speech
 
 
-def test_onset_fires_on_starting_well_before_speaking():
+def test_a_blip_shorter_than_min_onset_ms_never_barges_in():
+    vad = OnsetVAD([1.0] * 5 + [0.0] * 5 + [1.0] * 5)
+    vad.min_onset_ms = 200
+    seen: list[str] = []
+    vad.set_onset_handlers(on_detected=lambda: seen.append("on"),
+                           on_cleared=lambda: seen.append("off"))
+    run_frames(vad, 15)
+    assert seen == []
+
+
+def test_the_default_minimum_is_the_vads_own_start():
+    assert SpeechOnsetMixin.min_onset_ms == 200
+
+
+def test_with_no_minimum_onset_fires_on_starting_well_before_speaking():
     vad = OnsetVAD([1.0] * 20)
     fired_at: list[int] = []
     states: list[VADState] = []
@@ -142,3 +161,57 @@ def test_real_silero_runs_on_the_overridden_onnxruntime():
     states = run_frames(vad, 50)  # one second of 20 ms frames
     assert onnxruntime.__version__ == "1.27.0"
     assert set(states) <= set(VADState)
+
+
+def reflexes(confidences):
+    """Run the frames; return what fired, as (frame index, what)."""
+    vad, frames, fired = OnsetVAD(confidences), [], []
+    vad.set_params(VADParams(start_secs=0.2, stop_secs=0.6, min_volume=0.0))
+
+    def note(what):
+        return lambda: fired.append((len(frames), what))
+    vad.set_reflex_handlers(on_voice=note("voice"), on_pause=note("pause"), on_quiet=note("quiet"))
+
+    async def go():
+        for _ in confidences:
+            await vad.analyze_audio(LOUD)
+            frames.append(1)
+    asyncio.run(go())
+    return fired
+
+
+def test_the_first_voiced_frame_is_the_voice_and_it_fires_once():
+    assert reflexes([1.0] * 20) == [(0, "voice")]
+
+
+def test_two_hundred_ms_of_silence_is_a_pause_long_before_the_turn_ends():
+    fired = reflexes([1.0] * 20 + [0.0] * 60)  # the default stop_secs, 0.6: 30 frames
+    assert fired[1] == (20 + 9, "pause")  # the tenth 20 ms frame of silence: 200 ms
+    assert fired[2][1] == "quiet" and fired[2][0] > 29
+
+
+def test_a_pause_that_goes_on_speaking_can_pause_again():
+    fired = reflexes([1.0] * 20 + [0.0] * 15 + [1.0] * 5 + [0.0] * 15)
+    assert [what for _, what in fired] == ["voice", "pause", "pause"]
+
+
+def test_a_false_start_never_nods_and_goes_quiet():
+    fired = reflexes([1.0] * 3 + [0.0] * 5)
+    assert [what for _, what in fired] == ["voice", "quiet"]
+
+
+def test_a_vad_stopping_at_the_pause_itself_still_pauses():
+    vad, fired = OnsetVAD([1.0] * 20 + [0.0] * 20), []
+    vad.set_params(VADParams(start_secs=0.2, stop_secs=0.2, min_volume=0.0))
+    vad.set_reflex_handlers(on_pause=lambda: fired.append("pause"))
+    run_frames(vad, 40)
+    assert fired == ["pause"]  # Smart Turn's 0.2 s VAD stop
+
+
+def test_a_failing_reflex_handler_costs_the_reflex_not_the_audio_path():
+    vad = OnsetVAD([1.0] * 3)
+
+    def boom():
+        raise RuntimeError("motor")
+    vad.set_reflex_handlers(on_voice=boom)
+    assert len(run_frames(vad, 3)) == 3

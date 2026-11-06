@@ -2439,6 +2439,18 @@ wheels = [
 ]
 
 [[package]]
+name = "reachy-mini-dances-library"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "reachy-mini" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5f/0e/7b26c96caf905e8e0cedff57251da4f953b1c2b97a611c86aee76318f5d1/reachy_mini_dances_library-0.2.1.tar.gz", hash = "sha256:f63fbb0e27f97c547f4e4487e8491495365b24c6f0d063780ef1da9fa5b1daf1", size = 14022, upload-time = "2025-10-15T16:09:00.965Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e2/52/69d2d0434019e72811f77bfe408e6781a8bee10639e480d9d6ac1b745f81/reachy_mini_dances_library-0.2.1-py3-none-any.whl", hash = "sha256:b3b2028dd92648b70c262535e9b77aa481a0a3dcf6f2ceece84c08b725cbbddf", size = 16159, upload-time = "2025-10-15T16:08:59.673Z" },
+]
+
+[[package]]
 name = "reachy-mini-motor-controller"
 version = "1.5.6"
 source = { registry = "https://pypi.org/simple" }
@@ -2542,6 +2554,8 @@ dependencies = [
     { name = "platformdirs" },
     { name = "python-dotenv" },
     { name = "reachy-mini" },
+    { name = "reachy-mini-dances-library" },
+    { name = "sage-device" },
 ]
 
 [package.dev-dependencies]
@@ -2557,6 +2571,8 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4" },
     { name = "python-dotenv", specifier = ">=1.2" },
     { name = "reachy-mini", specifier = "==1.10.0" },
+    { name = "reachy-mini-dances-library", specifier = "==0.2.1" },
+    { name = "sage-device", editable = "../../../common/sage_device" },
 ]
 
 [package.metadata.requires-dev]
@@ -2663,6 +2679,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1a/fb/e63a36a2d7a4902642319dffdf4b7242f3743fc2814b0f356b80eace49d4/rustypot-1.13.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:418428383822ddbe578fea658ccf216a0bcf4ac384612fffc6fc43b57abb83d9", size = 2067678, upload-time = "2026-10-14T16:08:45.149Z" },
     { url = "https://files.pythonhosted.org/packages/5a/c1/f4e3ca61f6c491928472fa50c3b34ace99f270287247a7244194ca1b3932/rustypot-1.13.1-cp314-cp314-win_amd64.whl", hash = "sha256:765089973ecc58b7e23c6a30c39605bde6a6658d03663e769626dba0a6f56ec2", size = 2243890, upload-time = "2026-10-14T16:09:37.013Z" },
     { url = "https://files.pythonhosted.org/packages/85/9e/f8214814e573270fbbb065e089240f53ae29685d6e7f302df7a2e589d07e/rustypot-1.13.1-cp315-cp315-win32.whl", hash = "sha256:c62602a507a87f89e871a81f9de5ebff49e73ffa1ae8b095ab5d7614ebced1e8", size = 1606765, upload-time = "2026-10-14T16:09:38.714Z" },
+]
+
+[[package]]
+name = "sage-device"
+version = "0.1.0"
+source = { editable = "../../../common/sage_device" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff", specifier = ">=0.9" },
 ]
 
 [[package]]

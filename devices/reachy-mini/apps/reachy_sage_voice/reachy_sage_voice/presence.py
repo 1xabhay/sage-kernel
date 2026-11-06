@@ -3,12 +3,19 @@
 A tracker that reports nothing is not an empty room: you lean out of frame, the
 light shifts. As the pet's FaceMemory does, the last sighting is held, then
 faded, and only when it has faded out is "lost" reported. Time is passed in.
+A face that is not fresh (the detector off, or an old stamp) is unknown, not
+an empty room: nothing is folded in and nothing sent (LAYERS.md F1, O3 a).
 The event follows the contract draft: ``{kind: "presence", state, confidence}``.
 """
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable
+
+from reachy_sage_voice.perception.face import Face
+
+logger = logging.getLogger(__name__)
 
 
 class Presence:
@@ -51,7 +58,7 @@ class Presence:
         return None
 
 
-async def watch_presence(detected: Callable[[], bool | None],
+async def watch_presence(face: Callable[[], Face],
                          send: Callable[[dict], Awaitable[None]],
                          clock: Callable[[], float] = time.monotonic,
                          sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -59,13 +66,15 @@ async def watch_presence(detected: Callable[[], bool | None],
                          until: Callable[[], bool] = lambda: False) -> None:
     """Poll the tracker every ``period_s``, sending only edges, through ``send``.
 
-    ``detected`` is e.g. ``lambda: mini.get_tracked_face(wait=False).detected``;
-    None (no reading) counts as not seen. ``make run`` starts it only with
-    SAGE_VOICE_PRESENCE=1, until the kernel accepts presence events.
+    ``face`` reads a ``Face`` percept; one not fresh is skipped, so it is never
+    "lost". ``make run`` starts it only with SAGE_VOICE_PRESENCE=1, until the
+    kernel accepts presence events.
     """
     presence = Presence()
     while not until():
-        event = presence.update(bool(await asyncio.to_thread(detected)), clock())
+        seen = await asyncio.to_thread(face)
+        event = presence.update(seen.detected, clock()) if seen.fresh else None
         if event is not None:
+            logger.info("arrived" if event["state"] == "seen" else "left")  # pet.py
             await send(event)
         await sleep(period_s)

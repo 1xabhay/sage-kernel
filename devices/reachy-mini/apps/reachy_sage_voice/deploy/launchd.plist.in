@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The voice at @SHA@ as a LaunchAgent, rendered by `make deploy` (deploy/deploy.sh). Settings come only
+     from the app's .env (make env), never from here: this file never holds a token. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>@LABEL@</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<!-- caffeinate holds the Mac awake for as long as the voice, which stays launchd's own pid. -->
+		<string>/usr/bin/caffeinate -i -s -w $$ &amp; exec "@APP@/.venv/bin/python" -u -m reachy_sage_voice</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>@APP@</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>@PATH@</string>
+		<key>SAGE_VOICE_BUILD</key>
+		<string>@SHA@</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>@LOG@</string>
+	<key>StandardErrorPath</key>
+	<string>@LOG@</string>
+</dict>
+</plist>

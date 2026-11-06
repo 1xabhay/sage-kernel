@@ -205,6 +205,7 @@ class EndToEnd(unittest.TestCase):
 
 
 class Replay(unittest.TestCase):
+    @unittest.skipUnless((Path(__file__).parents[1] / "bench" / "quiet.py").exists(), "the image has only bench/latency.py")
     def test_the_bench_replays_lines_through_the_kernel_and_scores_the_thresholds(self):
         import sys
         sys.path.insert(0, str(Path(__file__).parents[1] / "bench"))

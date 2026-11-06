@@ -5,9 +5,9 @@ name: sage-kernel-test
 
 services:
   conformance:
-    # Per lane (make passes LANE), so parallel worktrees never test each other's build.
-    image: sage-kernel-test:${LANE:-main}
-    build: .
+    # The image make deploy runs: make test passes the commit's tag (a dirty tree tests dev-<lane>).
+    image: sage-kernel:${SAGE_TAG:?set by make test}
+    pull_policy: never
     command: ["python", "-m", "unittest", "discover", "-s", "conformance", "-v"]
     extra_hosts:
       - "host.docker.internal:host-gateway"

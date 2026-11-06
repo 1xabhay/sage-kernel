@@ -20,7 +20,7 @@ def line(mono, turn, message):
 
 
 def test_a_silent_turn_stays_unmeasured_and_later_audio_is_not_its_own():
-    """A greeting's or aside's voice, after a move-only turn, would read as a minutes-long v2v_ms."""
+    """A greeting's or aside's voice, after a move-only turn, reads as a minutes-long v2v_ms."""
     found = latency.turns([line(100, "reachy-a", start("kernel", 300)),
                            line(101, "reachy-a", SAGE + latency.SILENT),
                            line(400, "reachy-a", SPOKE)])

@@ -50,7 +50,7 @@ yet and are not in CI (coming: plan C2, a `devices/reachy-mini/Makefile`).
 make -C experiments/sage-os test   # cargo tests, in Docker
 ```
 
-music-telling's targets move with it to `experiments/music-telling` (PR #6).
+music-telling's targets live in `experiments/music-telling`.
 
 ## Docs
 

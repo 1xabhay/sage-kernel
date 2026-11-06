@@ -17,8 +17,8 @@ TEST_TAG := $(if $(DIRTY),dev-$(LANE),$(SHA))
 TEST := SAGE_TAG=$(TEST_TAG) docker compose -p sage-kernel-test-$(LANE) -f compose.test.yaml
 LIVE := sage-kernel-kernel-1
 DEPLOY_LOG ?= $(HOME)/Library/Logs/reachy-sage/DEPLOYS.log
-# Every project in the monorepo. music-telling moves from apps/ to experiments/ in PR #6: either is found.
-PROJECTS := . devices/reachy-mini experiments/sage-os $(wildcard apps/music-telling experiments/music-telling)
+# Every project in the monorepo.
+PROJECTS := . devices/reachy-mini experiments/sage-os experiments/music-telling
 .PHONY: help hooks deploy up up-tag down image dev-image test-image backup run smoke release test check unit \
   conformance eval source imports docs lint vuln secrets hygiene test-all hygiene-all conventions latency
 
@@ -137,13 +137,9 @@ source:
 imports:
 	$(PYTHON) -m unittest tests.test_boundary
 
-# The docs' commands and links are real. make/docs.py arrives with PR #9 (repo/docs): skipped until then.
+# The docs' commands and links are real.
 docs:
-ifneq ($(wildcard make/docs.py),)
 	$(PYTHON) make/docs.py --check
-else
-	@echo "warning: make/docs.py is not here yet (PR #9): make docs skipped" >&2
-endif
 
 # Per-turn latency of the live kernel, read from a copy of its journal: the original is never opened.
 # SINCE=30 make latency keeps the last 30 minutes. ponytail: docker cp of a live WAL database can tear if the

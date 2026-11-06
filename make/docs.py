@@ -109,7 +109,8 @@ def resolves(root: Path, d: str, target: str, cache: dict) -> bool:
         if not (root / d / "Makefile").is_file():
             cache[key] = False
         else:
-            r = subprocess.run(["make", "-n", "-C", str(root / d), target], capture_output=True, text=True)
+            r = subprocess.run(["make", "-n", "-C", str(root / d), target], capture_output=True, text=True,
+                               check=False)
             cache[key] = r.returncode == 0
     return cache[key]
 
@@ -124,7 +125,7 @@ def check(root: Path = ROOT, skip=SKIP) -> list[str]:
         for n, prose, code in scan((root / path).read_text(encoding="utf-8", errors="replace")):
             for raw in LINK.findall(prose) + REF_DEF.findall(prose):
                 target = raw.split("#", 1)[0].split("?", 1)[0]
-                if not target or re.match(r"[a-z][a-z0-9+.-]*:", target, re.I):
+                if not target or re.match(r"[a-z][a-z0-9+.-]*:", target, re.IGNORECASE):
                     continue  # an anchor in this page, or a URL
                 rel = norm(target.lstrip("/") if target.startswith("/") else f"{base}/{target}")
                 if rel is None or not (rel == "" or rel in files or rel in dirs):

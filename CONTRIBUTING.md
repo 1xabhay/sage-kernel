@@ -12,7 +12,7 @@ comes with the guards lane, repo/guards).
 | `/` (`sage/`, `tests/`, `conformance/`, `evals/`) | the Python kernel; moves to `kernel/` last (plan WP E) | Docker, stdlib only |
 | `devices/reachy-mini/` | Reachy Mini workspace: `apps/reachy_sage_voice`, `apps/reachy_sim`, `apps/reachy_mini_testbench` | uv |
 | `experiments/sage-os/` | Rust kernel experiment | Docker, cargo |
-| `experiments/music-telling/` | songs-as-story CLI, standalone (after PR #6; today `apps/music-telling/`) | uv |
+| `experiments/music-telling/` | songs-as-story CLI, standalone | uv |
 | `docs/` | process and kernel docs; `docs/history/` is the old kernel, historical | [index](docs/README.md) |
 | `bench/` | measurements and `bench/LEDGER.md` | |
 

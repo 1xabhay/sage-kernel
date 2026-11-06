@@ -346,8 +346,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_the_root_fans_out_to_every_project(self):
         makefile = (ROOT / "Makefile").read_text()
-        self.assertRegex(makefile, r"(?m)^PROJECTS := \. devices/reachy-mini experiments/sage-os "
-                                   r"\$\(wildcard apps/music-telling experiments/music-telling\)$")
+        self.assertRegex(makefile, r"(?m)^PROJECTS := \. devices/reachy-mini experiments/sage-os experiments/music-telling$")
         self.assertIn("for p in $(PROJECTS); do", makefile)
         for target in ("test-all", "hygiene-all"):
             with self.subTest(target=target):

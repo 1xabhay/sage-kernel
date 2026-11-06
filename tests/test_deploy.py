@@ -145,7 +145,7 @@ class PublishTests(unittest.TestCase):
         # An allow-list: everything is out, then only what the image copies comes back, minus caches and secrets.
         lines = [line for line in (ROOT / ".dockerignore").read_text().splitlines() if line and line[0] != "#"]
         self.assertEqual(lines[0], "*")
-        self.assertEqual({line for line in lines if line[0] == "!"}, {"!sage", "!tests", "!conformance", "!evals"})
+        self.assertEqual({line for line in lines if line[0] == "!"}, {"!sage", "!tests", "!conformance", "!evals", "!bench/latency.py"})
         last_include = max(i for i, line in enumerate(lines) if line[0] == "!")
         for pattern in ("**/.env", "**/.env.*", "**/.local", "**/.venv", "**/__pycache__", "evals/local"):
             with self.subTest(pattern=pattern):
@@ -305,7 +305,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_the_host_umask_cannot_make_the_code_unreadable_to_uid_1000(self):
         dockerfile = (ROOT / "Dockerfile").read_text()
-        self.assertIn("RUN chmod -R u=rwX,go=rX sage tests conformance evals\n", dockerfile)
+        self.assertIn("RUN chmod -R u=rwX,go=rX sage tests conformance evals bench\n", dockerfile)
         # BuildKit 0.20 (the CI runner's) applies COPY --chmod=...X to a nested folder without its x: no uid 1000 import.
         self.assertNotIn("--chmod", dockerfile)
 

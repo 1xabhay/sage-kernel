@@ -6,7 +6,8 @@ COPY sage ./sage
 COPY tests ./tests
 COPY conformance ./conformance
 COPY evals ./evals
+COPY bench/latency.py ./bench/latency.py
 # The image is the same whatever the host's umask or checkout modes. A RUN, not a COPY flag: see test_deploy.
-RUN chmod -R u=rwX,go=rX sage tests conformance evals
+RUN chmod -R u=rwX,go=rX sage tests conformance evals bench
 USER 1000:1000
 CMD ["python", "-m", "sage"]

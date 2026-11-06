@@ -11,6 +11,8 @@ services:
     restart: unless-stopped
     environment:
       SAGE_DEVICES: ${SAGE_DEVICES:-}
+      # Optional: more tokens in a file, re-read on change without a restart (docs/PROTOCOL.md §1), e.g. /data/devices.
+      SAGE_DEVICES_FILE: ${SAGE_DEVICES_FILE:-}
       # Ollama's base URL (native /api/chat). The live model answers turns; the background one is not used yet.
       SAGE_MODEL_URL: ${SAGE_MODEL_URL:-http://host.docker.internal:11434}
       SAGE_MODEL: ${SAGE_MODEL:-qwen3:1.7b}

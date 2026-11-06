@@ -1,7 +1,7 @@
 PYTHON ?= python3
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
 RUFF_IMAGE := ghcr.io/astral-sh/ruff:0.17.1-alpine@sha256:b527bd3e15c43b4fb9fc3c0615cd2ed4df019d100459c37b0916dee999111190
-SOURCES := sage tests conformance evals make pyproject.toml
+SOURCES := sage tests conformance evals bench/latency.py make pyproject.toml
 # A linked worktree (a parallel lane) is not the main checkout: it tests in its own project and image,
 # named after its folder, and never touches the live kernel.
 LINKED := $(shell [ "$$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)" = \
@@ -20,7 +20,7 @@ DEPLOY_LOG ?= $(HOME)/Library/Logs/reachy-sage/DEPLOYS.log
 # Every project in the monorepo. music-telling moves from apps/ to experiments/ in PR #6: either is found.
 PROJECTS := . devices/reachy-mini experiments/sage-os $(wildcard apps/music-telling experiments/music-telling)
 .PHONY: help hooks deploy up up-tag down image dev-image test-image backup run smoke release test check unit \
-  conformance eval source imports docs lint vuln secrets hygiene test-all hygiene-all conventions
+  conformance eval source imports docs lint vuln secrets hygiene test-all hygiene-all conventions latency
 
 help:
 	@echo "make test        unit + conformance inside the commit's image (dirty tree: dev-<lane> image)"
@@ -144,6 +144,15 @@ ifneq ($(wildcard make/docs.py),)
 else
 	@echo "warning: make/docs.py is not here yet (PR #9): make docs skipped" >&2
 endif
+
+# Per-turn latency of the live kernel, read from a copy of its journal: the original is never opened.
+# SINCE=30 make latency keeps the last 30 minutes. ponytail: docker cp of a live WAL database can tear if the
+# kernel checkpoints mid-copy; rerun, or snapshot with sqlite3's backup API if it ever matters.
+latency:
+	@dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT \
+	  && docker cp -q sage-kernel-kernel-1:/data/kernel.sqlite3 "$$dir/" \
+	  && for end in -wal -shm; do docker cp -q sage-kernel-kernel-1:/data/kernel.sqlite3$$end "$$dir/" 2>/dev/null || true; done \
+	  && $(PYTHON) bench/latency.py "$$dir/kernel.sqlite3" $(if $(SINCE),--since-minutes $(SINCE))
 
 # The code is streamed in, never mounted: the Colima VM cannot see this folder.
 lint:

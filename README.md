@@ -50,6 +50,18 @@ Ollama at `SAGE_MODEL_URL` (default `http://host.docker.internal:11434`, the hos
 as seen from the container). `make down` stops it; its journal stays in the
 `kernel-data` volume.
 
+To add or remove a body without restarting (a restart turns a running turn
+`unknown`), keep its token in a file instead: set `SAGE_DEVICES_FILE=/data/devices`
+in `.env` once and `make up`; from then on write the file, and the kernel picks
+it up on the next request ([docs/PROTOCOL.md](docs/PROTOCOL.md) §1). The file
+lives in the `kernel-data` volume, so no mount is needed. A name in `SAGE_DEVICES`
+must not be in the file too; move a token into the file to be able to remove it:
+
+```sh
+printf 'lamp=<token>\n' | docker compose exec -T kernel \
+  sh -c 'umask 077 && cat > /data/devices.new && mv /data/devices.new /data/devices'
+```
+
 ### A first device
 
 A device is anything that can speak HTTP: it says hello with its manifest,

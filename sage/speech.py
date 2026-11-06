@@ -12,7 +12,7 @@ START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 STAGE = re.compile(r"\*[^*]*\*")
 # The kernel's own notes to the model, should it ever copy one: never spoken.
-ANNOTATION = re.compile(r"[(\[][^()\[\]]*\b(interrupted|body could not|json fields|you just said|this body cannot|stay sage)\b"
+ANNOTATION = re.compile(r"[(\[][^()\[\]]*\b(interrupted|body could not|json fields|you just said|this body cannot|stay sage|they need words)\b"
                         r"[^()\[\]]*[)\]]", re.IGNORECASE)
 EMOJI_PARTS = {0x200D, 0xFE0F, 0x20E3}
 # Talk of being interrupted, the kernel's barge-in note paraphrased ("I was interrupted", live run 5b).

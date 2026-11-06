@@ -3,8 +3,10 @@
 import json
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from sage import manifest, policy
+from sage.adapters.model import OPTIONS
 from sage.policy import Companion, Refused
 
 EMOTE = {"name": "emote", "description": "Show a feeling.", "max_s": 3, "interruptible": True,
@@ -51,10 +53,10 @@ class Turns(unittest.TestCase):
         self.assertEqual(kinds(rows), [("submitted", None)])
         self.assertEqual(policy.submit(state, "reachy", "r1", "Hi", {}, seen=True), (state, ()))
 
-    def test_one_turn_at_a_time_and_an_interrupted_one_blocks_until_acknowledged(self):
+    def test_one_turn_at_a_time_per_device_and_an_interrupted_one_blocks_until_acknowledged(self):
         running = asked()
         with self.assertRaises(Refused) as refused:
-            policy.submit(running, "mock", "m1", "Hi", {}, seen=False)
+            policy.submit(running, "reachy", "r2", "Hi", {}, seen=False)
         self.assertEqual(refused.exception.code, "busy")
         cut, rows = policy.restarted(running)
         self.assertEqual((cut.turn.status, kinds(rows)), ("unknown", [("restarted", None)]))
@@ -124,6 +126,16 @@ class Authorization(unittest.TestCase):
         for bad in ({}, {"n": "2"}, {"n": True}, {"n": 1.5}, {"n": 1, "x": 0}, {"n": 1, "tags": [3]}, []):
             with self.subTest(bad=bad):
                 self.assertTrue(manifest.check(schema, bad))
+
+    def test_an_array_s_length_is_checked_against_its_bounds(self):
+        plan = {"type": "object", "properties": {"steps": {"type": "array", "minItems": 1, "maxItems": 4,
+                                                           "items": {"type": "string"}}}}
+        tools = ({"name": "body_plan", "inputSchema": plan},)
+        self.assertEqual(manifest.authorize("body_plan", {"steps": ["look"] * 4}, tools), "")
+        self.assertEqual(manifest.authorize("body_plan", {"steps": ["look"] * 5}, tools),
+                         "invalid input, input.steps must have at most 4 items")
+        self.assertEqual(manifest.authorize("body_plan", {"steps": []}, tools),
+                         "invalid input, input.steps must have at least 1 item")
 
     def test_a_malformed_manifest_is_refused(self):
         self.assertEqual(manifest.check_manifest({"senses": ["speech"], "tools": [EMOTE]}), MANIFEST)
@@ -207,6 +219,21 @@ class Results(unittest.TestCase):
         self.assertEqual(body_notes(state), [])
         self.assertEqual(body_notes(self.state), [])  # nor those still running
 
+    def test_what_a_done_action_reports_reaches_the_model_after_its_exchange(self):
+        """A body_plan done "tracking you": the model knows what its body is doing (owner, 2026-10-22)."""
+        state, _ = self.report(self.reply, "done")
+        before = policy.compile_prompt(asked("Look at me", turn_id="r2", state=state), "reachy", MANIFEST).context
+        state, _ = self.report(self.emote, "done", "  tracking\nyou  ", state=state)
+        after = policy.compile_prompt(asked("Look at me", turn_id="r2", state=state), "reachy", MANIFEST).context
+        self.assertEqual(after[:2], before[:2])  # the exchange before it, byte for byte
+        self.assertEqual(after[2], {"role": "tool", "content": "(your reachy body: emote done: tracking you)"})
+        self.assertEqual(after[3:], before[2:])
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        long, _ = self.report(self.emote, "done", "x" * 4000)
+        self.assertEqual(body_notes(long), [f"(your reachy body: emote done: {'x' * policy.DONE_TEXT})"])
+        failed, _ = self.report(self.emote, "failed", "stuck")
+        self.assertEqual(body_notes(failed), ["(your reachy body could not do emote: stuck)"])  # as before
+
     def test_a_reply_with_no_result_times_out_30_s_after_it_was_delivered(self):
         state, rows = policy.sweep(self.state, 100.0 + 30.01)
         self.assertEqual(state.open, ())
@@ -269,17 +296,86 @@ class Stop(unittest.TestCase):
         self.assertEqual(kinds(policy.stop(idle, "reachy", None)[1]), [("stop", None)])
 
     def test_a_streaming_device_is_acting(self):
-        state, rows = policy.stop(asked(), "mock", None, streaming=True)
+        state, rows = policy.stop(asked(), "mock", None, streaming={"reachy"})
         self.assertEqual((state.turn.status, kinds(rows)), ("cancelled", [("stop", None), ("stop", "reachy")]))
 
     def test_a_stop_for_a_turn_neither_running_nor_acted_on_is_stale(self):
         running = asked()
-        with self.assertRaises(Refused) as refused:
-            policy.stop(running, "mock", "r0")
-        self.assertEqual(refused.exception.code, "stale")
-        self.assertEqual(policy.stop(running, "mock", "r1")[0].turn.status, "cancelled")
+        for source, turn_id in (("reachy", "r0"), ("mock", "r1")):  # a named turn is only ever the sender's own
+            with self.subTest(source=source), self.assertRaises(Refused) as refused:
+                policy.stop(running, source, turn_id)
+            self.assertEqual(refused.exception.code, "stale")
+        self.assertEqual(policy.stop(running, "reachy", "r1")[0].turn.status, "cancelled")
         delivered, _ = answered(running)
-        self.assertEqual(kinds(policy.stop(delivered, "mock", "r1")[1]), [("stop", None), ("stop", "reachy")])
+        self.assertEqual(kinds(policy.stop(delivered, "reachy", "r1")[1]), [("stop", None), ("stop", "reachy")])
+        with self.assertRaises(Refused):
+            policy.stop(delivered, "mock", "r1")
+
+
+class Lanes(unittest.TestCase):
+    """One turn lane per device (02 v2 #4): busy, unknown_pending and a named stop are per device; memory is shared."""
+
+    def lane(self, state, device):
+        return policy.lane(state, device)
+
+    def test_one_body_talking_never_makes_another_busy(self):
+        both = asked("Hi", "phone", "p1", asked("Hi", "reachy", "r1"))
+        self.assertEqual([self.lane(both, d).status for d in ("reachy", "phone")], ["active", "active"])
+        with self.assertRaises(Refused) as refused:
+            policy.submit(both, "phone", "p2", "Hi", {}, seen=False)
+        self.assertEqual(refused.exception.code, "busy")
+
+    def test_each_lane_completes_on_its_own_and_memory_is_shared(self):
+        both = asked("My name is Mika.", "phone", "p1", asked("Hi", "reachy", "r1"))
+        prompt = policy.compile_prompt(policy.focus(both, "phone"), "phone", MANIFEST)
+        done, rows = policy.decided(policy.focus(both, "phone"), "p1", prompt,
+                                    output("Hi Mika.", remember="Their name is Mika."), TOOLS, 10, 1.0)
+        self.assertEqual(kinds(rows)[-2:], [("reply", "phone"), ("completed", None)])
+        self.assertEqual((self.lane(done, "phone").status, self.lane(done, "reachy").status), ("completed", "active"))
+        self.assertEqual(done.facts, ("Their name is Mika.",))
+        reachy = policy.compile_prompt(policy.focus(done, "reachy"), "reachy", MANIFEST)
+        self.assertIn("Mika", reachy.system)
+        self.assertTrue(reachy.context[-1]["content"].startswith("Hi"))  # reachy's own line, not the phone's
+
+    def test_a_restart_cuts_every_running_lane_and_each_is_acknowledged_by_its_own_device_only(self):
+        cut, rows = policy.restarted(asked("Hi", "phone", "p1", asked("Hi", "reachy", "r1")))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual([self.lane(cut, d).status for d in ("reachy", "phone")], ["unknown", "unknown"])
+        with self.assertRaises(Refused) as refused:
+            policy.acknowledge(cut, "phone", "r1")
+        self.assertEqual(refused.exception.code, "forbidden")
+        clear, _ = policy.acknowledge(cut, "reachy", "r1")
+        self.assertEqual((self.lane(clear, "reachy").status, self.lane(clear, "phone").status), ("none", "unknown"))
+
+    def test_an_unknown_turn_blocks_only_its_own_device(self):
+        cut, _ = policy.restarted(asked())
+        self.assertEqual(self.lane(asked("Hi", "phone", "p1", cut), "phone").status, "active")
+        with self.assertRaises(Refused) as refused:
+            policy.submit(cut, "reachy", "r2", "Hi", {}, seen=False)
+        self.assertEqual(refused.exception.code, "unknown_pending")
+
+    def test_a_named_stop_ends_only_the_sender_s_turn_and_a_bare_stop_ends_every_one(self):
+        both = asked("Hi", "phone", "p1", asked("Hi", "reachy", "r1"))
+        named, rows = policy.stop(both, "phone", "p1", streaming={"reachy", "phone"})
+        self.assertEqual((self.lane(named, "phone").status, self.lane(named, "reachy").status), ("cancelled", "active"))
+        self.assertEqual(kinds(rows), [("stop", None), ("stop", "phone")])
+        bare, rows = policy.stop(both, "phone", None, streaming={"reachy"})
+        self.assertEqual([self.lane(bare, d).status for d in ("phone", "reachy")], ["cancelled", "cancelled"])
+        self.assertEqual(kinds(rows), [("stop", None), ("stop", "reachy")])
+
+    def test_a_streaming_result_from_another_device_is_forbidden(self):
+        both = asked("Count", "phone", "p1", asked("Count", "reachy", "r1"))
+        with self.assertRaises(Refused) as refused:
+            policy.report_turn(both, "phone", "r1", None, "interrupted", "One", None, {})
+        self.assertEqual(refused.exception.code, "forbidden")
+
+    def test_lanes_survive_the_checkpoint_and_a_v1_checkpoint_has_one_lane(self):
+        both = asked("Hi", "phone", "p1", asked("Hi", "reachy", "r1"))
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(both)))), both)
+        v1 = {k: v for k, v in policy.encode(asked()).items() if k != "lanes"}  # what today's kernel wrote
+        self.assertEqual(self.lane(policy.decode(v1), "reachy").status, "active")
+        self.assertEqual(Companion(**{**policy.decode(policy.encode(both)).__dict__, "lanes": ()}).turn.source,
+                         "phone")  # `turn` stays the last lane touched, so today's kernel can still read it
 
 
 class Provenance(unittest.TestCase):
@@ -299,20 +395,19 @@ class Provenance(unittest.TestCase):
         state, _ = answered(state, output("Yay!", emote={"name": "cheerful1"}))
         after = policy.compile_prompt(asked("And now?", turn_id="r2", state=state), "reachy", MANIFEST)
         self.assertEqual(after.messages()[0], before.messages()[0])  # the cached start
-        # Every message is sent again as it was, but for the newest's tool reminder.
-        self.assertEqual(after.context[0]["content"] + policy.reminder(MANIFEST), before.context[0]["content"])
+        self.assertEqual(after.context[0], before.context[0])  # every message is sent again as it was
         state, _ = answered(asked("And now?", turn_id="r2", state=state))
         later = policy.compile_prompt(asked("Then?", turn_id="r3", state=state), "reachy", MANIFEST)
         self.assertEqual(later.context[:2], after.context[:2])
 
     def test_the_newest_message_reminds_the_model_of_its_tools_and_its_character(self):
-        """Persona fidelity decays over a dialogue: a one-line reminder rides on the newest message only."""
+        """Persona fidelity decays over a dialogue: a one-line reminder rides on each line, kept on it as it was sent (the model server's cache)."""
         self.assertEqual(newest(Companion(), "Hi"), "Hi\n\n" + policy.STAY + "\n[JSON fields you may add: emote]")
         bare = policy.compile_prompt(asked("Hi", source="mock"), "mock", {"senses": (), "tools": ()})
         self.assertEqual(bare.context[-1]["content"], "Hi\n\n" + policy.STAY)
         state, _ = answered(asked("Hi"))
         history = policy.compile_prompt(asked("Again?", turn_id="r2", state=state), "reachy", MANIFEST).context[0]
-        self.assertEqual(history["content"], "Hi")
+        self.assertEqual(history["content"], "Hi" + policy.reminder(MANIFEST))
 
     def test_the_fixed_prefix_holds_a_short_character_sheet_and_in_character_examples(self):
         system = policy.compile_prompt(asked("Hi"), "reachy", MANIFEST).system
@@ -343,6 +438,32 @@ class Provenance(unittest.TestCase):
         everything = manifest.describe("x", {"senses": ("speech", "vision", "touch"), "tools": ()})
         self.assertNotIn("cannot", everything)
         self.assertIn("cannot see, hear or feel touch", manifest.describe("x", {"senses": (), "tools": ()}))
+
+    def test_a_declared_body_is_kept_or_refused(self):
+        body = "A Reachy Mini: a head that turns, antennas, a speaker, microphones, and a camera not connected yet."
+        self.assertEqual(manifest.check_manifest({"senses": ["speech"], "body": body}),
+                         {"senses": ("speech",), "tools": (), "body": body})
+        self.assertNotIn("body", manifest.check_manifest({"senses": ["speech"]}))  # optional
+        self.assertEqual(manifest.check_manifest({"body": "b" * 300})["body"], "b" * 300)
+        for bad in (7, ["camera"], None, "b" * 301):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                manifest.check_manifest({"senses": ["speech"], "body": bad})
+
+    def test_a_declared_body_lets_the_model_name_parts_it_cannot_use_yet(self):
+        body = "A small robot head with a camera that is not connected yet."
+        declared = {**MANIFEST, "body": body}
+        note = manifest.describe("reachy", declared)
+        self.assertIn(json.dumps(body), note)
+        self.assertLess(note.index(body), note.index("Senses: speech."))
+        self.assertNotIn("This body cannot see", note)
+        self.assertIn("cannot see or feel touch yet", note)
+        self.assertIn("say what it has", note)
+        self.assertEqual(manifest.describe("reachy", MANIFEST).count("This body cannot see or feel touch;"), 1)
+        first = policy.compile_prompt(asked(), "reachy", declared)
+        state, _ = answered(asked())
+        second = policy.compile_prompt(asked("And now?", turn_id="r2", state=state), "reachy", declared)
+        self.assertEqual(first.system, second.system)  # byte for byte: the cached start
+        self.assertIn(body, first.system)
 
     def test_the_body_note_follows_the_persona_once_per_device(self):
         reachy = policy.compile_prompt(asked("Hi there"), "reachy", MANIFEST)
@@ -487,6 +608,17 @@ class Senses(unittest.TestCase):
         self.assertEqual(policy.false_senses("I can see you.", ("speech", "vision")), [])
         self.assertEqual(policy.false_senses("I can hear you.", ("vision",)), ["speech"])
 
+    def test_a_camera_it_cannot_see_through_yet_is_no_claim_of_sight(self):
+        """A body may say what hardware it has (manifest body) and move its head; only seeing is a claim."""
+        for honest in ("I have a camera.", "I can't see yet.", "I have a camera, but I can't see through it yet.",
+                       "I'll look left.", "Okay, I'll turn around and look for you."):
+            with self.subTest(honest=honest):
+                self.assertEqual(policy.false_senses(honest, self.HEARING), [])
+                self.assertFalse(policy.may_claim(honest, self.HEARING))
+        for claim in ("I can see you.", "I see a red shirt.", "I'm looking at you."):
+            with self.subTest(claim=claim):
+                self.assertEqual(policy.false_senses(claim, self.HEARING), ["vision"])
+
     def test_only_the_false_sentence_is_replaced_worded_per_missing_sense(self):
         self.assertEqual(policy.honest("Hello there. I see you. Nice day!", self.HEARING),
                          "Hello there. I can't see yet; I can only hear you. Nice day!")
@@ -562,7 +694,7 @@ class Misheard(unittest.TestCase):
                          framed + policy.reminder(MANIFEST))
         state, _ = answered(state)
         later = policy.compile_prompt(asked("What's my name?", turn_id="r2", state=state), "reachy", MANIFEST)
-        self.assertEqual(later.context[0]["content"], framed)  # byte-stable history
+        self.assertEqual(later.context[0]["content"], framed + policy.reminder(MANIFEST))  # byte-stable history
         self.assertEqual(later.context[-1]["content"], "What's my name?" + policy.reminder(MANIFEST))
         greeting, _ = policy.start_proactive(Companion(), "reachy", "kernel-1", "greet")
         self.assertTrue(policy.compile_prompt(greeting, "reachy", MANIFEST).context[-1]["content"].startswith("[The"))
@@ -574,6 +706,132 @@ class Misheard(unittest.TestCase):
     def test_a_greeting_uses_a_name_only_if_the_person_gave_one(self):
         """Live: the first greeting was "Hey there, Alex!" with no name ever given."""
         self.assertIn("name only if", policy.PROACTIVE["greet"])
+
+
+class Input(unittest.TestCase):
+    """submitted.input (v1.1): what the device knows of how the line came in replaces the 4-word guess."""
+
+    def test_a_typed_or_confidently_heard_line_is_never_marked_and_without_input_the_old_rule_holds(self):
+        for line in ("Ornitholog", "It's only a fork.", "La la la la", "Call me Micah"):
+            with self.subTest(line=line):
+                self.assertTrue(policy.misheard(line))
+                self.assertTrue(policy.misheard(line, {"medium": "speech"}))  # no confidence: the lexical rule
+                self.assertFalse(policy.misheard(line, {"medium": "text"}))
+                self.assertFalse(policy.misheard(line, {"medium": "speech", "confidence": policy.SURE}))
+                self.assertFalse(policy.misheard(line, {"medium": "text", "confidence": 0.1}))
+        self.assertTrue(policy.misheard("I think a softer voice would suit you.", {"medium": "speech", "confidence": 0.4}))
+        self.assertFalse(policy.misheard("I think a softer voice would suit you.", {"medium": "speech"}))
+
+    def test_input_is_checked_at_the_boundary(self):
+        line = {"kind": "submitted", "turn_id": "r1", "text": "Hi"}
+        for good in ({"medium": "text"}, {"medium": "speech", "confidence": 0},
+                     {"medium": "speech", "confidence": 1, "alternatives": ["Hi", "High", "Hy"]}):
+            with self.subTest(good=good):
+                self.assertEqual(policy.check_event({**line, "input": good}), "submitted")
+        for bad in ("text", {}, {"medium": "smoke"}, {"confidence": 0.5}, {"medium": "speech", "confidence": 1.5},
+                    {"medium": "speech", "confidence": True}, {"medium": "text", "mood": "happy"},
+                    {"medium": "speech", "alternatives": "Hi"}, {"medium": "speech", "alternatives": ["a"] * 4},
+                    {"medium": "speech", "alternatives": [" "]}, {"medium": "speech", "alternatives": ["x" * 4001]}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(Refused) as refused:
+                    policy.check_event({**line, "input": bad})
+                self.assertEqual(refused.exception.code, "invalid")
+
+    def test_input_is_journaled_and_kept_so_the_history_renders_the_same_on_every_turn(self):
+        given = {"medium": "speech", "confidence": 0.3, "alternatives": ["Call me Mika"]}
+        state, rows = policy.submit(Companion(), "reachy", "r1", "Call me Micah", {}, False, given)
+        self.assertEqual(rows[0].body["input"], given)
+        framed = 'heard (may be misheard): "Call me Micah" (or "Call me Mika")'
+        self.assertEqual(policy.compile_prompt(state, "reachy", MANIFEST).context[-1]["content"],
+                         framed + policy.reminder(MANIFEST))
+        state, _ = answered(state)
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        typed, _ = policy.submit(state, "reachy", "r2", "Call me Micah", {}, False, {"medium": "text"})
+        context = policy.compile_prompt(typed, "reachy", MANIFEST).context
+        self.assertEqual(context[0]["content"], framed + policy.reminder(MANIFEST))
+        self.assertEqual(context[-1]["content"], "Call me Micah" + policy.reminder(MANIFEST))
+        self.assertNotIn("input", policy.submit(Companion(), "reachy", "r1", "Hi", {}, False)[1][0].body)  # as in v1
+
+
+PLAN = {"kind": "acted", "act_id": "a-17", "origin": "reflex", "what": "body_plan",
+        "input": {"steps": [{"skill": "search_face"}]}, "status": "failed", "reason": "not_found",
+        "said": "I looked everywhere, Mika."}
+ASIDE = {"kind": "acted", "act_id": "a-18", "origin": "reflex", "what": "aside", "status": "done",
+         "said": "I'm listening."}
+
+
+class Acted(unittest.TestCase):
+    """System 1 acts and asides reach the model inside the next exchange (v1.1, LAYERS §2.3, K1)."""
+    TOLD = ('(your reachy body, on its own (reflex): body_plan {"steps": [{"skill": "search_face"}]}: failed '
+            '(not_found); you said "I looked everywhere, Mika.")')
+
+    def test_an_act_is_checked_at_the_boundary(self):
+        for good in (PLAN, ASIDE):
+            with self.subTest(good=good):
+                self.assertEqual(policy.check_event(good), "acted")
+        for bad in ({**PLAN, "what": "dance"}, {**PLAN, "act_id": " "}, {**PLAN, "act_id": "a" * 129},
+                    {**PLAN, "status": "finished"}, {**PLAN, "origin": "x" * 65}, {**PLAN, "origin": ""},
+                    {**PLAN, "said": "x" * 4001}, {**PLAN, "said": 7}, {**PLAN, "turn_id": "r1"},
+                    {**PLAN, "reason": "x" * 65}, {**PLAN, "text": "hi"},
+                    *({k: v for k, v in PLAN.items() if k != key} for key in ("act_id", "origin", "what", "status"))):
+            with self.subTest(bad=bad):
+                with self.assertRaises(Refused) as refused:
+                    policy.check_event(bad)
+                self.assertEqual(refused.exception.code, "invalid")
+
+    def test_an_act_is_journaled_and_told_before_the_next_line_inside_its_exchange(self):
+        state, _ = answered(asked("Hi"))
+        state, rows = policy.act(state, "reachy", PLAN)
+        self.assertEqual([(row.kind, row.source, row.target) for row in rows], [("acted", "reachy", None)])
+        self.assertEqual(rows[0].body, {k: v for k, v in PLAN.items() if k != "kind"})
+        state, _ = policy.act(state, "reachy", ASIDE)
+        context = policy.compile_prompt(asked("Where?", turn_id="r2", state=state), "reachy", MANIFEST).context
+        self.assertEqual(context[2:4], ({"role": "tool", "content": self.TOLD},
+                                        {"role": "tool", "content": '(your reachy body, on its own (reflex): aside: '
+                                                                    'done; you said "I\'m listening.")'}))
+        self.assertEqual(len(context), 5)
+        state, _ = answered(asked("Where?", turn_id="r2", state=state))
+        self.assertEqual(len(state.exchanges), 2)  # no exchange of its own: the window is not flooded
+        self.assertEqual(state.acts, ())
+        later = policy.compile_prompt(asked("Okay.", turn_id="r3", state=state), "reachy", MANIFEST).context
+        self.assertEqual(later[:4], context[:4])  # byte for byte, so the prompt cache holds
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+
+    def test_a_retried_act_records_nothing_and_another_device_s_is_its_own(self):
+        state, _ = policy.act(Companion(), "reachy", PLAN)
+        self.assertEqual(policy.act(state, "reachy", PLAN), (state, ()))
+        moved, _ = answered(asked("Hi", state=state))
+        self.assertEqual(policy.act(moved, "reachy", PLAN), (moved, ()))  # still known inside its exchange
+        self.assertEqual(len(policy.act(state, "mock", PLAN)[0].acts), 2)
+
+    def test_a_body_s_acts_outlive_another_body_s_exchange_and_cap(self):
+        state, _ = policy.act(Companion(), "reachy", PLAN)
+        for i in range(policy.MAX_ACTS):  # another body acting never pushes this one's acts out
+            state, _ = policy.act(state, "phone", {**ASIDE, "act_id": f"p-{i}"})
+        state, _ = answered(asked("Hi", source="phone", state=state))
+        state, _ = policy.report_turn(*policy.start_proactive(state, "phone", "k1", "greet")[:1], "phone", "k1",
+                                      None, "interrupted", "", None, {})
+        self.assertEqual([a.device for e in state.exchanges for a in e.acts], ["phone"] * policy.MAX_ACTS)
+        self.assertEqual([a.act_id for a in state.acts], ["a-17"])
+        context = policy.compile_prompt(asked("Where?", turn_id="r2", state=state), "reachy", MANIFEST).context
+        self.assertIn({"role": "tool", "content": self.TOLD}, context)
+        state, _ = answered(asked("Where?", turn_id="r2", state=state))
+        self.assertEqual((state.acts, [a.act_id for a in state.exchanges[-1].acts]), ((), ["a-17"]))
+
+    def test_an_act_is_cut_short_and_only_the_last_few_are_kept(self):
+        state = Companion()
+        for i in range(10):
+            state, _ = policy.act(state, "reachy", {**PLAN, "act_id": f"a-{i}", "input": {"x": "y" * 4000}})
+        self.assertEqual([act.act_id for act in state.acts], [f"a-{i}" for i in range(10 - policy.MAX_ACTS, 10)])
+        self.assertLessEqual(len(state.acts[-1].text), 3 * policy.DONE_TEXT + 80)
+
+    def test_a_checkpoint_from_before_acts_and_input_reads_correctly(self):
+        old = {"turn": {"turn_id": "r1", "source": "reachy", "status": "completed", "text": "", "timing": {}},
+               "exchanges": [{"user": "Hi", "reply": "Hello.", "reply_sequence": 3, "calls": [], "device": "reachy",
+                              "interrupted": False}], "open": []}
+        state = policy.decode(old)
+        self.assertEqual((state.acts, state.exchanges[0].acts, state.exchanges[0].input, state.turn.input),
+                         ((), (), {}, {}))
 
 
 class Persona(unittest.TestCase):
@@ -632,5 +890,150 @@ class Limits(unittest.TestCase):
         self.assertTrue(policy.stale(100.0, 110.01, 10))
 
 
+SONG = ("Pulse", ("Pulse: a 2026 single by Mira Vale featuring Odo, from the album Night Glass.",
+                  "MusicBrainz: produced by Kenji Aro and Mira Vale; recorded in Lisbon.",
+                  "Lyrics (LRCLIB): the chorus repeats \"hold the light\" four times.",
+                  "News, 2026-10-12, example.com: Mira Vale announced a winter tour of Europe.",
+                  "Web, example.org: a review of the album's artwork and its photographer.",
+                  "Web, example.net: the video was filmed in one take on a rooftop."))
+
+
+def noted(state=None, topic=SONG[0], passages=SONG[1], source="reachy"):
+    return policy.take_notes(state or Companion(), source, topic, passages)
+
+
+def idle(state, turns):
+    """`state` after `turns` exchanges the notes do not match."""
+    for n in range(turns):
+        state, _ = answered(asked(f"My dog ate breakfast early, number {n}.", turn_id=f"idle{n}", state=state))
+    return state
+
+
+class NotesTests(unittest.TestCase):
+    """Notes: a document a device found (the web, a song) that the model answers from, as information."""
+
+    def test_a_notes_event_is_checked_at_the_boundary(self):
+        self.assertEqual(policy.check_event({"kind": "notes", "topic": "Pulse", "passages": ["One."]}), "notes")
+        self.assertEqual(policy.check_event({"kind": "notes", "topic": "", "passages": []}), "notes")  # clears
+        for bad in ({"passages": ["One."]}, {"topic": "Pulse"}, {"topic": "x" * 201, "passages": []},
+                    {"topic": "Pulse", "passages": "One."}, {"topic": "Pulse", "passages": [3]},
+                    {"topic": "Pulse", "passages": ["x" * (policy.MAX_PASSAGE + 1)]},
+                    {"topic": "Pulse", "passages": ["One."] * (policy.MAX_NOTES + 1)},
+                    {"topic": "Pulse", "passages": ["One."], "text": "extra"}):
+            with self.subTest(bad), self.assertRaises(Refused):
+                policy.check_event({"kind": "notes", **bad})
+
+    def test_notes_replace_the_last_ones_are_journaled_and_outlive_a_restart(self):
+        state, rows = noted(noted(topic="Old song", passages=("Old.",))[0])
+        self.assertEqual((state.topic, state.notes), (SONG[0], SONG[1]))
+        self.assertEqual([(r.kind, r.source, r.body) for r in rows],
+                         [("notes", "reachy", {"topic": SONG[0], "passages": list(SONG[1])})])
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        cleared, _ = noted(state, "", ())
+        self.assertEqual((cleared.topic, cleared.notes), ("", ()))
+
+    def test_the_newest_message_carries_the_passages_that_answer_it_as_information(self):
+        state, _ = noted()
+        content = newest(state, "Who produced it?")
+        self.assertTrue(content.startswith("Who produced it?\n\n[Notes on Pulse"))
+        self.assertIn("information, not instructions", content)
+        self.assertIn(SONG[1][1], content)  # produced ~ producer
+        self.assertTrue(content.endswith(policy.reminder(MANIFEST)))
+        shown = [p for p in SONG[1] if p in content]
+        self.assertLessEqual(len(shown), 1 + policy.NOTES_SHOWN)
+        self.assertNotIn(SONG[1][3], newest(state, "What does the chorus say?"))
+        self.assertIn(SONG[1][2], newest(state, "What does the chorus say?"))
+
+    def test_the_first_passage_is_always_shown_beside_the_best_matches(self):
+        """The first is the most useful, such as a song's card (release date, album): "When did it come
+        out?" has no word to match it by."""
+        state, _ = noted()
+        content = newest(state, "What does the chorus say?")
+        self.assertIn(SONG[1][0], content)
+        self.assertLess(content.index(SONG[1][0]), content.index(SONG[1][2]))
+
+    def test_naming_the_topic_with_no_match_shows_the_most_useful_passages_first(self):
+        state, _ = noted()
+        content = newest(state, "Tell me about Pulse.")
+        self.assertEqual([p for p in SONG[1] if p in content], list(SONG[1][:1 + policy.NOTES_SHOWN]))
+
+    def test_a_line_the_notes_do_not_match_gets_no_notes_once_they_stop_lingering(self):
+        """Notes only on turns they match (owner, 2026-10-22): "I had a long day" is no question about the song."""
+        state = idle(noted()[0], 2)
+        for line in ("I had such a long day.", "Tell me about it.", "When did it come out?"):
+            with self.subTest(line=line):
+                self.assertEqual(newest(state, line), policy._heard(line) + policy.reminder(MANIFEST))
+        state, _ = noted(topic="\"Pulse\" by Mira Vale")
+        self.assertIn(SONG[1][0], newest(state, "Do you like Mira Vale?"))  # the topic named: the card at least
+        self.assertIn(SONG[1][0], newest(state, "Who produced it?"))  # a passage beyond the card matched
+
+    def test_the_card_lingers_for_two_turns_after_the_notes_arrive_or_last_matched(self):
+        """Live (2026-10-22): "When did it come out?" right after the song was named got no notes, so no card
+        and no release date: nothing in it matches "Released: ...". The card stays on for two turns."""
+        state, _ = noted()
+        content = newest(state, "When did it come out?")
+        self.assertIn(SONG[1][0], content)
+        self.assertEqual([p for p in SONG[1] if p in content], [SONG[1][0]])  # the card alone, not padding
+        state = idle(state, 2)
+        self.assertNotIn("[Notes on", newest(state, "When did it come out?"))
+        state, _ = answered(asked("Who produced it?", turn_id="m1", state=state))  # a match starts it again
+        self.assertIn(SONG[1][0], newest(state, "When did it come out?"))
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+
+    def test_a_follow_up_with_no_words_of_its_own_is_matched_with_the_line_before_it(self):
+        state, _ = answered(asked("Is she touring?", state=noted()[0]))
+        self.assertIn(SONG[1][3], newest(state, "Where?"))
+        self.assertNotIn(SONG[1][3], newest(state, "I had such a long day."))  # its own words decide
+
+    def test_notes_never_touch_the_cached_start_or_the_history(self):
+        state, _ = noted()
+        plain = policy.compile_prompt(asked("Who produced it?"), "reachy", MANIFEST)
+        with_notes = policy.compile_prompt(asked("Who produced it?", state=state), "reachy", MANIFEST)
+        self.assertEqual(with_notes.system, plain.system)
+        state, _ = answered(asked("Who produced it?", state=state))
+        self.assertEqual(policy.compile_prompt(asked("Thanks.", turn_id="r2", state=state), "reachy",
+                                               MANIFEST).context[0]["content"], "Who produced it?" + policy.reminder(MANIFEST))
+
+
+# The voice app's manifest as it declares it (reachy_sage_voice kernel.manifest(moves, song=True), 59 emotes
+# described from the Pollen emotions library, 2026-10-22), plus the commands lane's body_plan (the eval's).
+VOICE = json.loads((Path(__file__).parent / "voice_manifest.json").read_text())
+BODY_PLAN = json.loads((Path(__file__).parents[1] / "evals" / "body_commands.json").read_text())["body_plan"]
+
+
+class Budget(unittest.TestCase):
+    def test_the_worst_case_prompt_leaves_room_to_answer_in_the_context(self):
+        """The prompt and the longest answer fit in num_ctx. ponytail: chars/4 plus 10%, not the model's tokenizer:
+        Ollama counted 4078 tokens for this prompt against 3804 estimated (qwen3:4b-instruct, 2026-10-26)."""
+        declared = manifest.check_manifest({**VOICE, "tools": VOICE["tools"] + [BODY_PLAN], "body": "b" * 300})
+        state = noted(passages=tuple(f"{i} " + "x" * (policy.MAX_PASSAGE - 2) for i in range(10)))[0]
+        line, answer = "y" * 160, output("z" * manifest.MAX_REPLY, emote={"name": "enthusiastic2"})
+        for index in range(policy.WINDOW):
+            state = asked(line, turn_id=f"r{index}", state=state)
+            prompt = policy.compile_prompt(state, "reachy", declared)
+            state = policy.decided(state, f"r{index}", prompt, answer, declared["tools"], 10, 1.0)[0]
+        self.assertEqual(len(state.exchanges), policy.WINDOW)
+        prompt = policy.compile_prompt(asked(line + " 1 2 3", turn_id="r9", state=state), "reachy", declared)
+        self.assertEqual(sum(p in prompt.context[-1]["content"] for p in state.notes), 1 + policy.NOTES_SHOWN)
+        # The format is a grammar, not prompt text; each message costs a few tokens of chat template.
+        tokens = 1.1 * (sum(len(m["content"]) for m in prompt.messages()) / 4 + 4 * len(prompt.messages()))
+        self.assertLess(tokens, OPTIONS["num_ctx"] - OPTIONS["num_predict"], f"{tokens:.0f} estimated tokens")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Description(unittest.TestCase):
+    def test_an_enum_its_description_already_spells_out_is_not_printed_twice(self):
+        """The emote names were listed twice in the cached prefix, once in the enum and once in their glosses:
+        ~200 tokens of a 4096 context. The answer format still constrains the names."""
+        spelled = {"name": "emote", "inputSchema": {"type": "object", "properties": {"name": {
+            "type": "string", "enum": ["yes1", "no1"], "description": "yes1: agree.\nno1: refuse."}}}}
+        half = {"name": "look", "inputSchema": {"type": "object", "properties": {"to": {
+            "type": "string", "enum": ["left", "right"], "description": "left: turn left."}}}}
+        text = manifest.describe("reachy", {"senses": ("speech",), "tools": (spelled, half)})
+        self.assertNotIn('"enum": ["yes1", "no1"]', text)
+        self.assertIn("yes1: agree.", text)
+        self.assertIn('"enum": ["left", "right"]', text)  # "right" is not in its description: kept
+        self.assertEqual(manifest.format_schema((spelled,))["properties"]["emote"], spelled["inputSchema"])

@@ -22,6 +22,7 @@ than adding a new one; record the date when its status changes.
 | --- | --- | --- |
 | Kernel ports | browser 127.0.0.1:8765, devices 127.0.0.1:8766 | Lead |
 | Device tokens | `SAGE_DEVICES=name=token` in `.env` (mode 600); issuing a token is consent | Owner |
+| Device tokens without a restart | `SAGE_DEVICES_FILE` (e.g. `/data/devices` in the volume), checked on every request and re-read on change; a bad file keeps the old tokens and is logged; `SAGE_DEVICES` stays, read at start (2026-10-25) | Lead |
 | Reply freshness | 10 s by the kernel's clock (`SAGE_FRESH_SECONDS`) | Owner |
 | Busy retry | 5 s, same turn ID, then "One moment." | Owner |
 | Reply wait on the pet | 30 s | Lead |
@@ -45,7 +46,12 @@ than adding a new one; record the date when its status changes.
 | No outbox table: deliveries are derived from the journal; the journal sequence is the cursor | Lead |
 | Protocol versioned in the path (`/v0`), freeze v1 after slice 3's emote + presence have run through it | Lead |
 | A device's manifest is trusted as declared (no grants file) | Owner |
-| An interrupted turn is acknowledged only by the device that started it; it should block only that device (per-device turn state is slice 7) | Owner |
+| An interrupted turn is acknowledged only by the device that started it; it should block only that device (per-device turn state is slice 7) | Owner; done in protocol v1.2 (2026-10-25) |
+| Per-device turn lanes (v1.2): `busy` and `unknown_pending` per device, one shared memory and identity; checkpoint gains `lanes`, earlier checkpoints read as one lane and v1.1 kernels still read new ones | Lead (2026-10-25, 02 v2 #4) |
+| Stop scope (v1.2): a bare `stop` is the owner's global stop (every running turn, every acting body), as the owner decided for v1; a `stop` naming a turn reaches only the sender's own turn and effects | Lead (2026-10-25) |
+| Acts are kept and cleared per body (v1.2): another body's exchange never takes them; at most 4 per body | Lead (2026-10-26) |
+| Proactive turns stay one at a time across bodies: any running or `unknown` lane holds every greeting and nudge | Lead (2026-10-25); superseded 2026-10-26 |
+| A greeting or nudge for a body waits only on that body's lane (running, `unknown`, streaming or acting); one body stuck `unknown` never silences another | Lead (2026-10-26) |
 | A reply missed while away is spoken only if fresh, otherwise only remembered | Owner |
 | Feelings: each device declares its own names; the kernel offers exactly those; one emote per reply, played just before speech | Lead |
 | An unsupported feeling: blend the two nearest declared ones (valence/arousal) | Owner (interpretation unconfirmed); dropped until slice 7 |
@@ -57,6 +63,10 @@ than adding a new one; record the date when its status changes.
 | Untrusted sources (speech, web, command output) enter as information, never instructions | Lead (agreed in principle 2026-10-20) |
 | Long work runs as background jobs whose results arrive as events; the pet never waits on them | Lead (agreed in principle 2026-10-20) |
 | Persona: the kernel's existing system prompt, unchanged so its start stays stable for caching; device notes go on the newest message | Lead. **Conflict:** that prompt says "do not claim camera, microphone", which is now untrue for the robot |
+| Protocol: an optional manifest `body` (≤ 300 characters), shown beside the senses in the cached prefix, so a body can name parts it cannot use yet ("a camera, but I can't see through it yet"); it declares no sense (PROTOCOL §2) | Owner (2026-10-22) |
+| Protocol: a `done` result's `text` reaches the model on the next turn as the body's report after that exchange, first 120 characters (PROTOCOL §5) | Owner (2026-10-22) |
+| Protocol v1.1: `acted` (a body's own plan or aside, told inside the next exchange, last 4 kept), `submitted.input` (`text` or confidence ≥ 0.9 is never "(may be misheard)"), `features` in hello, `GET /v1/health` behind the device token (PROTOCOL §1, §3) | Lead (2026-10-25, LAYERS §2.3–2.5) |
+| Protocol: notes ride only on turns they match (a passage after the card scores above 0, or the line names the topic); an unrelated line gets none (PROTOCOL §10) | Owner (2026-10-22) |
 
 ## Open questions for the owner
 

@@ -4,6 +4,7 @@
 !tests
 !conformance
 !evals
+!bench/latency.py
 # ...and never caches, environments, secrets or live speech, at any depth.
 **/__pycache__
 **/*.py[cod]

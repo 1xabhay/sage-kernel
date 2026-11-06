@@ -45,9 +45,12 @@ def test_a_name_being_disowned_stays_as_remembered_so_it_can_be_forgotten():
     """Corrected, "Forget Micah, my name is Mika" would have the kernel forget the right name."""
     known = names.parse(SPEC)
     # The STT hears "Mika" as "Micah" too: only the disowned one is kept.
-    assert names.correct("Forget Micah, my name is Micah.", known) == "Forget Micah, my name is Mika."
+    assert names.correct("Forget Micah, my name is Micah.", known) == (
+        "Forget Micah, my name is Mika.")
     assert names.correct("My name is Micah, not Mica.", known) == "My name is Mika, not Micah."
-    assert names.correct("forget, MICA.", known) == "forget, Micah."  # as first listed: as the kernel holds it
+    # as first listed: as the kernel holds it
+    assert names.correct("forget, MICA.", known) == (
+        "forget, Micah.")
     assert names.correct("Forget Mika.", known) == "Forget Mika."
 
 

@@ -1,5 +1,5 @@
 # Body-agnostic device code (sage_device), stdlib only. Bodies take it as a uv path dependency.
-.PHONY: test lint imports vuln secrets hygiene
+.PHONY: test lint imports vuln secrets up down hygiene
 
 test:
 	uv run pytest -q
@@ -19,5 +19,9 @@ vuln:
 ROOT := $(shell git rev-parse --show-toplevel)
 secrets:
 	$(MAKE) -C $(ROOT) secrets
+
+# A library: nothing to run.
+up down:
+	@echo "no service: sage_device is a library the bodies import"
 
 hygiene: lint imports vuln secrets test

@@ -17,23 +17,22 @@ HYGIENE = ["lint", "imports", "vuln", "secrets", "test"]
 IN_CI = [t for t in HYGIENE if t != "secrets"]
 # The voice app and its services are the VOICE lane's; strict, so this fails once they comply.
 VOICE = "devices/reachy-mini/apps/reachy_sage_voice"
-PROJECTS = [
-    pytest.param(
-        p,
-        marks=pytest.mark.xfail(strict=True, reason="VOICE lane adds the targets and the CI job"),
-    )
+PROJECTS = sorted(
+    str(Path(f).parent)
+    for f in subprocess.run(
+        ["git", "ls-files", "-co", "--exclude-standard", "devices/*/Makefile"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    if not f.endswith("/robot/Makefile")  # installs on the robot: not a project
+)
+IN_CI_PROJECTS = [
+    pytest.param(p, marks=pytest.mark.xfail(strict=True, reason="VOICE lane adds the CI job"))
     if p.startswith(VOICE)
     else p
-    for p in sorted(
-        str(Path(f).parent)
-        for f in subprocess.run(
-            ["git", "ls-files", "-co", "--exclude-standard", "devices/*/Makefile"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.split()
-    )
+    for p in PROJECTS
 ]
 
 
@@ -64,7 +63,7 @@ def ci_makes() -> dict[str, set[str]]:
 
 
 def test_found_the_projects():
-    assert "devices/reachy-mini" in [p if isinstance(p, str) else p.values[0] for p in PROJECTS]
+    assert "devices/reachy-mini" in PROJECTS
 
 
 @pytest.mark.parametrize("project", PROJECTS)
@@ -74,7 +73,7 @@ def test_makefile_has_the_standard_targets(project):
     assert rules["hygiene"] == HYGIENE
 
 
-@pytest.mark.parametrize("project", PROJECTS)
+@pytest.mark.parametrize("project", IN_CI_PROJECTS)
 def test_ci_runs_the_hygiene_targets(project):
     ran = ci_makes().get(project, set())
     assert set(IN_CI) <= ran, f"reachy.yml never runs make {sorted(set(IN_CI) - ran)} in {project}"

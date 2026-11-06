@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked
-      - run: uv run pytest -q
+      - run: make lint imports vuln test
 
   sage-voice:
     runs-on: ubuntu-latest
@@ -44,7 +44,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libcairo2-dev libgirepository1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gir1.2-gst-plugins-base-1.0 gstreamer1.0-nice
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: uv sync --locked
-      - run: uv run pytest -q
+      # A stuck test prints its stack, and a hung job ends instead of holding the check open.
+      - run: uv run pytest -q -o faulthandler_timeout=120
+        timeout-minutes: 15
 
   reachy-sim:
     runs-on: ubuntu-latest

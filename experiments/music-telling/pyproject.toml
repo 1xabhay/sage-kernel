@@ -3,7 +3,7 @@ name = "music-telling"
 version = "0.1.0"
 description = "Turn a theme into a coherent story told through songs."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "anthropic>=1.0",
     "pydantic>=2.7",
@@ -21,6 +21,8 @@ dependencies = [
 [project.optional-dependencies]
 # Essentia MusiCNN mood/danceability classifiers (pulls TensorFlow).
 mood = ["essentia-tensorflow>=2.1b6.dev1438"]
+
+[dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]

@@ -1,0 +1,40 @@
+# Experiments (experiments/): the Rust sage-os kernel and the music-telling CLI. No models, no network in tests.
+name: experiments
+
+on:
+  push:
+    branches: [main]
+    paths: ["experiments/**", ".github/workflows/experiments.yml"]
+  pull_request:
+    paths: ["experiments/**", ".github/workflows/experiments.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  sage-os:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: experiments/sage-os
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ./check-make.sh
+      - run: make imports
+      - run: make lint
+      - run: make test
+
+  music-telling:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: experiments/music-telling
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: make setup test lint imports
+      - run: make image-test

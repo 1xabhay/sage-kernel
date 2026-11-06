@@ -39,7 +39,10 @@ pub fn fits(profile: &str) -> bool {
 /// The profile file with `remove` taken out and new facts from `add` put at the end.
 /// Every other line stays as the owner wrote it.
 pub fn revise(profile: &str, remove: &[String], add: &[String]) -> String {
-    let mut lines: Vec<&str> = profile.lines().filter(|l| fact(l).is_none_or(|f| !remove.iter().any(|r| r == f))).collect();
+    let mut lines: Vec<&str> = profile
+        .lines()
+        .filter(|l| fact(l).is_none_or(|f| !remove.iter().any(|r| r == f)))
+        .collect();
     for new in add {
         if !lines.iter().any(|l| fact(l) == Some(new.as_str())) {
             lines.push(new);
@@ -80,9 +83,18 @@ pub fn snapshot(profile: &str, log: &str, now: f64) -> String {
         shown.push(format!("- {f}"));
     }
     let today = (now / 86_400.0).floor() as i64;
-    let mut events: Vec<(usize, i64, &str)> = log.lines().filter_map(fact).enumerate().filter_map(|(i, l)| Some((i, day(l)?, l))).collect();
+    let mut events: Vec<(usize, i64, &str)> = log
+        .lines()
+        .filter_map(fact)
+        .enumerate()
+        .filter_map(|(i, l)| Some((i, day(l)?, l)))
+        .collect();
     let rank = |(_, day, line): &(usize, i64, &str)| {
-        let weight = if line[10..].trim_start().starts_with('!') { IMPORTANT } else { 1.0 };
+        let weight = if line[10..].trim_start().starts_with('!') {
+            IMPORTANT
+        } else {
+            1.0
+        };
         weight / (1.0 + (today - day).max(0) as f64 / FADE_DAYS)
     };
     events.sort_by(|a, b| rank(b).total_cmp(&rank(a)).then(b.1.cmp(&a.1)));
@@ -93,29 +105,53 @@ pub fn snapshot(profile: &str, log: &str, now: f64) -> String {
         parts.push(format!("{PROFILE}\n{}", shown.join("\n")));
     }
     if !events.is_empty() {
-        parts.push(format!("{EVENTS}\n{}", events.iter().map(|(_, _, l)| format!("- {l}")).collect::<Vec<_>>().join("\n")));
+        parts.push(format!(
+            "{EVENTS}\n{}",
+            events
+                .iter()
+                .map(|(_, _, l)| format!("- {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
     }
     parts.join("\n\n")
 }
 
 /// The profile facts a snapshot shows: the only ones a summary may remove.
 pub fn shown(snapshot: &str) -> Vec<String> {
-    let section = snapshot.lines().skip_while(|l| *l != PROFILE).skip(1).take_while(|l| !l.is_empty());
-    section.map(|l| l.strip_prefix("- ").unwrap_or(l).to_owned()).collect()
+    let section = snapshot
+        .lines()
+        .skip_while(|l| *l != PROFILE)
+        .skip(1)
+        .take_while(|l| !l.is_empty());
+    section
+        .map(|l| l.strip_prefix("- ").unwrap_or(l).to_owned())
+        .collect()
 }
 
 /// Lower-case words, without punctuation.
 fn words(text: &str) -> Vec<String> {
-    text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect()
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// New log lines, each on one line and dated by the owner's clock. An event whose words
 /// match a line already in `log`, whatever its date, is left out.
 pub fn dated(events: &[String], log: &str, now: f64, offset: i64) -> Vec<String> {
     let date = &clock(now, offset)[..10];
-    let mut logged: Vec<Vec<String>> = log.lines().filter_map(fact).map(|l| words(if day(l).is_some() { &l[10..] } else { l })).collect();
+    let mut logged: Vec<Vec<String>> = log
+        .lines()
+        .filter_map(fact)
+        .map(|l| words(if day(l).is_some() { &l[10..] } else { l }))
+        .collect();
     let mut lines = vec![];
-    for event in events.iter().map(|e| e.split_whitespace().collect::<Vec<_>>().join(" ")) {
+    for event in events
+        .iter()
+        .map(|e| e.split_whitespace().collect::<Vec<_>>().join(" "))
+    {
         let said = words(&event);
         if !said.is_empty() && !logged.contains(&said) {
             lines.push(format!("{date} {event}"));
@@ -129,10 +165,14 @@ pub fn dated(events: &[String], log: &str, now: f64, offset: i64) -> Vec<String>
 // ponytail: scans every line of every file per search; keep an index once the log is megabytes.
 pub fn search(text: &str, query: &str) -> String {
     let words = words(query);
-    let found: Vec<&str> = text.lines().filter_map(fact).filter(|l| {
-        let line = l.to_lowercase();
-        !words.is_empty() && words.iter().all(|w| line.contains(w.as_str()))
-    }).collect();
+    let found: Vec<&str> = text
+        .lines()
+        .filter_map(fact)
+        .filter(|l| {
+            let line = l.to_lowercase();
+            !words.is_empty() && words.iter().all(|w| line.contains(w.as_str()))
+        })
+        .collect();
     if found.is_empty() {
         return format!("nothing remembered matches \"{query}\"");
     }
@@ -157,8 +197,15 @@ mod tests {
     fn the_profile_is_one_fact_per_line_and_the_owners_lines_stay() {
         let file = "# About Abby\nAbby likes tea.\n- Abby lives in Boston.\n";
         assert_eq!(facts(file), ["Abby likes tea.", "Abby lives in Boston."]);
-        let revised = revise(file, &s(&["Abby lives in Boston."]), &s(&["Abby lives in Philadelphia.", "Abby likes tea."]));
-        assert_eq!(revised, "# About Abby\nAbby likes tea.\nAbby lives in Philadelphia.\n");
+        let revised = revise(
+            file,
+            &s(&["Abby lives in Boston."]),
+            &s(&["Abby lives in Philadelphia.", "Abby likes tea."]),
+        );
+        assert_eq!(
+            revised,
+            "# About Abby\nAbby likes tea.\nAbby lives in Philadelphia.\n"
+        );
         assert!(fits(&"x\n".repeat(MAX_FACTS)));
         assert!(!fits(&"x\n".repeat(MAX_FACTS + 1)));
         assert!(!fits(&"x".repeat(MAX_PROFILE + 1)));
@@ -168,14 +215,20 @@ mod tests {
     fn important_and_recent_events_rank_first() {
         // Plain lines 1 to 40 days old, and one important line 200 days old.
         let day = |ago: f64| crate::prompt::clock(NOW - ago * 86_400.0, 0)[..10].to_owned();
-        let mut log: Vec<String> = (1..=40).rev().map(|ago| format!("{} plain {ago}", day(ago as f64))).collect();
+        let mut log: Vec<String> = (1..=40)
+            .rev()
+            .map(|ago| format!("{} plain {ago}", day(ago as f64)))
+            .collect();
         log.insert(0, format!("{} ! important", day(200.0)));
         log.push("not dated".into());
         let memory = snapshot("", &log.join("\n"), NOW);
         let events: Vec<&str> = memory.lines().skip(1).collect();
         assert_eq!(events.len(), MAX_EVENTS, "{memory}");
         assert!(events[0].ends_with("! important"), "oldest first: {memory}");
-        assert!(events[1].ends_with("plain 29") && events[29].ends_with("plain 1"), "{memory}");
+        assert!(
+            events[1].ends_with("plain 29") && events[29].ends_with("plain 1"),
+            "{memory}"
+        );
         assert!(!memory.contains("plain 30") && !memory.contains("not dated"));
         assert_eq!(snapshot("", "", NOW), "");
     }
@@ -186,14 +239,28 @@ mod tests {
         let memory = snapshot(&file, "", NOW);
         assert_eq!(shown(&memory).len(), MAX_FACTS);
         assert_eq!(shown(&memory)[0], "fact 0");
-        assert_eq!(shown("What you know about the owner:\n- a\n- b\n\nRecent events:\n- 2026-01-01 c"), ["a", "b"]);
-        assert_eq!(dated(&s(&[" ! Moved\nhouse ", "", "Had a cold!", "moved house"]), "2026-09-01 had a cold", NOW, 0), ["2026-10-20 ! Moved house"]);
+        assert_eq!(
+            shown("What you know about the owner:\n- a\n- b\n\nRecent events:\n- 2026-01-01 c"),
+            ["a", "b"]
+        );
+        assert_eq!(
+            dated(
+                &s(&[" ! Moved\nhouse ", "", "Had a cold!", "moved house"]),
+                "2026-09-01 had a cold",
+                NOW,
+                0
+            ),
+            ["2026-10-20 ! Moved house"]
+        );
     }
 
     #[test]
     fn search_finds_lines_with_every_word() {
         let all = "Abby likes tea.\n2026-10-01 ! Started at Penn\n2026-10-02 Penn party";
-        assert_eq!(search(all, "penn"), "2026-10-01 ! Started at Penn\n2026-10-02 Penn party");
+        assert_eq!(
+            search(all, "penn"),
+            "2026-10-01 ! Started at Penn\n2026-10-02 Penn party"
+        );
         assert_eq!(search(all, "PARTY, penn"), "2026-10-02 Penn party");
         assert_eq!(search(all, "cats"), "nothing remembered matches \"cats\"");
     }

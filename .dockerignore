@@ -1,10 +1,14 @@
-.git
-.github
-.env
-.env.*
-.backups
-evals/local
-bench
+# An allow-list: nothing goes to the image build but what the Dockerfile copies.
+*
+!sage
+!tests
+!conformance
+!evals
+# ...and never caches, environments, secrets or live speech, at any depth.
+**/__pycache__
+**/*.py[cod]
 **/.venv
 **/.local
-**/__pycache__
+**/.env
+**/.env.*
+evals/local

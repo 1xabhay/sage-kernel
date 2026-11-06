@@ -1,12 +1,13 @@
 name: sage-kernel
 
 # The live kernel only. Tests run from compose.test.yaml, a separate project with no volumes, so
-# nothing a test does can reach kernel-data; only make up and make down touch this project.
+# nothing a test does can reach kernel-data; only make deploy, up-tag and down touch this project.
 
 services:
   kernel:
-    image: sage-kernel:0.1.0
-    build: .
+    # One image per commit, built by make image from git archive and tested before make deploy runs it.
+    image: sage-kernel:${SAGE_TAG:?set by make deploy, or SAGE_TAG=<sha> make up-tag}
+    pull_policy: never
     restart: unless-stopped
     environment:
       SAGE_DEVICES: ${SAGE_DEVICES:-}
@@ -45,5 +46,7 @@ services:
     cap_drop:
       - ALL
 
+# The journal volume that exists today, named outright so it never depends on the project or folder.
 volumes:
   kernel-data:
+    name: sage-kernel_kernel-data

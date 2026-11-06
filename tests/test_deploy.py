@@ -302,9 +302,12 @@ class ReleaseTests(unittest.TestCase):
         commands = recipe("image")
         self.assertIn("git status --porcelain --untracked-files=no", commands)
         self.assertIn("git archive HEAD | docker build -t sage-kernel:$(SHA) -", commands)
-        for line in (ROOT / "Dockerfile").read_text().splitlines():
-            if line.startswith("COPY"):
-                self.assertIn("--chmod=", line)  # the host umask cannot make the code unreadable to uid 1000
+
+    def test_the_host_umask_cannot_make_the_code_unreadable_to_uid_1000(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("RUN chmod -R u=rwX,go=rX sage tests conformance evals\n", dockerfile)
+        # BuildKit 0.20 (the CI runner's) applies COPY --chmod=...X to a nested folder without its x: no uid 1000 import.
+        self.assertNotIn("--chmod", dockerfile)
 
     def test_nothing_builds_in_the_test_or_deploy_path(self):
         for target in ("unit", "conformance", "eval", "deploy", "up-tag"):

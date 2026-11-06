@@ -461,6 +461,7 @@ class Executor:
         self._ramp, self._ramping = 1.0, None  # the most of the weight sent, and what raises it
         self._step = None  # the runner's step, to rebase when tracking lets go of the head
         self._ticked = -math.inf  # the clock of its last tick
+        self._written = -math.inf  # the clock of the last tick whose send finished
         self._sent: dict | None = None  # the target of that tick
         self._state = arbiter.State()  # the arbiter's state after it
         self._brake: Hold | None = None  # where it brakes to before yielding (``_yields``)
@@ -759,7 +760,7 @@ class Executor:
     async def _send(self, target: dict) -> None:
         sending = runner.SENDING.set(True)  # the one writer (M1)
         commanded, self._commanded = self._commanded, None
-        began = self.clock()
+        began, ticked = self.clock(), self._ticked
         try:
             await self._call("set_target", **runner.command(target))
             if commanded:  # against a camera on the antennas this measures the motors
@@ -769,6 +770,7 @@ class Executor:
         except ConnectionError as error:  # _call logged the link going down
             self._failed = error  # a move waiting fails with it, as a refused goto does
         finally:
+            self._written = ticked
             runner.SENDING.reset(sending)
 
     def _moving(self) -> bool:
@@ -859,6 +861,10 @@ class Executor:
                     break
                 if self._failed:  # a refused or timed-out target: the move did not happen
                     raise self._failed
+                await asyncio.sleep(runner.DT / 2)
+            # the settling target may still be on the robot's thread
+            end = self._ticked
+            while self._written < end and self.clock() <= deadline and not self._failed:
                 await asyncio.sleep(runner.DT / 2)
         finally:
             if self._primary is move:

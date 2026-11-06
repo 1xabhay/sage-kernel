@@ -13,7 +13,7 @@ is its first body. This repository holds all of it.
 | Kernel | `/` (`sage/`, moves to `kernel/` last) | Python 3.12, stdlib only; [below](#the-kernel) | `make check` |
 | Reachy Mini | [devices/reachy-mini/](devices/reachy-mini/README.md) | the voice app, the simulator, the testbench | [TESTING](docs/TESTING.md#reachy-mini-devicesreachy-mini) |
 | sage-os | [experiments/sage-os/](experiments/sage-os/README.md) | a Rust kernel, an experiment | `make -C experiments/sage-os test` |
-| music-telling | [apps/music-telling/](apps/music-telling/README.md) | songs told as a story, standalone; moves to `experiments/music-telling` with PR #6 | its README |
+| music-telling | [experiments/music-telling/](experiments/music-telling/README.md) | songs told as a story, standalone | its README |
 
 ## Docs
 

@@ -26,12 +26,11 @@ Every doc in the repository, by what it is for.
 - [reachy_sage_voice](../devices/reachy-mini/apps/reachy_sage_voice/README.md): Sage's voice on the robot.
 - [reachy_sim](../devices/reachy-mini/apps/reachy_sim/README.md): the MuJoCo simulator.
 - [reachy_mini_testbench](../devices/reachy-mini/apps/reachy_mini_testbench/README.md): hardware diagnostics.
-- [reachy_mini_pet](../devices/reachy-mini/apps/reachy_mini_pet/README.md): protocol v0, orphaned; to be archived or ported (plan D1).
 
 ## Experiments
 
 - [sage-os](../experiments/sage-os/README.md): a Rust kernel; its own [protocol](../experiments/sage-os/docs/PROTOCOL.md).
-- [music-telling](../apps/music-telling/README.md): songs told as a story; standalone, moves to `experiments/` with PR #6.
+- [music-telling](../experiments/music-telling/README.md): songs told as a story; standalone.
 
 ## History (historical)
 

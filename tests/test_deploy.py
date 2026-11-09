@@ -2,6 +2,8 @@
 
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -72,7 +74,7 @@ class LiveDataTests(unittest.TestCase):
         self.assertNotIn("volumes:", test)
         self.assertNotIn("kernel-data", test)
         self.assertNotRegex(live, r"(?m)^  conformance:")
-        self.assertNotIn("image: sage-kernel:", test)  # tests never retag the live image either
+        self.assertNotIn("build:", test)  # tests never build or retag an image: they run the one make built
 
     def test_test_targets_use_only_the_test_project(self):
         for target in ("unit", "conformance", "eval"):
@@ -83,12 +85,49 @@ class LiveDataTests(unittest.TestCase):
 
     def test_no_target_can_remove_a_volume(self):
         makefile = (ROOT / "Makefile").read_text()
-        self.assertNotRegex(makefile, r"down\s+(-\w*v|--volumes)|volume\s+rm|\bprune\b|--remove-orphans")
-        self.assertEqual(recipe("down").strip(), "docker compose down")
+        self.assertNotRegex(makefile, r"down\s+(-\w*v|--volumes)|volume\s+rm|--remove-orphans|\b(docker|system|image|volume|container|network|builder|buildx)\s+prune\b")
+        # make prune is make/prune.py alone, which never touches a volume (tests/test_maintain.py).
+        self.assertEqual(recipe("prune").strip(), '$(PYTHON) make/prune.py "$(MAIN_ROOT)"')
+        self.assertRegex(recipe("down").strip().splitlines()[-1].strip(), r"^(SAGE_TAG=\S+ )?docker compose down$")
+
+    def test_the_journal_volume_keeps_its_name_wherever_compose_yaml_sits(self):
+        # The volume that exists today: pinned, so moving compose.yaml (or the project) never makes a new one.
+        self.assertRegex((ROOT / "compose.yaml").read_text(),
+                         r"(?m)^volumes:\n  kernel-data:\n    name: sage-kernel_kernel-data$")
+
+    def test_each_lane_tests_in_its_own_project(self):
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertRegex(makefile, r"(?m)^TEST := .*docker compose -p sage-kernel-test-\$\(LANE\) -f compose.test.yaml$")
+
+    def test_up_and_down_run_only_from_the_main_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            main, lane, bin_ = Path(tmp, "main"), Path(tmp, "lane"), Path(tmp, "bin")
+            main.mkdir()
+            bin_.mkdir()
+            (bin_ / "docker").write_text('#!/bin/sh\necho "$*" >> "$DOCKER_CALLS"\n')  # a fake: never the real one
+            (bin_ / "docker").chmod(0o755)
+            (main / "Makefile").write_text((ROOT / "Makefile").read_text())
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+            subprocess.run([*git, "init", "-q"], cwd=main, check=True)
+            subprocess.run([*git, "add", "Makefile"], cwd=main, check=True)
+            subprocess.run([*git, "commit", "-qm", "m"], cwd=main, check=True)
+            subprocess.run([*git, "worktree", "add", "-q", str(lane)], cwd=main, check=True)
+            calls = Path(tmp, "calls")
+            env = {"PATH": f"{bin_}:/usr/bin:/bin", "DOCKER_CALLS": str(calls), "HOME": tmp}
+            for target in ("up", "deploy", "up-tag", "down"):
+                with self.subTest(target=target):
+                    run = subprocess.run(["make", "-s", target], cwd=lane, env={**env, "SAGE_TAG": "abc"},
+                                         capture_output=True, check=False)
+                    self.assertNotEqual(run.returncode, 0)
+                    self.assertFalse(calls.exists(), "a linked worktree reached docker")
+            run = subprocess.run(["make", "-s", "down"], cwd=main, env=env, capture_output=True, check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertTrue(calls.exists())
 
 
 PRIVATE = (".env", ".env.local", ".backups/kernel.sqlite3", "evals/local/run.json", "bench/.local/hf/model.bin",
-           "bench/expressive/.local/run.sqlite3", "bench/.venv/bin/python")
+           "bench/expressive/.local/run.sqlite3", "bench/.venv/bin/python", ".claude/worktrees/lane/x", ".deploy/abc/x",
+           ".private/names")
 
 
 @unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
@@ -106,17 +145,236 @@ class PublishTests(unittest.TestCase):
         self.assertNotEqual(self.git("check-ignore", "-q", "--no-index", ".env.example").returncode, 0)
 
     def test_private_and_cached_paths_never_reach_the_image_build(self):
-        ignored = set((ROOT / ".dockerignore").read_text().split())
-        for pattern in (".env", ".env.*", ".backups", "evals/local", "bench", "**/.venv", "**/.local", ".git"):
+        # An allow-list: everything is out, then only what the image copies comes back, minus caches and secrets.
+        lines = [line for line in (ROOT / ".dockerignore").read_text().splitlines() if line and line[0] != "#"]
+        self.assertEqual(lines[0], "*")
+        self.assertEqual({line for line in lines if line[0] == "!"}, {"!sage", "!tests", "!conformance", "!evals", "!bench/latency.py"})
+        last_include = max(i for i, line in enumerate(lines) if line[0] == "!")
+        for pattern in ("**/.env", "**/.env.*", "**/.local", "**/.venv", "**/__pycache__", "evals/local"):
             with self.subTest(pattern=pattern):
-                self.assertIn(pattern, ignored)
+                self.assertIn(pattern, lines[last_include:])
 
     def test_no_tracked_file_names_a_lan_address_or_a_home_folder(self):
-        for path in self.git("ls-files").stdout.split():
-            if (ROOT / path).is_file():
-                with self.subTest(path=path):
-                    self.assertEqual(re.findall(r"\b192\.168\.\d{1,3}\.\d{1,3}\b|/Users/[a-z]|/home/[a-z]",
-                                                (ROOT / path).read_text(errors="ignore")), [])
+        # The same scanner the pre-push hook runs over the added lines: one list of patterns.
+        for mode in ("--self-test", "--tree"):
+            with self.subTest(mode=mode):
+                run = subprocess.run([sys.executable, ".githooks/hygiene.py", mode], check=False, cwd=ROOT,
+                                     capture_output=True, text=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
+
+@unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
+class PrePushTests(unittest.TestCase):
+    """The pre-push hook keeps local-only branches local and refuses to publish an added private address."""
+
+    def setUp(self):
+        self.repo = tempfile.TemporaryDirectory()
+        self.addCleanup(self.repo.cleanup)
+        self.git("init", "-q")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], check=True,
+                              cwd=self.repo.name, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, text: str) -> str:
+        (Path(self.repo.name) / "f.txt").write_text(text)
+        self.git("add", "f.txt")
+        self.git("commit", "-qm", "c")
+        return self.git("rev-parse", "HEAD")
+
+    def push(self, local_ref: str, sha: str, remote_ref: str = "") -> int:
+        line = f"{local_ref} {sha} {remote_ref or local_ref} {'0' * 40}\n"
+        return subprocess.run(["sh", str(ROOT / ".githooks/pre-push"), "origin", "url"], input=line, text=True,
+                              cwd=self.repo.name, capture_output=True, check=False).returncode
+
+    def test_local_only_branches_are_refused(self):
+        sha = self.commit("hello\n")
+        for ref in ("refs/heads/history/sage", "refs/heads/reachy/sage-voice", "refs/heads/backup/x",
+                    "refs/heads/private-history"):
+            with self.subTest(ref=ref):
+                self.assertNotEqual(self.push(ref, sha), 0)
+        self.assertNotEqual(self.push("refs/heads/topic", sha, "refs/heads/history/sage"), 0)
+        self.assertEqual(self.push("refs/heads/repo/guards", sha), 0)
+
+    def test_an_added_private_address_is_refused(self):
+        self.commit("hello\n")
+        sha = self.commit("hello\nkernel at " + "192.168" + ".1.20\n")
+        self.assertNotEqual(self.push("refs/heads/repo/topic", sha), 0)
+        sha = self.commit("hello\n")  # removing it again does not make the range clean: the add is still pushed
+        self.assertNotEqual(self.push("refs/heads/repo/topic", sha), 0)
+
+    def test_a_name_in_the_untracked_private_list_is_refused(self):
+        # The list (.private/names, one per line, never tracked) sits in the main checkout; no list, no check.
+        sha = self.commit("hello Zorblax\n")
+        def tree() -> int:
+            return subprocess.run([sys.executable, str(ROOT / ".githooks/hygiene.py"), "--tree"], cwd=self.repo.name,
+                                  capture_output=True, check=False).returncode
+        self.assertEqual((tree(), self.push("refs/heads/repo/topic", sha)), (0, 0))
+        names = Path(self.repo.name) / ".private" / "names"
+        names.parent.mkdir()
+        names.write_text("zorblaxian\n\nzorblax\n")
+        self.assertNotEqual(tree(), 0)
+        self.assertNotEqual(self.push("refs/heads/repo/topic", sha), 0)
+
+    def test_make_hooks_enables_the_tracked_hooks(self):
+        self.assertIn("git config core.hooksPath .githooks", recipe("hooks"))
+
+@unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
+class CommitGateTests(unittest.TestCase):
+    """The commit-msg gate runs `make test` of the project nearest each staged path; (red) lets a failure in."""
+
+    def setUp(self):
+        self.repo = tempfile.TemporaryDirectory()
+        self.addCleanup(self.repo.cleanup)
+        self.root = Path(self.repo.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        (self.root / "Makefile").write_text("test:\n\ttrue\n")
+        (self.root / "app" / "src").mkdir(parents=True)
+        (self.root / "app" / "Makefile").write_text("test:\n\tfalse\n")
+
+    def gate(self, path: str, subject: str) -> int:
+        (self.root / path).write_text("x\n")
+        subprocess.run(["git", "add", path], cwd=self.root, check=True)
+        (self.root / "MSG").write_text(subject + "\n\nbody\n")
+        return subprocess.run(["sh", str(ROOT / ".githooks/commit-msg"), "MSG"], cwd=self.root,
+                              capture_output=True, check=False).returncode
+
+    def test_the_nearest_project_must_pass(self):
+        self.assertEqual(self.gate("top.txt", "Root change"), 0)  # only the root project ran
+        self.assertNotEqual(self.gate("app/src/a.txt", "App change"), 0)
+
+    def test_a_red_subject_lets_failing_tests_in(self):
+        self.assertEqual(self.gate("app/src/a.txt", "App test first (red)"), 0)
+        self.assertNotEqual(self.gate("app/src/a.txt", "App (red) in the middle"), 0)
+
+    def test_make_test_runs_the_kernel_suites(self):
+        self.assertEqual(recipe("test").strip(), "")  # the work is in its prerequisites
+        self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^test: unit conformance$")
+        self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^check: test$")
+
+# ponytail: these are red until repo/experiments merges (it names them, drops `down -v`, and moves
+# music-telling to experiments/); delete this list then.
+NOT_YET = {"apps/music-telling/docker-compose.yml", "apps/music-telling/Makefile", "experiments/sage-os/compose.yaml"}
+
+
+@unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
+class RepoWideComposeTests(unittest.TestCase):
+    """Every project in the repo pins its compose project name and no Makefile can delete a volume."""
+
+    def tracked(self, pattern: str) -> list[str]:
+        out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+        return [p for p in out.split("\0") if re.search(pattern, p) and p not in NOT_YET]
+
+    def test_every_compose_file_pins_its_project_name(self):
+        files = self.tracked(r"(^|/)(docker-)?compose[\w.-]*\.ya?ml$")
+        self.assertIn("compose.yaml", files)
+        for path in files:
+            with self.subTest(path=path):
+                self.assertRegex((ROOT / path).read_text(), r"(?m)^name: \S+")
+
+    def test_no_makefile_can_remove_a_volume(self):
+        files = self.tracked(r"(^|/)Makefile$")
+        self.assertIn("Makefile", files)
+        for path in files:
+            with self.subTest(path=path):  # find's -prune and make prune are fine; docker's prune is not
+                self.assertNotRegex((ROOT / path).read_text(),
+                                    r"down\s+(-\w*v|--volumes)|volume rm|\b(docker|system|image|volume|container|network|builder|buildx)\s+prune\b")
+
+@unittest.skipUnless((ROOT / "Makefile").exists(), "checks the source tree; the image ships without it")
+class SecretScanTests(unittest.TestCase):
+    def test_the_secret_scan_reads_a_bundle_so_it_works_in_a_worktree(self):
+        # In a linked worktree .git is a file pointing elsewhere: tarring it sends gitleaks nothing to read.
+        commands = recipe("secrets")
+        self.assertIn("git bundle create --quiet - --all", commands)
+        self.assertNotIn("tar -c .git", commands)
+
+@unittest.skipUnless((ROOT / "Makefile").exists(), "checks the source tree; the image ships without it")
+class HygieneTests(unittest.TestCase):
+    """make hygiene is exactly what CI runs, including these host checks that skip inside the image."""
+
+    def test_hygiene_runs_the_host_checks_and_ci_runs_only_hygiene(self):
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertRegex(makefile, r"(?m)^hygiene: source docs lint vuln secrets test$")
+        self.assertIn("-m unittest tests.test_deploy tests.test_boundary", recipe("source"))
+        runs = re.findall(r"(?m)^\s+run: (.*)$", (ROOT / ".github/workflows/ci.yml").read_text())
+        self.assertEqual(runs, ["make hygiene"])
+
+
+def run(*args: str, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(args, cwd=ROOT, capture_output=True, text=True, check=False, **kw)
+
+
+@unittest.skipUnless((ROOT / "Makefile").exists(), "checks the source tree; the image ships without it")
+class ReleaseTests(unittest.TestCase):
+    """One image per commit: built from git archive of a clean HEAD, tested, then deployed unchanged."""
+
+    def test_live_and_test_run_the_same_image_by_tag_and_never_build_or_pull(self):
+        for file, name in SERVICES:
+            with self.subTest(file=file):
+                block = service(name, file)
+                self.assertRegex(block, r"(?m)^    image: sage-kernel:\$\{SAGE_TAG:\?[^}]+\}$")
+                self.assertIn("pull_policy: never", block)
+                self.assertNotIn("build:", (ROOT / file).read_text())
+
+    def test_the_image_comes_from_a_clean_commit(self):
+        commands = recipe("image")
+        self.assertIn("git status --porcelain --untracked-files=no", commands)
+        self.assertIn("git archive HEAD | docker build -t sage-kernel:$(SHA) -", commands)
+
+    def test_the_host_umask_cannot_make_the_code_unreadable_to_uid_1000(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("RUN chmod -R u=rwX,go=rX sage tests conformance evals bench\n", dockerfile)
+        # BuildKit 0.20 (the CI runner's) applies COPY --chmod=...X to a nested folder without its x: no uid 1000 import.
+        self.assertNotIn("--chmod", dockerfile)
+
+    def test_nothing_builds_in_the_test_or_deploy_path(self):
+        for target in ("unit", "conformance", "eval", "deploy", "up-tag"):
+            with self.subTest(target=target):
+                self.assertNotIn("--build", recipe(target))
+        self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^up: deploy$")
+
+    def test_deploy_is_image_test_backup_then_up_checked_and_logged(self):
+        commands = recipe("deploy")
+        self.assertTrue(commands.lstrip().startswith("$(MAIN_ONLY)"))
+        self.assertIn("$(MAKE) image test backup", commands)
+        self.assertIn("SAGE_TAG=$(SHA) docker compose up -d --wait kernel", commands)
+        self.assertIn("$(DEPLOY_LOG)", commands)
+        self.assertIn("$(CHECK_LIVE)", commands)
+        self.assertIn("sage-kernel_kernel-data", (ROOT / "Makefile").read_text())
+        self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^DEPLOY_LOG \?= \$\(HOME\)/")
+        self.assertIn("$(CHECK_LIVE)", recipe("up-tag"))
+
+    def test_backup_reads_the_live_journal_read_only(self):
+        commands = recipe("backup")
+        self.assertIn("mode=ro", commands)
+        self.assertIn(".serialize()", commands)
+        self.assertIn("integrity_check", commands)
+        self.assertIn("umask 077", commands)
+        self.assertNotRegex(commands, r"docker (compose )?(cp|stop|restart|rm)\b")
+
+    def test_release_check_and_conventions_pass_their_self_tests(self):
+        for script in ("make/release_check.py", "make/conventions.py"):
+            with self.subTest(script=script):
+                result = run(sys.executable, script, "--self-test")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_kernel_meets_the_project_conventions(self):
+        result = run(sys.executable, "make/conventions.py", "--strict", ".")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_root_fans_out_to_every_project(self):
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertRegex(makefile, r"(?m)^PROJECTS := \. devices/reachy-mini experiments/sage-os experiments/music-telling$")
+        self.assertIn("for p in $(PROJECTS); do", makefile)
+        for target in ("test-all", "hygiene-all"):
+            with self.subTest(target=target):
+                self.assertIn(f"$(call FAN_OUT,{target.split('-')[0]})", recipe(target))
+        self.assertIn("make/conventions.py", recipe("conventions"))
+
+    def test_smoke_walks_the_readme_against_a_throwaway_kernel(self):
+        result = run("make", "-s", "smoke", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("smoke: ok", result.stdout)
+        self.assertNotIn(":8776", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

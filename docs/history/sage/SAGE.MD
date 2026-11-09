@@ -6,7 +6,7 @@ Sage is an Real World Operating System with non determinitic LLM as core.
 Research LLM OS
 
 
-![Screenshot](<LLMOS-karpathy.png>)
+(A screenshot of Karpathy's LLM OS diagram was here; the image was not kept.)
 
 
 Sage is a open source version of that. 

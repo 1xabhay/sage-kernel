@@ -35,13 +35,25 @@ enum Request {
 
 /// The answer to one JSON request. Also the native entry point for tests.
 pub fn call(request: &[u8]) -> Value {
-    let replay = |policy: Policy, journal: &[Fact]| journal.iter().fold(State::new(policy), |s, f| s.apply(f));
+    let replay = |policy: Policy, journal: &[Fact]| {
+        journal.iter().fold(State::new(policy), |s, f| s.apply(f))
+    };
     match serde_json::from_slice::<Request>(request) {
-        Ok(Request::Step { policy, journal, input, now }) => match step(&replay(policy, &journal), &input, now) {
+        Ok(Request::Step {
+            policy,
+            journal,
+            input,
+            now,
+        }) => match step(&replay(policy, &journal), &input, now) {
             Ok(facts) => json!({ "facts": facts }),
             Err(refused) => json!({ "refused": refused }),
         },
-        Ok(Request::Compile { policy, journal, turn, persona }) => {
+        Ok(Request::Compile {
+            policy,
+            journal,
+            turn,
+            persona,
+        }) => {
             let mind = Mind { persona: &persona };
             json!({ "prompt": compile(&replay(policy, &journal), turn, &mind) })
         }
@@ -90,12 +102,23 @@ mod tests {
     fn a_page_can_run_a_turn_with_no_server() {
         let policy = json!({"owners": ["tab"]});
         let hello = json!({"op": "step", "policy": policy, "now": 0, "input": {"kind": "hello", "device": "tab", "manifest": {}}});
-        let mut journal: Vec<Value> = call(hello.to_string().as_bytes())["facts"].as_array().unwrap().clone();
+        let mut journal: Vec<Value> = call(hello.to_string().as_bytes())["facts"]
+            .as_array()
+            .unwrap()
+            .clone();
         let message = json!({"op": "step", "policy": policy, "journal": journal, "now": 1,
                              "input": {"kind": "message", "device": "tab", "conversation": "notebook", "id": "1", "text": "Plan my day"}});
-        journal.extend(call(message.to_string().as_bytes())["facts"].as_array().unwrap().clone());
+        journal.extend(
+            call(message.to_string().as_bytes())["facts"]
+                .as_array()
+                .unwrap()
+                .clone(),
+        );
         let prompt = call(json!({"op": "compile", "policy": policy, "journal": journal, "turn": 3, "persona": "You are Sage."}).to_string().as_bytes());
-        assert_eq!(prompt["prompt"]["messages"][0]["content"], "[1970-01-01 00:00 tab] Plan my day");
+        assert_eq!(
+            prompt["prompt"]["messages"][0]["content"],
+            "[1970-01-01 00:00 tab] Plan my day"
+        );
         assert_eq!(call(b"nonsense")["refused"]["code"], "invalid");
     }
 }

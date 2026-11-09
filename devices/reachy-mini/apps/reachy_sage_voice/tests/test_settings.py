@@ -1,7 +1,7 @@
 """Settings from a .env file, as Pollen's conversation app does it.
 
 The daemon launches the app with only its own environment, so a .env in the
-reachy_mini config directory (or above the working directory, for ``make run``)
+reachy_mini config directory (or the app's own folder, for ``make run``)
 fills the settings the environment leaves unset. Only temporary files here: a
 real .env is never read.
 """
@@ -21,6 +21,7 @@ import reachy_sage_voice.__main__ as voice
 APP = Path(__file__).parent.parent
 TOKEN = "SAGE_VOICE_KERNEL_TOKEN"
 NAME = re.compile(r"SAGE_VOICE_[A-Z_]*[A-Z]")
+REAL_ENV_FILES = voice.env_files  # conftest swaps it out in every test
 
 
 @pytest.fixture
@@ -53,6 +54,16 @@ def test_the_config_directory_file_wins_over_the_working_directory_one(files):
     assert os.environ["SAGE_VOICE_STT_URL"] == "http://cwd-stt"
 
 
+def test_only_the_apps_own_dotenv_is_read_never_one_above_it(tmp_path, monkeypatch):
+    # The monorepo's root .env holds the kernel's secrets: walking up from the CWD found it.
+    (tmp_path / ".env").write_text(f"{TOKEN}=the-kernels\n")
+    (tmp_path / "below").mkdir()
+    monkeypatch.chdir(tmp_path / "below")
+    paths = REAL_ENV_FILES()
+    assert paths[1:] == [APP / ".env"]
+    assert paths[0].parts[-2:] == ("sage_voice", ".env")
+
+
 def test_the_app_the_daemon_launches_reads_the_dotenv(app, files):  # noqa: F811
     app, ran = app
     del os.environ[TOKEN]
@@ -69,4 +80,7 @@ def test_the_example_lists_every_setting_and_no_token():
 
 
 def test_a_dotenv_is_never_committed():
-    assert subprocess.run(["git", "check-ignore", "-q", str(APP / ".env")]).returncode == 0
+    ignored = subprocess.run(["git", "check-ignore", "-q", str(APP / ".env")], capture_output=True)
+    if ignored.returncode == 128:
+        pytest.skip("not in a git checkout (make deploy tests an export)")
+    assert ignored.returncode == 0

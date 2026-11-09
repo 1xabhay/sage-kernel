@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Native Pocket TTS (azelma) as a LaunchAgent, rendered by `make -C services pocket-on`. It runs
+     offline from the weights pocket-on fetched; launchd restarts it after a crash and at login. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>@LABEL@</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@SERVICES@/.venv/bin/python</string>
+		<string>app.py</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>@SERVICES@/tts</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HF_HUB_OFFLINE</key>
+		<string>1</string>
+		<key>HF_HOME</key>
+		<string>@SERVICES@/.local/hf</string>
+		<key>PORT</key>
+		<string>@PORT@</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>@LOG@</string>
+	<key>StandardErrorPath</key>
+	<string>@LOG@</string>
+</dict>
+</plist>

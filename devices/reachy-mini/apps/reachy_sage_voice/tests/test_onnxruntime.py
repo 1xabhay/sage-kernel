@@ -1,6 +1,6 @@
 """Pipecat's two ONNX models we rely on, loaded and run once on reachy-mini's onnxruntime.
 
-Pipecat pins onnxruntime ~=1.24.3; reachy-mini pins ==1.27.0. These are the
+reachy-mini pins onnxruntime ==1.27.0, inside the range pipecat-ai allows. These are the
 evidence that Silero VAD and Smart Turn v3.2 work on 1.27.0, on CPU.
 """
 

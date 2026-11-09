@@ -111,7 +111,7 @@ async def _no_wait(_seconds):  # pacing does not change the gap; skip real playb
 async def first_audio_ms(url: str, reply: str, aggregator) -> float | None:
     """Milliseconds from the first TTS request of ``reply`` to the first audio out."""
     _Timed.started = _Probe.audio = None
-    tts = _Timed(base_url=url, voice=os.environ.get("SAGE_VOICE_TTS_VOICE", "af_heart"))
+    tts = _Timed(base_url=url, voice=os.environ.get("SAGE_VOICE_TTS_VOICE", "azelma"))
     tts._text_aggregator = aggregator
     out = ReachyOutputTransport(_Robot(), TransportParams(
         audio_out_enabled=True, audio_out_sample_rate=16000), sleep=_no_wait)

@@ -12,8 +12,11 @@ speaks instead, and each clause counts whole once its audio has played.
 """
 
 import base64
+import inspect
 import json
 import logging
+import math
+import time
 
 import httpx
 from pipecat.frames.frames import (
@@ -26,7 +29,9 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
+from sage_device.names import spoken, written
 
+from reachy_sage_voice import health
 from reachy_sage_voice.voice import VoiceStyleFrame
 
 logger = logging.getLogger(__name__)
@@ -35,6 +40,18 @@ RATE = 24000
 _BYTES_PER_S = RATE * 2
 #: The captioned endpoint is absent, not failing: stop asking for it.
 _NO_CAPTIONS = (404, 405, 501)
+#: Shown instead of speech when Kokoro cannot speak (a puzzled look: can't hear, can't say).
+DOWN_EMOTE = "confused1"
+#: At most one emote this often while Kokoro stays down: each clause of a reply fails in turn.
+#: ponytail: a time window, not per reply; key it on the reply if long replies repeat the emote.
+DOWN_EVERY_S = 10.0
+#: How long a clause may take to its first audio before it counts as unspoken. A server answers
+#: once the clause is synthesized, so this fits the longest one at the slowest voice: 40 words
+#: (the bot logs' longest is 23) are 16 s spoken at 2.5 words/s, so 16 s to make at Pocket TTS's
+#: real-time factor of about 1, plus 4 s of margin for a busy GPU. Pipecat's default of 3 s took
+#: anything past 7 words at that factor for silence. It costs nothing on the way out: a reply
+#: closes as soon as it ends (``on_turn_context_completed``); only a hung server waits this long.
+STOP_FRAME_TIMEOUT_S = 20.0
 
 
 class _NoCaptionsError(Exception):
@@ -44,10 +61,15 @@ class _NoCaptionsError(Exception):
 class KokoroTTSService(TTSService):
     """Kokoro over HTTP, word-timed when its server can caption."""
 
-    def __init__(self, *, base_url: str, voice: str = "af_heart", model: str = "kokoro",
-                 **kwargs):
-        """Speak through the Kokoro server at ``base_url`` (``.../v1`` or its root)."""
+    def __init__(self, *, base_url: str, voice: str = "azelma", model: str = "kokoro",
+                 names: tuple = (), on_down=None, **kwargs):
+        """Speak through the Kokoro server at ``base_url`` (``.../v1`` or its root).
+
+        ``names`` (``names.parse``) are sent respelled and captioned back as written.
+        ``on_down()`` shows that a clause could not be spoken, at most every DOWN_EVERY_S.
+        """
         super().__init__(push_text_frames=False, push_stop_frames=True, push_start_frame=True,
+                         stop_frame_timeout_s=STOP_FRAME_TIMEOUT_S,
                          sample_rate=RATE, settings=TTSSettings(model=model, voice=voice),
                          **kwargs)
         self._root = base_url.rstrip("/").removesuffix("/v1")
@@ -55,6 +77,8 @@ class KokoroTTSService(TTSService):
         self._offset_s = 0.0  # audio already produced in this response
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
         self._style: dict = {}  # voice_style settings for the current reply
+        self._names = names
+        self._on_down, self._down_at = on_down, -math.inf
 
     def can_generate_metrics(self) -> bool:
         """Report TTFB like any TTS service."""
@@ -77,9 +101,51 @@ class KokoroTTSService(TTSService):
             self._style = dict(frame.settings)
         await super().process_frame(frame, direction)
 
+    async def set_usable(self, is_usable: bool):
+        """Never be written off: an outage ends, so the next reply always tries again.
+
+        Pipecat stops giving a service work for good after three silent contexts or a permanent
+        error, meant for a bad voice ID. On 2026-10-27 a slow, then unreachable Kokoro muted
+        Sage this way for 5h45m, until a restart.
+        """
+        if is_usable:
+            await super().set_usable(True)
+        else:
+            logger.error("Kokoro keeps failing: Sage is not speaking; every reply still tries it")
+
+    async def push_error_frame(self, error: ErrorFrame, force_treat_as_permanent: bool = False):
+        """Show that a clause went unspoken, however it failed (refused, unreachable, silent)."""
+        health.report("voice.tts", False, "down")
+        if self._on_down and time.monotonic() - self._down_at >= DOWN_EVERY_S:
+            self._down_at = time.monotonic()
+            try:
+                shown = self._on_down()
+                if inspect.isawaitable(shown):
+                    await shown
+            except Exception as shown_error:  # a gesture, not a requirement
+                logger.warning("could not show Kokoro is down: %s", shown_error)
+        await super().push_error_frame(error, force_treat_as_permanent)
+
+    async def on_turn_context_completed(self):
+        """Close the reply's context now, even if its last clause failed.
+
+        ponytail: Pipecat's private flag says "this clause yielded audio", and without it the
+        context idles out STOP_FRAME_TIMEOUT_S with every later reply queued behind it. This
+        service always yields synchronously. Recheck on a Pipecat upgrade (the tests would tell).
+        """
+        self._is_yielding_frames_synchronously = True
+        await super().on_turn_context_completed()
+
     async def run_tts(self, text: str, context_id: str):
+        """Synthesize one clause; a failure shows ``on_down`` instead (``push_error_frame``)."""
+        async for frame in self._speak(text, context_id):
+            if not isinstance(frame, ErrorFrame):
+                health.report("voice.tts", True, "up")
+            yield frame
+
+    async def _speak(self, text: str, context_id: str):
         """Synthesize one clause, captioned if the server can."""
-        body = {"input": text, "voice": self._settings.voice, "model": self._settings.model,
+        body = {"input": spoken(text, self._names), "voice": self._settings.voice, "model": self._settings.model,
                 "response_format": "pcm", "speed": self._style.get("speed", 1.0)}
         try:
             if self._captions:
@@ -114,7 +180,7 @@ class KokoroTTSService(TTSService):
                 yield TTSAudioRawFrame(audio, RATE, 1, context_id=context_id)
                 produced += len(audio)
                 await self.add_word_timestamps(
-                    [(w["word"], self._offset_s + w["start_time"])
+                    [(written(w["word"], self._names), self._offset_s + w["start_time"])
                      for w in sentence["timestamps"]], context_id)
             self._offset_s += produced / _BYTES_PER_S
 

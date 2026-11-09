@@ -18,7 +18,7 @@ import sim
 from conftest import API, api, present
 
 APP = Path(__file__).parent.parent
-VOICE_KERNEL = APP.parent / "reachy_sage_voice" / "reachy_sage_voice" / "kernel.py"
+VOICE_KERNEL = APP.parent / "reachy_sage_voice" / "reachy_sage_voice" / "manifest.py"
 SAGE_KERNEL = APP.parents[3]
 
 
@@ -137,19 +137,19 @@ def test_stop_from_another_device_interrupts_the_playing_move(kernel, neutral):
 
 
 def test_a_busy_kernel_is_retried_with_the_same_turn_until_it_is_free(kernel, sim):
-    kernel.provider.open.clear()  # the model holds every answer: the mock's turn runs on
+    kernel.provider.open.clear()  # the model holds every answer: another turn on this lane runs on
     status, _ = kernel.process.device(
         "POST",
         "/v1/events",
-        {"kind": "submitted", "turn_id": "mock-1", "text": "Hi"},
-        token=kernel.mock,
+        {"kind": "submitted", "turn_id": "other-1", "text": "Hi"},
+        token=kernel.token,
     )
     assert status == 200
     threading.Timer(1.5, kernel.provider.open.set).start()
 
     results = device.turn(kernel.url, kernel.token, API, "Hello", "sim-busy")
 
-    assert [r["kind"] for r in results] == ["reply"]
+    assert {r["kind"] for r in results} == {"reply"}
 
 
 def test_a_kernel_busy_for_more_than_about_5_s_is_given_up(kernel, sim):
@@ -157,8 +157,8 @@ def test_a_kernel_busy_for_more_than_about_5_s_is_given_up(kernel, sim):
     kernel.process.device(
         "POST",
         "/v1/events",
-        {"kind": "submitted", "turn_id": "mock-1", "text": "Hi"},
-        token=kernel.mock,
+        {"kind": "submitted", "turn_id": "other-1", "text": "Hi"},
+        token=kernel.token,
     )
     start = time.monotonic()
     with pytest.raises(device.KernelBusyError):

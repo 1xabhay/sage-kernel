@@ -11,10 +11,16 @@ Models
 - Parakeet TDT 0.6B v2, NVIDIA: CC-BY-4.0. Speech to text (services/stt).
   https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
   ONNX export used: https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx (CC-BY-4.0)
-- Kokoro 82M, hexgrad: Apache-2.0. Speech (services/tts).
-  https://huggingface.co/hexgrad/Kokoro-82M
-  ONNX exports used: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX and
-  https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX-timestamped (Apache-2.0)
+- WeSpeaker ResNet34-LM (VoxCeleb), WeNet community: CC-BY-4.0. The owner's voice (services/stt).
+  https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM
+- Voice: Kyutai Pocket TTS (CC BY 4.0); speaker from the CSTR VCTK Corpus, University of
+  Edinburgh (CC BY 4.0). Speech (services/tts), voice azelma, which Kyutai made from speaker p303,
+  sentence 23, enhanced (vctk/p303_023_enhanced.wav) and precomputed as an embedding. Unchanged here.
+  https://huggingface.co/kyutai/pocket-tts-without-voice-cloning
+  https://huggingface.co/kyutai/tts-voices
+  Yamagishi, Veaux and MacDonald, 2019, CSTR VCTK Corpus (version 0.92):
+  https://doi.org/10.7488/ds/2645
+  Licence: https://creativecommons.org/licenses/by/4.0/
 - Smart Turn v3, Pipecat: BSD-2-Clause. Turn ending when SAGE_VOICE_TURN=smart,
   bundled in the pipecat-ai package. https://huggingface.co/pipecat-ai/smart-turn-v3
 - Silero VAD, Silero Team: MIT. Speech onset and barge-in, bundled in pipecat-ai.
@@ -26,13 +32,36 @@ Models
 Software
 - Reachy Mini SDK, Pollen Robotics: Apache-2.0. https://github.com/pollen-robotics/reachy_mini
   index.html and style.css are rendered from the SDK's app template.
+- reachy_mini_conversation_app, Pollen Robotics: Apache-2.0, at c178d4a. The executor's
+  idle motion (reachy_sage_voice/executor.py) starts after its BreathingMove's idle delay, its
+  overlay uses its rule of pausing tracking only once a face is locked, and
+  reachy_sage_voice/expressions.py adapts its emotion-intent table (tools/play_emotion.py).
+  https://github.com/pollen-robotics/reachy_mini_conversation_app
+- reachy-mini-dances-library (Hugging Face dataset), Pollen Robotics: the recorded dances
+  played by voice, loaded at run time, not shipped. https://huggingface.co/datasets/pollen-robotics/reachy-mini-dances-library
+- reachy_mini_dances_library, Pollen Robotics: the dance moves (reachy_sage_voice/dance.py),
+  a pip dependency; its package declares no licence, so none of its code is copied here.
+  https://github.com/pollen-robotics/reachy_mini_dances_library
+- reachy-mini-dance-to-music, Binh Pham: Apache-2.0. reachy_sage_voice/beat.py adapts its
+  lock gate, fade-out and drop detection, and dance.py its phase-locked groove loop.
+  https://huggingface.co/spaces/binhpham/reachy-mini-dance-to-music
 - Pipecat, Daily: BSD-2-Clause. https://github.com/pipecat-ai/pipecat
 - onnx-asr: MIT. https://github.com/istupakov/onnx-asr (services/stt)
-- kokoro-onnx: MIT. https://github.com/thewh1teagle/kokoro-onnx (services/tts)
-- phonemizer and eSpeak NG: GPL-3.0-or-later. Installed inside the TTS image you build
-  locally (services/tts); not distributed with this app.
-  https://github.com/bootphon/phonemizer https://github.com/espeak-ng/espeak-ng
+- pocket-tts, Kyutai: MIT. https://github.com/kyutai-labs/pocket-tts (services/tts)
+- shazamio: MIT. Song identification through Shazam (services/research).
+  https://github.com/shazamio/ShazamIO
+- SearXNG: AGPL-3.0-or-later. Run unmodified from its published image for song
+  research (services/compose.yaml); not distributed with this app.
+  https://github.com/searxng/searxng
 
 Test data
-- services/stt/fixtures/good-morning-little-robot.wav is synthetic: Kokoro's
-  bf_emma voice saying "Good morning, little robot.", resampled to 16 kHz.
+- services/stt/fixtures/good-morning-little-robot.wav is synthetic: Kokoro's (82M, hexgrad,
+  Apache-2.0, https://huggingface.co/hexgrad/Kokoro-82M) bf_emma voice saying
+  "Good morning, little robot.", resampled to 16 kHz.
+- eval/replay.py downloads LibriSpeech test-clean (SLR12, https://www.openslr.org/12/):
+  CC BY 4.0, by Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur,
+  "Librispeech: an ASR corpus based on public domain audio books", ICASSP 2015; read
+  from LibriVox's public-domain audiobooks. Its clips are resampled and level-normalized
+  into eval/replay/ (git-ignored), and robot-mic recordings of them are made there; none
+  of it is distributed with this app. Its synthetic lines are Kokoro voices (Apache-2.0)
+  reading eval/script.md.

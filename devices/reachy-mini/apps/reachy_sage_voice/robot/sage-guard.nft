@@ -1,0 +1,28 @@
+# The robot's guard: SSH (22) and the daemon (8000, 8443) answer only the owner's Mac,
+# matched by its IP or its Wi-Fi hardware address, so a new DHCP lease for the Mac alone
+# does not lock it out. UDP too (WebRTC media, the daemon's SSDP on 1900): only the Mac, plus
+# mDNS from the LAN, DHCP answers, and replies to what the robot itself sent (DNS, NTP, STUN).
+# Loaded at boot by nftables.service (make -C robot install).
+# The addresses (MAC_IP, MAC_HW, LAN) live only on the robot, in the file below: make -C robot
+# allow-this-mac writes it from this Mac's en0 and reloads the guard, rollback armed.
+# Locked out anyway (both changed)? Remove /etc/nftables.d-sage-guard.nft from the SD card.
+include "/etc/sage-guard/hosts.nft"
+
+table inet sage_guard
+delete table inet sage_guard
+table inet sage_guard {
+  chain input {
+    type filter hook input priority 0; policy accept;
+    iif "lo" accept
+    ct state established,related accept
+    tcp dport { 22, 8000, 8443 } ip saddr $MAC_IP accept
+    tcp dport { 22, 8000, 8443 } ether saddr $MAC_HW accept
+    tcp dport { 22, 8000, 8443 } counter drop
+    meta l4proto udp ip saddr $MAC_IP accept
+    meta l4proto udp ether saddr $MAC_HW accept
+    udp dport 5353 ip saddr $LAN accept
+    udp dport 5353 ip6 saddr fe80::/10 accept
+    udp sport 67 udp dport 68 accept
+    meta l4proto udp counter drop
+  }
+}

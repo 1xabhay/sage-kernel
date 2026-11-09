@@ -1,0 +1,35 @@
+#!/bin/sh
+# The red/green commit gate (`make hooks` enables it). For each staged path, the nearest folder above it
+# with a Makefile is its project, and that project's `make test` must pass. A test-first commit whose
+# subject ends in "(red)" goes in anyway; the next commit makes it green.
+# A commit-msg hook, not pre-commit: only this one can read the message.
+# ponytail: the tests run on the working tree, so unstaged edits count; commit from a clean tree for an
+# exact verdict. A path with no project Makefile above it falls to the root (kernel) Makefile.
+# `git commit --no-verify` skips the gate.
+msg=$1
+case "$msg" in /*) ;; *) msg="$PWD/$msg" ;; esac
+cd "$(git rev-parse --show-toplevel)" || exit 1
+projects=$(git -c core.quotePath=false diff --cached --name-only | while IFS= read -r path; do
+    dir=$(dirname "$path")
+    while [ "$dir" != . ] && [ ! -f "$dir/Makefile" ]; do dir=$(dirname "$dir"); done
+    echo "$dir"
+done | sort -u)
+[ -n "$projects" ] || exit 0
+
+# In a linked worktree git hands hooks GIT_DIR without GIT_WORK_TREE, so git inside the tests would take
+# the project folder for the top of the repository; they run as from a terminal instead.
+unset GIT_DIR GIT_INDEX_FILE
+log=$(mktemp) || exit 1
+trap 'rm -f "$log"' EXIT
+failed=
+for dir in $projects; do
+    make -s -C "$dir" test > "$log" 2>&1 || { failed="$failed $dir"; tail -n 15 "$log" >&2; }
+done
+[ -z "$failed" ] && exit 0
+if head -n 1 "$msg" | grep -qE '\(red\)[[:space:]]*$'; then
+    echo "commit gate: tests fail in$failed; the subject is marked (red), so it goes in." >&2
+    exit 0
+fi
+echo "commit gate: refused. Tests fail in$failed and the subject does not end in (red)." >&2
+echo "Make them pass, or mark a test-first commit (red)." >&2
+exit 1

@@ -1,15 +1,18 @@
 name: sage-kernel
 
 # The live kernel only. Tests run from compose.test.yaml, a separate project with no volumes, so
-# nothing a test does can reach kernel-data; only make up and make down touch this project.
+# nothing a test does can reach kernel-data; only make deploy, up-tag and down touch this project.
 
 services:
   kernel:
-    image: sage-kernel:0.1.0
-    build: .
+    # One image per commit, built by make image from git archive and tested before make deploy runs it.
+    image: sage-kernel:${SAGE_TAG:?set by make deploy, or SAGE_TAG=<sha> make up-tag}
+    pull_policy: never
     restart: unless-stopped
     environment:
       SAGE_DEVICES: ${SAGE_DEVICES:-}
+      # Optional: more tokens in a file, re-read on change without a restart (docs/PROTOCOL.md §1), e.g. /data/devices.
+      SAGE_DEVICES_FILE: ${SAGE_DEVICES_FILE:-}
       # Ollama's base URL (native /api/chat). The live model answers turns; the background one is not used yet.
       SAGE_MODEL_URL: ${SAGE_MODEL_URL:-http://host.docker.internal:11434}
       SAGE_MODEL: ${SAGE_MODEL:-qwen3:1.7b}
@@ -20,8 +23,13 @@ services:
       SAGE_NUDGE_AFTER_IDLE_S: ${SAGE_NUDGE_AFTER_IDLE_S:-600}
       SAGE_NUDGE_GAP_S: ${SAGE_NUDGE_GAP_S:-900}
       SAGE_NUDGES_PER_HOUR: ${SAGE_NUDGES_PER_HOUR:-3}
+      SAGE_TZ: ${SAGE_TZ:-}
+      SAGE_PLACE: ${SAGE_PLACE:-}
       SAGE_ENGAGED_S: ${SAGE_ENGAGED_S:-60}
       SAGE_QUIET_S: ${SAGE_QUIET_S:-1800}
+      # The web, through the voice's research service (its POST /search); empty: never searched.
+      # e.g. http://host.docker.internal:8783. Only the asked line leaves this Mac (docs/PROTOCOL.md, Web search).
+      SAGE_SEARCH_URL: ${SAGE_SEARCH_URL:-}
     # 8765/8766 belong to the previous kernel while it runs.
     ports:
       - "127.0.0.1:8776:8766"
@@ -45,5 +53,7 @@ services:
     cap_drop:
       - ALL
 
+# The journal volume that exists today, named outright so it never depends on the project or folder.
 volumes:
   kernel-data:
+    name: sage-kernel_kernel-data

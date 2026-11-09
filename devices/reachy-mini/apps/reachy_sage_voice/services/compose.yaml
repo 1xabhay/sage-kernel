@@ -1,6 +1,7 @@
 # The voice's senses, on this machine only. 8765/8766 belong to the old kernel and the pet.
-#   docker compose up -d --build        (from this folder)
-#   STT: http://127.0.0.1:8781/v1  TTS: http://127.0.0.1:8782/v1
+#   docker compose up -d --build        (from this folder; images tagged dev)
+#   make deploy SHA=<sha>              (this Mac: reachy-sage-<svc>:<sha>, built from git archive of the commit)
+#   STT: http://127.0.0.1:8781/v1  TTS: http://127.0.0.1:8782/v1  Song research: http://127.0.0.1:8783
 name: reachy-sage-voice
 
 x-sealed: &sealed
@@ -20,11 +21,17 @@ x-sealed: &sealed
 services:
   stt:
     <<: *sealed
-    image: reachy-sage-stt:0.1.0
+    image: reachy-sage-stt:${SAGE_SERVICES_TAG:-dev}
     build: stt
     ports:
       - "127.0.0.1:8781:8000"
+    # The owner's voiceprint (make enroll), if any: biometric, local, never committed.
+    volumes:
+      - profiles:/profiles:ro
     mem_limit: 2g
+    # The VM is shared: at its limit, another stack's process goes first, and this one gets the CPU.
+    oom_score_adj: -500
+    cpu_shares: 2048
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,json,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8000/health'))['ready'] else 1)"]
       interval: 5s
@@ -33,18 +40,62 @@ services:
 
   tts:
     <<: *sealed
-    image: reachy-sage-tts:0.1.0
+    image: reachy-sage-tts:0.3.0  # not 0.2.0: an old local build with every voice has that tag
     build: tts
     ports:
       - "127.0.0.1:8782:8000"
-    # phonemizer copies libespeak-ng into a temp dir and loads it from there, so its temp dir
-    # (TMPDIR, tts/Dockerfile) must allow exec; /tmp stays noexec.
-    tmpfs:
-      - /tmp:size=64m,mode=1777
-      - /run/espeak:size=16m,mode=1777,exec
-    mem_limit: 1g
+    mem_limit: 2g  # torch and the model: about 0.8 GB idle
+    oom_score_adj: -500  # as stt
+    cpu_shares: 2048
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,json,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8000/health'))['ready'] else 1)"]
       interval: 5s
       timeout: 3s
       start_period: 60s
+
+  # Song research and the kernel's web search (POST /search): the one service here that needs the internet (Shazam, MusicBrainz, Wikipedia,
+  # LRCLIB), so it and its SearXNG share their own network, apart from stt and tts.
+  research:
+    <<: *sealed
+    image: reachy-sage-research:${SAGE_SERVICES_TAG:-dev}
+    build: research
+    ports:
+      - "127.0.0.1:8783:8000"
+    networks: [research]
+    depends_on: [searxng]
+    mem_limit: 512m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,json,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8000/health'))['ready'] else 1)"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+
+  # Private metasearch for research, at http://searxng:8080. No host port: only research reaches it.
+  # It needs egress to ask the search engines it aggregates.
+  searxng:
+    <<: *sealed
+    image: reachy-sage-searxng:${SAGE_SERVICES_TAG:-dev}
+    build: searxng  # the pinned upstream image with settings.yml baked in
+    user: "977:977"  # the image's searxng user
+    # A fresh secret at every start, so none is ever written down (searxng/settings.yml).
+    entrypoint: ["/bin/sh", "-c", "export SEARXNG_SECRET=$$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n') && exec /usr/local/searxng/entrypoint.sh"]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /var/cache/searxng:size=64m,uid=977,gid=977
+    networks: [research]
+    mem_limit: 512m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+
+networks:
+  research: {}
+
+volumes:
+  # Named, so make enroll and make unenroll reach it by name; down keeps it.
+  profiles:
+    name: reachy-sage-voice-profiles

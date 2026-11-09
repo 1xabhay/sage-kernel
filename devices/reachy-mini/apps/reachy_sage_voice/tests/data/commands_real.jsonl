@@ -1,0 +1,107 @@
+{"text": "Look left.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "left"}]}
+{"text": "Look right.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "right"}]}
+{"text": "Look up.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "up"}]}
+{"text": "Look down.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "down"}]}
+{"text": "Turn around.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": "around"}]}
+{"text": "Stop.", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}]}
+{"text": "Search for me.", "set": "clean", "intent": "command", "steps": [{"skill": "search_face"}]}
+{"text": "Track me.", "set": "clean", "intent": "command", "steps": [{"skill": "track_face"}]}
+{"text": "Sage, look left.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "left"}]}
+{"text": "Reachy, look right.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "right"}]}
+{"text": "Sage, look up.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "up"}]}
+{"text": "Reachy, look down.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "down"}]}
+{"text": "Sage, turn around.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": "around"}]}
+{"text": "Sage, stop.", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}]}
+{"text": "Reachy, stop that.", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}]}
+{"text": "Search for me, then track me.", "set": "clean", "intent": "command", "steps": [{"skill": "search_face"}, {"skill": "track_face"}]}
+{"text": "Look left, then look right.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "left"}, {"skill": "look", "arg": "right"}]}
+{"text": "Look up and then look down.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "up"}, {"skill": "look", "arg": "down"}]}
+{"text": "Turn around and look for me.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": "around"}, {"skill": "search_face"}]}
+{"text": "Find me, then follow me.", "set": "clean", "intent": "command", "steps": [{"skill": "search_face"}, {"skill": "track_face"}]}
+{"text": "Stop tracking me.", "set": "clean", "intent": "command", "steps": [{"skill": "stop_tracking"}]}
+{"text": "Look at me.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "me"}]}
+{"text": "Look straight ahead.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "center"}]}
+{"text": "Turn left a little.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": 30}]}
+{"text": "Turn right a bit.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": -30}]}
+{"text": "Look left, look right, then look at me.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "left"}, {"skill": "look", "arg": "right"}, {"skill": "look", "arg": "me"}]}
+{"text": "Stop moving.", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}]}
+{"text": "Keep following me.", "set": "clean", "intent": "command", "steps": [{"skill": "track_face"}]}
+{"text": "Search for me and then track me.", "set": "clean", "intent": "command", "steps": [{"skill": "search_face"}, {"skill": "track_face"}]}
+{"text": "Sage, look down, then look up.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "down"}, {"skill": "look", "arg": "up"}]}
+{"text": "Turn around, then search for me.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": "around"}, {"skill": "search_face"}]}
+{"text": "Stop, stop.", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}, {"skill": "stop"}]}
+{"text": "Reachy, track me.", "set": "clean", "intent": "command", "steps": [{"skill": "track_face"}]}
+{"text": "Reachy, search for me.", "set": "clean", "intent": "command", "steps": [{"skill": "search_face"}]}
+{"text": "Look over there, to the left.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "left"}]}
+{"text": "Stop listening.", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}]}
+{"text": "Freeze!", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}]}
+{"text": "Stop following me.", "set": "clean", "intent": "command", "steps": [{"skill": "stop_tracking"}]}
+{"text": "Follow me.", "set": "clean", "intent": "command", "steps": [{"skill": "track_face"}]}
+{"text": "Find me.", "set": "clean", "intent": "command", "steps": [{"skill": "search_face"}]}
+{"text": "Dance.", "set": "clean", "intent": "command", "steps": [{"skill": "dance"}]}
+{"text": "Dance to the music.", "set": "clean", "intent": "command", "steps": [{"skill": "dance"}]}
+{"text": "Turn left.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": 90}]}
+{"text": "Turn right 45 degrees.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": -45}]}
+{"text": "Look ahead.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "center"}]}
+{"text": "Sage, show me happy.", "set": "clean", "intent": "command", "steps": [{"skill": "emote", "arg": "happy"}]}
+{"text": "Do a dance move.", "set": "clean", "intent": "command", "steps": [{"skill": "dance_move", "arg": "any"}]}
+{"text": "Sage, what moves can you do?", "set": "clean", "intent": "command", "steps": [{"skill": "moves"}]}
+{"text": "Stop and look at me.", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}, {"skill": "look", "arg": "me"}]}
+{"text": "Turn around and dance.", "set": "clean", "intent": "command", "steps": [{"skill": "turn", "arg": "around"}, {"skill": "dance"}]}
+{"text": "Listen to this song.", "set": "song", "intent": "song"}
+{"text": "Sage, listen to this song.", "set": "song", "intent": "song"}
+{"text": "Reachy, listen to this song and tell me what it is.", "set": "song", "intent": "song"}
+{"text": "Listen to this song, then tell me who sings it.", "set": "song", "intent": "song"}
+{"text": "If you pull up the lyrics of the song you listen to, can you identify the song you listen to?", "set": "song", "intent": "song"}
+{"text": "Sage and you capture the song.", "set": "song", "intent": "song"}
+{"text": "What song is this?", "set": "song", "intent": "song"}
+{"text": "What song is playing?", "set": "song", "intent": "song"}
+{"text": "Which song is that?", "set": "song", "intent": "song"}
+{"text": "Do you know this song?", "set": "song", "intent": "song"}
+{"text": "Can you recognize this song?", "set": "song", "intent": "song"}
+{"text": "Can you identify this song?", "set": "song", "intent": "song"}
+{"text": "Name that tune.", "set": "song", "intent": "song"}
+{"text": "Shazam this.", "set": "song", "intent": "song"}
+{"text": "What's playing?", "set": "song", "intent": "song"}
+{"text": "Listen to the music.", "set": "song", "intent": "song"}
+{"text": "Listen to this.", "set": "song", "intent": "song"}
+{"text": "Sage, what song is this?", "set": "song", "intent": "song"}
+{"text": "Can you tell what song this is?", "set": "song", "intent": "song"}
+{"text": "Do you recognise this tune?", "set": "song", "intent": "song"}
+{"text": "Listen to the song.", "set": "song", "intent": "song"}
+{"text": "What is this song?", "set": "song", "intent": "song"}
+{"text": "Hey Sage, what's this song?", "set": "song", "intent": "song"}
+{"text": "Can you name this song?", "set": "song", "intent": "song"}
+{"text": "Reachy, what song is playing right now?", "set": "song", "intent": "song"}
+{"text": "I looked left yesterday and saw the bus.", "set": "chat", "intent": "kernel"}
+{"text": "My cat always turns around before it lies down.", "set": "chat", "intent": "kernel"}
+{"text": "Don't stop believing is a great song.", "set": "chat", "intent": "kernel"}
+{"text": "She told me to look up the word in a dictionary.", "set": "chat", "intent": "kernel"}
+{"text": "I listened to this song all morning.", "set": "chat", "intent": "kernel"}
+{"text": "He keeps tracking his steps on his phone.", "set": "chat", "intent": "kernel"}
+{"text": "Searching for my keys took forever.", "set": "chat", "intent": "kernel"}
+{"text": "The robot in the movie looked right at the camera.", "set": "chat", "intent": "kernel"}
+{"text": "What kind of music is this?", "set": "chat", "intent": "kernel"}
+{"text": "What's this song about?", "set": "chat", "intent": "kernel"}
+{"text": "Who is singing right now?", "set": "chat", "intent": "kernel"}
+{"text": "Who wrote this song?", "set": "chat", "intent": "kernel"}
+{"text": "That song is a total banger, want me to dance?", "set": "chat", "intent": "kernel"}
+{"text": "Want me to tell you about it or should we just dance?", "set": "chat", "intent": "kernel"}
+{"text": "Want to hear a song together?", "set": "chat", "intent": "kernel"}
+{"text": "Sage, don't look for me.", "set": "chat", "intent": "kernel"}
+{"text": "I told Sage to look for me yesterday.", "set": "chat", "intent": "kernel"}
+{"text": "Turn left at the light.", "set": "chat", "intent": "kernel"}
+{"text": "Stop.", "set": "clean", "intent": "command", "steps": [{"skill": "stop"}], "listening": true}
+{"text": "Sage, look at me.", "set": "clean", "intent": "command", "steps": [{"skill": "look", "arg": "me"}], "listening": true}
+{"text": "We dance all night under the city lights", "set": "chat", "intent": "drop", "listening": true}
+{"text": "Oh oh oh, all I want is you tonight", "set": "chat", "intent": "drop", "listening": true}
+{"text": "What song is this?", "set": "chat", "intent": "drop", "listening": true}
+{"text": "Hello there.", "set": "chat", "intent": "drop", "listening": true}
+{"text": "Good morning, Sage.", "set": "chat", "intent": "kernel"}
+{"text": "Tell me a joke.", "set": "chat", "intent": "kernel"}
+{"text": "What is the weather like?", "set": "chat", "intent": "kernel"}
+{"text": "I had pasta for dinner.", "set": "chat", "intent": "kernel"}
+{"text": "The train was late again.", "set": "chat", "intent": "kernel"}
+{"text": "Do you like rain?", "set": "chat", "intent": "kernel"}
+{"text": "My sister called last night.", "set": "chat", "intent": "kernel"}
+{"text": "Let's talk about books.", "set": "chat", "intent": "kernel"}

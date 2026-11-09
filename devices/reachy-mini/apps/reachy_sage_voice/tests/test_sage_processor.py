@@ -3,10 +3,13 @@
 The LLM is not in the pipeline. A final transcript goes to the kernel; reply
 pieces stream straight to TTS; every delivered effect gets its result; an
 interruption reports what was actually played. The session here is a fake that
-speaks protocol v1's shapes without HTTP (test_kernel.py covers the wire).
+speaks protocol v1's shapes without HTTP (sage_device's test_kernel.py covers the wire).
 """
 
 import asyncio
+import itertools
+import logging
+import re
 import time
 
 from pipecat.frames.frames import (
@@ -19,12 +22,17 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
+    VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.tests.utils import SleepFrame, run_test
+from sage_device import floor, latency
+from sage_device.floor import GRACE_S
+from sage_device.hearing import COOLDOWN_S
+from sage_device.kernel import KernelClient, KernelUnavailableError, Session
 
-from reachy_sage_voice.kernel import KernelClient, KernelUnavailableError, Session
-from reachy_sage_voice.sage import Playback, SageProcessor
+from reachy_sage_voice.sage import UNSURE_CLIP, Playback, SageProcessor
+from reachy_sage_voice.voice import VoiceStyleFrame
 
 from conftest import TOKEN
 
@@ -42,12 +50,19 @@ class FakeSession:
         self.results: list[dict] = []
         self.stops: list[str] = []
         self.offsets: list[int] = []
+        self.inputs: list[dict | None] = []  # each turn's submitted.input
+        self.acts: list[dict] = []
+        self.watching = False
 
-    async def start(self, turn_id, text, timing):
+    async def start(self, turn_id, text, timing, input=None):
         if self.admit == "outage":
             raise KernelUnavailableError("refused")
         self.started.append((turn_id, text, timing))
+        self.inputs.append(input)
         return self.admit
+
+    async def act(self, event):
+        self.acts.append(event)
 
     async def poll(self, offset, wait):
         while not (self.polls and (self.started or self.idle)):  # nothing to say yet: quiet
@@ -70,6 +85,17 @@ class FakeSession:
 
     async def stop(self, turn_id):
         self.stops.append(turn_id)
+
+
+def acts(session):
+    """Return the acted events sent, without their random ids, once each id is checked unique."""
+    ids = [a["act_id"] for a in session.acts]
+    assert len(set(ids)) == len(ids) and all(i.startswith("act-") for i in ids)
+    return [{k: v for k, v in a.items() if k != "act_id"} for a in session.acts]
+
+
+def aside(line):
+    return {"kind": "acted", "origin": "reflex", "what": "aside", "status": "done", "said": line}
 
 
 def delta(offset, text):
@@ -99,7 +125,7 @@ def spoken(down):
 
 
 def make(session, emotes=None, playback=None, fail_emote=False, sounds=None, move_s=0.0,
-         now=None):
+         now=None, finish=frozenset()):
     """Make a processor whose clock, unless ``now`` is given, moves only while a move plays."""
     clock = [0.0]
 
@@ -110,9 +136,9 @@ def make(session, emotes=None, playback=None, fail_emote=False, sounds=None, mov
         if sounds is not None:
             sounds.append((name, sound))
         clock[0] += move_s
-        await asyncio.sleep(0)
+        await asyncio.sleep(move_s)
     return SageProcessor(session, play_emote, playback or Playback(),
-                         now=now or (lambda: clock[0]))
+                         now=now or (lambda: clock[0]), finish=finish)
 
 
 def test_reply_pieces_stream_to_tts_as_they_arrive_then_only_the_rest():
@@ -130,8 +156,11 @@ def test_reply_pieces_stream_to_tts_as_they_arrive_then_only_the_rest():
 
 
 def test_a_played_reply_is_reported_done_with_its_timing():
+    # The clock moves 1 ms per reading, not with the wall: on a loaded machine the transcript
+    # was handled late into the 100 ms before the audio, and the gap between them shrank.
+    ticks = itertools.count()
     session = FakeSession([{"effects": [delta(0, "Hello.")]}, {"effects": [reply(42, "Hello.")]}])
-    run(make(session, now=time.monotonic), [
+    run(make(session, now=lambda: next(ticks) / 1000), [
         VADUserStoppedSpeakingFrame(stop_secs=0.2), SleepFrame(0.05), heard("hi"),
         SleepFrame(0.1), BotStartedSpeakingFrame(), SleepFrame(0.05), BotStoppedSpeakingFrame(),
         SleepFrame(0.05)])
@@ -141,7 +170,299 @@ def test_a_played_reply_is_reported_done_with_its_timing():
     assert result["sequence"] == 42 and result["status"] == "done"
     timing = result["timing"]
     assert 0 <= timing["ttft_ms"] < 200
-    assert timing["first_audio_ms"] >= stt_ms + 80  # 100 ms of sleep, less scheduling jitter
+    assert timing["first_audio_ms"] > stt_ms  # from the same end of speech, not from the transcript
+
+
+def test_reply_timing_runs_from_the_turns_own_end_of_speech():
+    # Live: a later VAD stop (the robot hearing its own voice) moved the end of speech past
+    # the first audio, and 168 first_audio_ms clamped to 0.
+    ticks = itertools.count()
+    session = FakeSession([{"effects": [delta(0, "Hello.")]}, {"effects": [reply(42, "Hello.")]}])
+    run(make(session, now=lambda: next(ticks) / 1000), [
+        VADUserStoppedSpeakingFrame(stop_secs=0.2), SleepFrame(0.05), heard("hi"), SleepFrame(0.1),
+        VADUserStoppedSpeakingFrame(stop_secs=0.0), SleepFrame(0.02), BotStartedSpeakingFrame(),
+        SleepFrame(0.05), BotStoppedSpeakingFrame(), SleepFrame(0.05)])
+    stt_ms = session.started[0][2]["stt_ms"]
+    (result,) = session.results
+    assert result["timing"]["first_audio_ms"] > stt_ms
+
+
+def holding(session, hold_s):
+    async def play_emote(name, sound):
+        pass
+    return SageProcessor(session, play_emote, Playback(), hold_s=hold_s)
+
+
+def test_an_unfinished_fragment_waits_for_the_rest_of_the_turn():
+    session = FakeSession()
+    run(holding(session, 0.3), [heard("Remind me to call"), SleepFrame(0.1),
+                                heard("my sister tonight."), SleepFrame(0.4)])
+    (said,) = [text for _, text, _ in session.started]
+    assert said == "Remind me to call my sister tonight."
+    assert session.stops == []  # nothing went to the kernel early
+
+
+def test_an_unfinished_fragment_goes_alone_once_the_hold_is_over():
+    session = FakeSession()
+    run(holding(session, 0.3), [heard("Why was I going to say, uh"), SleepFrame(0.1)])
+    assert session.started == []
+    session = FakeSession()
+    run(holding(session, 0.3), [heard("Why was I going to say, uh"), SleepFrame(0.5)])
+    assert [text for _, text, _ in session.started] == ["Why was I going to say, uh"]
+
+
+def test_a_finished_sentence_is_never_held():
+    session = FakeSession()
+    run(holding(session, 5.0), [heard("Turn the lights on."), SleepFrame(0.05)])
+    assert [text for _, text, _ in session.started] == ["Turn the lights on."]
+
+
+def real_clock(session):
+    async def play_emote(name, sound):
+        pass
+    return SageProcessor(session, play_emote, Playback(), now=time.monotonic)
+
+
+def test_a_reply_waits_while_the_person_is_still_talking():
+    session = FakeSession([{"effects": [delta(0, "Hello.")]}])
+    down, _ = run(real_clock(session), [
+        VADUserStartedSpeakingFrame(), heard("We had soup."), SleepFrame(0.2)])
+    assert spoken(down) == []  # still talking, a whole 200 ms after the reply came
+
+
+def test_a_voice_that_never_stops_holds_a_reply_only_to_the_ceiling(monkeypatch):
+    monkeypatch.setattr(floor, "MAX_HOLD_S", 0.5)
+    frames = [VADUserStartedSpeakingFrame(), heard("We had soup.")]
+    down, _ = run(real_clock(FakeSession([{"effects": [delta(0, "Hello.")]}])), [*frames, SleepFrame(0.3)])
+    assert spoken(down) == []  # past the old cap's share of it, the voice still going
+    down, _ = run(real_clock(FakeSession([{"effects": [delta(0, "Hello.")]}])), [*frames, SleepFrame(0.9)])
+    assert spoken(down) == ["Hello."]
+
+
+def test_distress_is_held_no_longer_than_its_own_cap(monkeypatch):
+    monkeypatch.setattr(floor, "MAX_HOLD_S", 5.0)
+    monkeypatch.setattr(floor, "DISTRESS_HOLD_S", 0.1)
+    session = FakeSession([{"effects": [delta(0, "Oh no.")]}])
+    down, _ = run(real_clock(session), [
+        VADUserStartedSpeakingFrame(), heard("I fell off the stairs."), SleepFrame(0.5)])
+    assert spoken(down) == ["Oh no."]
+
+
+def test_a_reply_held_for_the_person_gives_way_to_their_next_words():
+    session = FakeSession([{"effects": [delta(0, "Hello.")]}])
+    run(real_clock(session), [
+        VADUserStartedSpeakingFrame(), heard("We had soup."), SleepFrame(0.1),
+        VADUserStoppedSpeakingFrame(stop_secs=0.0), SleepFrame(0.05), heard("It was good."),
+        SleepFrame(0.05)])
+    assert session.started[-1][1] == "We had soup. It was good."
+
+
+def test_a_reply_goes_once_the_person_has_finished_and_nothing_came_of_it():
+    session = FakeSession([{"effects": [delta(0, "Hello.")]}])
+    down, _ = run(real_clock(session), [
+        VADUserStartedSpeakingFrame(), heard("We had soup."), SleepFrame(0.05),
+        VADUserStoppedSpeakingFrame(stop_secs=0.0), SleepFrame(GRACE_S + 0.2)])
+    assert spoken(down) == ["Hello."]
+
+
+def test_a_held_reply_logs_its_release_and_how_long_ago_the_voice_ended(caplog):
+    caplog.set_level(logging.INFO)
+    session = FakeSession([{"effects": [delta(0, "Hello.")]}])
+    run(real_clock(session), [
+        VADUserStartedSpeakingFrame(), heard("We had soup."), SleepFrame(0.05),
+        VADUserStoppedSpeakingFrame(stop_secs=0.0), SleepFrame(GRACE_S + 0.2)])
+    ago = [m["ago"] for r in caplog.records if (m := latency.RELEASE.match(r.getMessage()))]
+    assert len(ago) == 1 and GRACE_S * 1000 <= int(ago[0]) < (GRACE_S + 0.2) * 1000
+
+
+def test_a_reply_is_not_held_for_the_speech_it_answers():
+    session = FakeSession([{"effects": [delta(0, "Hello.")]}])
+    down, _ = run(real_clock(session), [
+        VADUserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame(stop_secs=0.0),
+        SleepFrame(0.01), heard("We had soup."), SleepFrame(0.1)])
+    assert spoken(down) == ["Hello."]
+
+
+def test_a_statement_cut_off_gets_a_tilt_not_a_turn(caplog):
+    caplog.set_level(logging.INFO)
+    session = FakeSession()
+    run(make(session, emotes=[]), [heard("Somewhat like getting those back for"), SleepFrame(0.05)])
+    assert session.started == []
+    assert "unsure: tilted" in caplog.text
+
+
+def test_a_statement_cut_off_leads_what_comes_next():
+    session = FakeSession()
+    run(make(session, emotes=[]), [heard("Somewhat like getting those back for"), SleepFrame(0.01),
+                                   heard("the whole team."), SleepFrame(0.05)])
+    assert [text for _, text, _ in session.started] == [
+        "Somewhat like getting those back for the whole team."]
+
+
+def test_a_statement_cut_off_long_ago_is_gone(monkeypatch):
+    monkeypatch.setattr("reachy_sage_voice.sage.CARRY_S", 0.01)
+    session = FakeSession()
+    run(real_clock(session), [heard("Somewhat like getting those back for"), SleepFrame(0.05),
+                              heard("We had soup."), SleepFrame(0.05)])
+    assert [text for _, text, _ in session.started] == ["We had soup."]
+
+
+def test_a_question_cut_off_still_goes_to_the_kernel():
+    session = FakeSession()
+    run(make(session, emotes=[]), [heard("Is there meant to be a"), SleepFrame(0.05)])
+    assert session.started[0][1] == "Is there meant to be a"
+
+
+def test_a_line_it_is_unsure_of_tilts_the_head_and_asks_no_one(caplog):
+    session, emotes = FakeSession(), []
+    with caplog.at_level("INFO", logger="reachy_sage_voice.sage"):
+        down, _ = run(make(session, emotes), [heard("So the"), SleepFrame(0.05)])
+    assert session.started == [] and spoken(down) == []
+    assert emotes == [UNSURE_CLIP]
+    assert "unsure: tilted" in caplog.text
+
+
+def test_the_tilt_is_silent():
+    session, emotes, sounds = FakeSession(), [], []
+    run(make(session, emotes, sounds=sounds), [heard("So the"), SleepFrame(0.05)])
+    assert sounds == [(UNSURE_CLIP, False)]
+
+
+def test_a_second_noise_within_the_cooldown_does_nothing(caplog):
+    session, emotes, clock = FakeSession(), [], [0.0]
+    frames = [heard("So the"), SleepFrame(0.02), heard("And then"), SleepFrame(0.02)]
+    with caplog.at_level("INFO", logger="reachy_sage_voice.sage"):
+        run(make(session, emotes, now=lambda: clock[0]), frames)
+    assert emotes == [UNSURE_CLIP] and session.started == []
+    assert "unsure: quiet" in caplog.text
+
+
+def test_noise_after_the_cooldown_tilts_again():
+    session, emotes, ticks = FakeSession(), [], iter((100.0, 100.0 + COOLDOWN_S))
+    run(make(session, emotes, now=lambda: next(ticks, 200.0)),
+        [heard("So the"), SleepFrame(0.02), heard("And then"), SleepFrame(0.02)])
+    assert emotes == [UNSURE_CLIP, UNSURE_CLIP]
+
+
+def test_a_failed_tilt_is_only_a_warning():
+    session = FakeSession()
+    run(make(session, [], fail_emote=True), [heard("So the"), SleepFrame(0.05)])
+    assert session.started == []
+
+
+def test_noise_while_the_voice_is_busy_neither_tilts_nor_cuts_the_reply():
+    playback, emotes = Playback(), []
+    playback.speaking = True
+    session = FakeSession()
+    down, _ = run(make(session, emotes, playback=playback), [heard("So the"), SleepFrame(0.05)])
+    assert emotes == [] and session.started == []
+    assert not [f for f in down if isinstance(f, InterruptionFrame)]
+
+
+class StillBody:
+    """An executor with a say on whether the head is free, and nothing else to do."""
+
+    def __init__(self, why=None):
+        self.why, self.thoughts = why, 0
+
+    def busy(self):
+        return self.why
+
+    def reflex_busy(self):
+        return self.why
+
+    def think(self):
+        self.thoughts += 1
+
+
+def test_noise_while_the_body_is_busy_does_not_tilt():
+    session, emotes = FakeSession(), []
+
+    async def play_emote(name, sound):
+        emotes.append(name)
+    processor = SageProcessor(session, play_emote, Playback(), executor=StillBody("a plan is running"))
+    run(processor, [heard("So the"), SleepFrame(0.05)])
+    assert emotes == [] and session.started == []
+
+
+def test_a_real_sentence_still_goes_to_the_kernel_with_no_tilt():
+    session, emotes = FakeSession(), []
+    run(make(session, emotes), [heard("We had soup for dinner."), SleepFrame(0.05)])
+    assert [text for _, text, _ in session.started] == ["We had soup for dinner."]
+    assert emotes == []
+
+
+def test_a_question_distress_and_the_name_go_to_the_kernel():
+    for line in ("Teapot?", "What", "Help", "It hurts", "Sage", "Ritchie"):
+        session, emotes = FakeSession(), []
+        run(make(session, emotes), [heard(line), SleepFrame(0.05)])
+        assert [text for _, text, _ in session.started] == [line] and emotes == []
+
+
+def test_stop_wins_over_the_gate():
+    # One word and no closing mark, the shape of noise: the grammar runs first.
+    class Stoppable(StillBody):
+        stopped = 0
+
+        async def stop(self):
+            self.stopped += 1
+
+    session, emotes, body = FakeSession(), [], Stoppable()
+
+    async def play_emote(name, sound):
+        emotes.append(name)
+    run(SageProcessor(session, play_emote, Playback(), executor=body), [heard("Stop"), SleepFrame(0.05)])
+    assert body.stopped == 1 and emotes == [] and session.started == []
+
+
+def test_a_held_fragment_is_judged_with_the_rest_of_the_turn():
+    session, emotes = FakeSession(), []
+
+    async def play_emote(name, sound):
+        emotes.append(name)
+    run(SageProcessor(session, play_emote, Playback(), hold_s=0.3),
+        [heard("So the"), SleepFrame(0.1), heard("soup was cold."), SleepFrame(0.4)])
+    assert [text for _, text, _ in session.started] == ["So the soup was cold."]
+    assert emotes == []
+
+
+def test_a_held_fragment_alone_tilts_once_the_hold_is_over():
+    session, emotes = FakeSession(), []
+
+    async def play_emote(name, sound):
+        emotes.append(name)
+    run(SageProcessor(session, play_emote, Playback(), hold_s=0.1),
+        [heard("So the"), SleepFrame(0.3)])
+    assert session.started == [] and emotes == [UNSURE_CLIP]
+
+
+def test_a_fragment_after_a_turn_with_no_reply_yet_joins_it():
+    # Its words lead the replacement turn, as ever: the second half of a sentence, not noise.
+    session, emotes = FakeSession(), []
+    run(make(session, emotes), [heard("We had soup for dinner."), SleepFrame(0.05),
+                                heard("And then"), SleepFrame(0.05)])
+    assert session.started[-1][1] == "We had soup for dinner. And then"
+    assert emotes == []
+
+
+def test_a_short_answer_to_the_question_just_asked_goes_to_the_kernel():
+    session, emotes = FakeSession([{"effects": [reply(7, "Tea or soup?")]}]), []
+    run(make(session, emotes), [
+        heard("We had soup for dinner."), SleepFrame(0.05), BotStartedSpeakingFrame(), SleepFrame(0.02),
+        BotStoppedSpeakingFrame(), SleepFrame(0.05), heard("Teapot."), SleepFrame(0.05)])
+    assert session.started[-1][1] == "Teapot." and emotes == []
+
+
+def test_a_short_line_long_after_a_question_is_unsure_again():
+    class Finished(Playback):
+        busy = False  # no BotSpeech here to say the voice has finished
+
+    hours, emotes = itertools.count(step=3600.0), []  # every reading of the clock is an hour on
+    session = FakeSession([{"effects": [reply(7, "Tea or soup?")]}])
+    run(make(session, emotes, playback=Finished(), now=lambda: next(hours)), [
+        heard("We had soup for dinner."), SleepFrame(0.05), BotStartedSpeakingFrame(), SleepFrame(0.02),
+        BotStoppedSpeakingFrame(), SleepFrame(0.05), heard("Teapot."), SleepFrame(0.05)])
+    assert emotes == [UNSURE_CLIP]
 
 
 def test_interrupted_while_playing_reports_what_was_actually_played():
@@ -170,6 +491,80 @@ def test_interrupted_while_still_streaming_reports_what_was_played_then_stops():
         "turn_id": turn_id, "status": "interrupted", "text": "Once upon a time,"}
     assert "sequence" not in result
     assert session.stops == [turn_id]
+
+
+def completed(*effects):
+    """A poll in which the turn finished with these effects and no reply (protocol §2 Moves)."""
+    return {"effects": list(effects), "turn": {"turn_id": TURN, "run_status": "completed"}}
+
+
+def test_a_move_with_no_words_plays_says_nothing_and_ends_the_turn():
+    emotes, sounds = [], []
+    session = FakeSession([completed(emote(7, "calming1"))])
+    down, _ = run(make(session, emotes, sounds=sounds, move_s=0.01), [heard("I had a long day."), SleepFrame(0.1)])
+    assert emotes == ["calming1"]
+    assert sounds == [("calming1", True)]  # nothing to say: the move has its own sound
+    assert spoken(down) == []
+    assert not [f for f in down if isinstance(f, (LLMFullResponseStartFrame, LLMFullResponseEndFrame))]
+    assert [(r["sequence"], r["status"]) for r in session.results] == [(7, "done")]  # no reply to report
+    assert session.stops == []
+
+
+def test_a_line_after_a_silent_turn_is_its_own_turn_and_nothing_is_stopped():
+    """Followed for ever, the silent turn looked still running: its words led the next line, as one message."""
+    emotes = []
+    session = FakeSession([completed(emote(7, "calming1"))])
+    run(make(session, emotes, move_s=0.01), [heard("I had a long day."), SleepFrame(0.1),
+                                             heard("Anyway, it was fine."), SleepFrame(0.1)])
+    assert [text for _, text, _ in session.started] == ["I had a long day.", "Anyway, it was fine."]
+    assert session.stops == []
+    assert [r["status"] for r in session.results] == ["done"]
+
+
+def test_a_barge_in_on_a_silent_turn_s_move_reports_only_the_move():
+    emotes = []
+    session = FakeSession([completed(emote(7, "calming1"))])
+    run(make(session, emotes, move_s=5.0), [heard("I had a long day."), SleepFrame(0.1),
+                                            InterruptionFrame(), SleepFrame(0.1)])
+    assert session.results == [{"sequence": 7, "status": "interrupted"}]
+    assert session.stops == []
+
+
+def test_silence_with_no_move_ends_the_turn_quietly():
+    session = FakeSession([completed()])
+    down, _ = run(make(session), [heard("I had a long day."), SleepFrame(0.1),
+                                  heard("That was fun."), SleepFrame(0.1)])
+    assert spoken(down) == [] and session.results == [] and session.stops == []
+    assert [text for _, text, _ in session.started] == ["I had a long day.", "That was fun."]
+
+
+def test_the_kernel_s_own_turn_is_heard_after_a_silent_turn():
+    session = FakeSession([completed(),
+                           {"effects": [{**reply(9, "Hello again."), "turn_id": "kernel-1"}]}])
+    down, _ = run(make(session), [heard("I had a long day."), SleepFrame(0.1)])
+    assert spoken(down) == ["Hello again."]
+
+
+def test_a_voice_style_with_no_words_does_not_reach_the_next_reply():
+    style = {"sequence": 6, "kind": "voice_style", "turn_id": TURN, "input": {"style": "slow"}, "stale": False}
+    session = FakeSession([completed(style)])
+    down, _ = run(make(session), [heard("I had a long day."), SleepFrame(0.1)])
+    assert [f.settings for f in down if isinstance(f, VoiceStyleFrame)][-1] == {}
+
+
+def test_a_silent_turn_ends_its_latency_measure(caplog):
+    session = FakeSession([completed()])
+    with caplog.at_level("INFO", logger="reachy_sage_voice.sage"):
+        run(make(session), [heard("I had a long day."), SleepFrame(0.1)])
+    assert latency.SILENT in caplog.messages
+
+
+def test_the_kernels_first_words_are_logged_so_a_slow_turn_names_its_stage(caplog):
+    """Model or device: without this line a 3 s turn could not be split (11-07 log)."""
+    session = FakeSession([{"effects": [delta(0, "Hello.")]}])
+    with caplog.at_level("INFO", logger="reachy_sage_voice.sage"):
+        run(make(session), [heard("I had a long day."), SleepFrame(0.1)])
+    assert any(re.fullmatch(r"kernel: first words \d+ ms after turn start", m) for m in caplog.messages)
 
 
 def test_a_stop_effect_interrupts_the_body():
@@ -211,6 +606,23 @@ def test_an_emote_with_nothing_playing_goes_at_once():
     run(make(session, emotes), [heard("hi"), SleepFrame(0.1)])
     assert emotes == ["cheerful1"]
     assert session.results == [{"sequence": 41, "status": "done", "duration_ms": 0}]
+
+
+def test_a_short_emote_finishes_through_a_new_turn_and_is_reported_done():
+    # Owner, 2026-10-23: 44 of 108 emotes were cut by the next turn or a barge-in.
+    emotes = []
+    session = FakeSession([{"effects": [emote(41, "yes1"), reply(42, "")]}])
+    run(make(session, emotes, move_s=0.3, finish=frozenset({"yes1"})),
+        [heard("hi"), SleepFrame(0.1), InterruptionFrame(), heard("And then we ate."), SleepFrame(0.4)])
+    assert emotes == ["yes1"]
+    assert [r["status"] for r in session.results if r.get("sequence") == 41] == ["done"]
+
+
+def test_a_long_emote_is_still_cut_by_a_new_turn():
+    session = FakeSession([{"effects": [emote(41, "sad1"), reply(42, "")]}])
+    run(make(session, [], move_s=0.3, finish=frozenset({"yes1"})),
+        [heard("hi"), SleepFrame(0.1), heard("And then we ate."), SleepFrame(0.4)])
+    assert [r["status"] for r in session.results if r.get("sequence") == 41] == ["interrupted"]
 
 
 def test_with_nothing_to_say_the_move_plays_its_own_sound():
@@ -267,8 +679,17 @@ def test_emoji_in_reply_pieces_are_never_spoken():
 
 
 def test_a_busy_kernel_gets_one_moment():
-    down, _ = run(make(FakeSession(admit="busy")), [heard("hi"), SleepFrame(0.05)])
+    session = FakeSession(admit="busy")
+    down, _ = run(make(session), [heard("hi"), SleepFrame(0.05)])
     assert spoken(down) == ["One moment."]
+    assert acts(session) == [aside("One moment.")]  # spoken outside a turn: the kernel hears it
+
+
+def test_a_turn_says_it_came_in_as_speech_and_its_reply_is_no_act():
+    session = FakeSession([{"effects": [reply(42, "Hello.")]}])
+    run(make(session), [heard("hi"), SleepFrame(0.1)])
+    assert session.inputs == [{"medium": "speech"}]  # the STT gives no confidence: none is sent
+    assert session.acts == []
 
 
 def test_an_unreachable_kernel_says_so_rather_than_nothing():
@@ -287,11 +708,33 @@ def test_speech_while_the_kernel_is_thinking_joins_the_turn_it_replaces():
     assert session.stops == [turn_id for turn_id, _, _ in session.started[:2]]
 
 
-def test_speech_after_the_reply_started_is_sent_alone():
-    # A streamed reply's turn is in the kernel's memory already, with what was heard.
-    session = FakeSession([{"effects": [delta(0, "Sure.")]}])
-    run(make(session), [heard("hi"), SleepFrame(0.05), heard("more"), SleepFrame(0.05)])
-    assert [text for _, text, _ in session.started] == ["hi", "more"]
+def test_a_fragment_before_any_reply_is_heard_adds_to_the_turn():
+    # Live 2026-10-22, opening made a question here: "...what should we do about", then "Nothing."
+    # 0.7 s later, after the reply had begun streaming but before a word played. The
+    # reply answered the first half, then was cut off. Nothing was heard, so the
+    # half-turn is withdrawn (stopped, no result) and the words go again, joined.
+    session = FakeSession([{"effects": [delta(0, "Well, we could")]}])
+    down, _ = run(make(session), [heard("What have I been thinking we should do about"),
+                                  SleepFrame(0.7), heard("Nothing."), SleepFrame(0.05)])
+    first = session.started[0][0]
+    assert [text for _, text, _ in session.started] == [
+        "What have I been thinking we should do about",
+        "What have I been thinking we should do about Nothing."]
+    assert session.results == []  # no empty "interrupted" reply left in memory
+    assert session.stops == [first]
+    assert any(isinstance(f, InterruptionFrame) for f in down)  # its words leave the voice
+
+
+def test_speech_after_the_reply_was_heard_is_sent_alone_and_the_turn_kept():
+    # The person heard part of the reply: the turn stays in memory with what was heard.
+    playback = Playback()
+    session = FakeSession([{"effects": [delta(0, "Sure, let me")]}])
+    run(make(session, playback=playback),
+        [heard("hi"), SleepFrame(0.05), BotStartedSpeakingFrame(), SleepFrame(0.02),
+         heard("Tell me more."), SleepFrame(0.05)])
+    first = session.started[0][0]
+    assert [text for _, text, _ in session.started] == ["hi", "Tell me more."]
+    assert [(r.get("turn_id"), r["status"]) for r in session.results] == [(first, "interrupted")]
 
 
 def test_a_turn_replaced_mid_reply_clears_its_words_from_the_voice():
@@ -395,12 +838,19 @@ def test_a_turn_that_is_only_its_own_echo_is_dropped():
     assert [text for _, text, _ in session.started] == ["you up?"]
 
 
+def test_own_tts_heard_back_is_not_a_turn():
+    """P3: its own canned lines are its speech too ("One moment." heard back started a turn)."""
+    session = FakeSession(admit="busy")
+    run(make(session), [heard("hi"), SleepFrame(0.1), heard("One moment."), SleepFrame(0.05)])
+    assert [text for _, text, _ in session.started] == ["hi"]
+
+
 def test_the_words_actually_played_count_as_its_speech_too():
     playback = Playback()
     playback.spoken = ["Once", "upon", "a", "time,"]  # an interrupted reply
     session = FakeSession()
-    run(make(session, playback=playback), [heard("a time, tell me another"), SleepFrame(0.05)])
-    assert [text for _, text, _ in session.started] == ["tell me another"]
+    run(make(session, playback=playback), [heard("a time, tell me another."), SleepFrame(0.05)])
+    assert [text for _, text, _ in session.started] == ["tell me another."]
 
 
 def test_tool_syntax_split_across_reply_pieces_is_never_spoken():
@@ -411,3 +861,22 @@ def test_tool_syntax_split_across_reply_pieces_is_never_spoken():
     said = "".join(spoken(down))
     assert "emote" not in said and "cheerful1" not in said
     assert said.split() == ["Great", "news", "indeed."]
+
+
+def test_a_name_the_stt_mishears_reaches_the_kernel_corrected():
+    """Live 2026-10-23: "Mika" was heard as "Micah", and remembered so."""
+    from sage_device import names
+    session = FakeSession()
+    processor = make(session)
+    processor._names = names.parse("Mika:Mee-kah:Micah|Mica")
+    run(processor, [heard("My name is Micah."), SleepFrame(0.1)])
+    assert session.started[0][1] == "My name is Mika."
+
+
+def test_a_misheard_name_being_forgotten_reaches_the_kernel_as_it_remembers_it():
+    from sage_device import names
+    session = FakeSession()
+    processor = make(session)
+    processor._names = names.parse("Mika:Mee-kah:Micah|Mica")
+    run(processor, [heard("Forget Micah, my name is Micah."), SleepFrame(0.1)])
+    assert session.started[0][1] == "Forget Micah, my name is Mika."

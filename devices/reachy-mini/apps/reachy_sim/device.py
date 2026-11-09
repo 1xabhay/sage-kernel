@@ -14,7 +14,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from functools import cache
 
-#: The voice app's emote vocabulary (reachy_sage_voice/kernel.py), copied, not
+#: The voice app's emote vocabulary (reachy_sage_voice/manifest.py), copied, not
 #: imported: the apps share no venv. A test keeps the two equal.
 EMOTIONS = (
     # the pet's 30

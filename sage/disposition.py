@@ -23,7 +23,8 @@ QUIET = re.compile(r"\b(be quiet|quiet,? please|shh+|shush|hush|stop talking|lea
 class Timings:
     """The settings, configurable: SAGE_GREET_AFTER_ABSENT_S, SAGE_NUDGE_AFTER_IDLE_S, SAGE_QUIET_S,
     SAGE_NUDGE_GAP_S, SAGE_NUDGES_PER_HOUR, SAGE_GREET_ON_START and SAGE_ENGAGED_S. A nudge counts against
-    the budget and the gap when it is decided, so one answered with silence counts too (lead)."""
+    the budget and the gap when it is decided, so one answered with silence counts too (lead), and no
+    other follows until the person has spoken since (owner rule: never repeat one that went unanswered)."""
     greet_after_s: float = GREET_AFTER_S
     nudge_after_idle_s: float = RESTLESS_S
     quiet_s: float = QUIET_S
@@ -44,6 +45,7 @@ class Disposition:
     last_activity: float | None = None  # the last thing that happened between them: arrival, a turn, a greet, a nudge
     quiet_until: float | None = None
     nudges: tuple[float, ...] = ()  # within the last hour
+    last_nudge: float | None = None  # the person must speak after it before another (never a repeat unanswered)
 
 
 def asks_for_quiet(text: str) -> bool:
@@ -81,7 +83,8 @@ def step(d: Disposition, kind: str, now: float, text: str = "", t: Timings = DEF
         raise ValueError(f"unknown disposition event {kind!r}")
     recent = tuple(at for at in d.nudges if now - at < 3600)
     d = replace(d, nudges=recent)
-    if (state(d, now, t) == "restless" and len(recent) < t.nudges_per_hour
+    answered = d.last_nudge is None or (d.last_spoke is not None and d.last_spoke > d.last_nudge)
+    if (state(d, now, t) == "restless" and answered and len(recent) < t.nudges_per_hour
             and (not recent or now - recent[-1] >= t.nudge_gap_s)):
-        return replace(d, nudges=recent + (now,), last_activity=now), ("nudge",)
+        return replace(d, nudges=recent + (now,), last_nudge=now, last_activity=now), ("nudge",)
     return d, ()

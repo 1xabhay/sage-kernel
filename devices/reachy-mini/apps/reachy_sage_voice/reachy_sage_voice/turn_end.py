@@ -21,9 +21,10 @@ import wave
 import numpy as np
 from pipecat.audio.vad.vad_analyzer import VADState
 
-#: Thresholds tried, in ms. 450 is an earlier voice bot's measured value and the default.
+#: Thresholds tried, in ms. 450 was an earlier voice bot's value; 600 is the default, measured
+#: on the owner's live turns (eval/turn_taking.py, eval/LEDGER.md (turn-taking rows)).
 CANDIDATES_MS = (200, 300, 450, 600, 800, 1000)
-DEFAULT_MS = 450
+DEFAULT_MS = 600
 SAMPLE_RATE = 16000
 CHUNK = 512  # samples per analyze_audio call at 16 kHz: 32 ms
 

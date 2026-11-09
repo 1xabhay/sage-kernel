@@ -63,6 +63,17 @@ class Nudging(unittest.TestCase):
         self.assertGreaterEqual(nudges[0], d.RESTLESS_S)
         self.assertTrue(all(b - a >= d.NUDGE_COOLDOWN_S for a, b in pairwise(nudges)))
 
+    def test_an_unanswered_nudge_is_never_followed_by_another(self):
+        events = [("seen", 0)] + [("tick", t * MIN) for t in range(1, 300)]  # five hours, nobody answers
+        _, said = run(events)
+        self.assertEqual([name for name, _ in said], ["greet", "nudge"])
+
+    def test_after_the_person_speaks_a_later_nudge_may_come(self):
+        state, said = run([("seen", 0)] + [("tick", t * MIN) for t in range(1, 30)])
+        self.assertEqual([name for name, _ in said], ["greet", "nudge"])
+        _, more = run([("spoke", 30 * MIN, "Hm.")] + [("tick", t * MIN) for t in range(31, 80)], start=state)
+        self.assertEqual([name for name, _ in more], ["nudge"])
+
     def test_never_right_after_the_person_spoke(self):
         events = [("seen", 0)] + [e for t in range(1, 200) for e in (("spoke", t * 30.0, "Hm."), ("tick", t * 30 + 1))]
         _, said = run(events)
@@ -91,10 +102,14 @@ class Timings(unittest.TestCase):
                          ("engaged", "available"))
 
     def test_the_nudge_budget_gap_and_a_greeting_on_start_are_configurable(self):
-        events = [("seen", 0)] + [("tick", float(t)) for t in range(1, 61)]
-        tight = d.Timings(nudge_after_idle_s=2, nudge_gap_s=2, nudges_per_hour=5)
-        _, said = run(events, t=tight)
-        self.assertEqual(len([n for n, _ in said if n == "nudge"]), 5)
+        tight = d.Timings(nudge_after_idle_s=2, nudge_gap_s=2, nudges_per_hour=5, engaged_s=0)
+        state, nudges = d.step(Disposition(), "seen", 0, t=tight)[0], 0
+        for at in range(1, 61):
+            state, out = d.step(state, "tick", float(at), t=tight)
+            if "nudge" in out:  # answered each time, so only the budget and the gap limit them
+                nudges += 1
+                state, _ = d.step(state, "spoke", at + 0.5, "Hm.", t=tight)
+        self.assertEqual(nudges, 5)
         _, out = d.step(Disposition(), "seen", 0, t=d.Timings(greet_on_start=False))
         self.assertEqual(out, ())
 
@@ -118,6 +133,18 @@ class Properties(unittest.TestCase):
             nudges = [at for name, at in run(events)[1] if name == "nudge"]
             for index, at in enumerate(nudges):
                 self.assertLessEqual(sum(at <= other < at + 3600 for other in nudges[index:]), d.NUDGE_BUDGET)
+
+    def test_the_person_speaks_between_any_two_nudges(self):
+        for events in self.sequences():
+            spoke_since = True
+            state = Disposition()
+            for kind, at, *text in events:
+                state, out = d.step(state, kind, at, *text)
+                if kind == "spoke":
+                    spoke_since = True
+                if "nudge" in out:
+                    self.assertTrue(spoke_since, "a nudge followed an unanswered one")
+                    spoke_since = False
 
     def test_never_a_proactive_turn_in_quiet(self):
         for events in self.sequences():

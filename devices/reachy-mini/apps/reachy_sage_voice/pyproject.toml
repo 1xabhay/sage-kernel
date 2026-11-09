@@ -14,10 +14,14 @@ keywords = ["reachy-mini-app"]
 dependencies = [
     "numpy>=2.2.5",
     # The robot SDK version the pet runs on.
-    "reachy-mini==1.10.0",
+    "reachy-mini==1.14.0",
     # The version an earlier voice bot measured its voice pipeline on. Silero's onset edge
     # drives barge-in.
-    "pipecat-ai[silero]==1.12.0",
+    "pipecat-ai[silero]==1.15.0",
+    "reachy-mini-dances-library==0.2.1",
+    # Head-pose Euler angles (motion/runner.py) and replay resampling; reachy-mini 1.14
+    # stopped bringing it in.
+    "scipy>=1.18.1",
     # Settings from a .env, as Pollen's conversation app reads them.
     "python-dotenv>=1.2",
     "platformdirs>=4",
@@ -32,7 +36,7 @@ reachy-sage-voice = "reachy_sage_voice.main:ReachySageVoice"
 sage-voice-turn-end = "reachy_sage_voice.turn_end:main"
 
 [project.urls]
-Source = "https://github.com/1xabhay/reachy-mini-lab/tree/main/apps/reachy_sage_voice"
+Source = "https://github.com/1xabhay/sage-kernel/tree/main/devices/reachy-mini/apps/reachy_sage_voice"
 Space = "https://huggingface.co/spaces/sabhay22/reachy_sage_voice"
 
 [dependency-groups]
@@ -41,14 +45,6 @@ dev = ["pytest>=8", "ruff>=0.9"]
 [tool.uv]
 # A project of its own, outside the root workspace, so Pipecat's pins
 # (protobuf <7, soundfile ~=0.13) never move the live pet's packages.
-# pipecat-ai 1.x pins onnxruntime ~=1.24.3 and reachy-mini 1.10.0 pins
-# ==1.27.0; Pipecat uses it only for Silero and Smart Turn v3.2, both run on
-# 1.27.0 in tests/test_onnxruntime.py.
-# ponytail: this override is why the app installs from source only. The
-# dashboard's `uv pip install` ignores [tool.uv], so it cannot resolve the two
-# pins; drop the override, and re-tag the Space reachy_mini_python_app, once
-# pipecat-ai and reachy-mini agree on onnxruntime.
-override-dependencies = ["onnxruntime==1.27.0"]
 # The robot's media stack exactly as the pet runs it: gstreamer-plugins 1.28.8,
 # the newest, has no cp312 wheel.
 constraint-dependencies = [
@@ -65,9 +61,12 @@ constraint-dependencies = [
     "gstreamer-python==1.28.6",
 ]
 
+# Body-agnostic device code (docs/design/LAYERS.md §2.5) ships inside the wheel, not as a
+# dependency: pip ignores [tool.uv.sources], so a path dependency broke the Space's install.
+# deploy/sources.py lists the folder, so the export and the release carry it.
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["reachy_sage_voice*"]
+where = [".", "../../../common/sage_device"]
+include = ["reachy_sage_voice*", "sage_device*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -76,6 +75,7 @@ addopts = "-m 'not integration'"
 markers = [
     "integration: the voice against the real Sage kernel (make integration)",
     "kernel_env: kernel settings for one integration test",
+    "slew: keep the arbiter's real slew caps (conftest no_slew_limit)",
 ]
 
 [tool.ruff]

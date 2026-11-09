@@ -1,0 +1,15 @@
+# SearXNG for the research service only: no host port, reached at http://searxng:8080.
+use_default_settings: true
+
+server:
+  # Never used: compose sets SEARXNG_SECRET to a fresh random key at every start, and SearXNG
+  # refuses to start on this placeholder, so a missing key fails loudly instead of silently.
+  secret_key: "ultrasecretkey"
+  limiter: false  # private: one client, on an internal network
+  image_proxy: false
+  public_instance: false
+
+search:
+  formats:
+    - html
+    - json

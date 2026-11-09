@@ -1,11 +1,12 @@
-"""Barge-in on the earliest edge the VAD will commit to.
+"""Barge-in once speech has lasted, on the VAD the segmentation already runs.
 
 A VADAnalyzer moves QUIET -> STARTING -> SPEAKING. Pipecat's VADProcessor only
 reports SPEAKING and QUIET, so STARTING, the first evidence someone is talking,
 is discarded. An earlier voice bot measured that edge at 160 ms (5 frames of 32 ms) ahead of
-SPEAKING over real speech (``speech_onset_vad.py``). This keeps one analyzer
-with two consumers: interruption reads STARTING, segmentation keeps SPEAKING /
-QUIET with its thresholds untouched.
+SPEAKING over real speech (``speech_onset_vad.py``) and barged in on it. On the owner's
+live turns that edge was mostly not words (``min_onset_ms``), so interruption now waits for
+speech to last; 0 restores STARTING. One analyzer, two consumers: interruption reads the
+onset, segmentation keeps SPEAKING / QUIET with its thresholds untouched.
 
 Raw audio energy was rejected as a trigger: Reachy's mic hears its own speaker,
 and the confidence and volume gates are what keep that from counting as speech.
@@ -20,36 +21,34 @@ from typing import Any
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.frames.frames import Frame, InterruptionWorkerFrame
 from pipecat.processors.frame_processor import FrameDirection
+from sage_device.reflex import PAUSE_S
 
 from reachy_sage_voice.interruption import InterruptionTracker
 
 logger = logging.getLogger(__name__)
 
 
-def speech_edge(prev: VADState, cur: VADState) -> str | None:
-    """Classify a VAD state change: "detected", "cleared", or None.
-
-    Any move off QUIET is one onset, even straight to SPEAKING (one call can
-    consume several frames). Any return to QUIET clears, even from STARTING: a
-    false start must be retracted. STARTING -> SPEAKING is not a new onset.
-    """
-    if prev == cur:
-        return None
-    if prev == VADState.QUIET:
-        return "detected"
-    if cur == VADState.QUIET:
-        return "cleared"
-    return None
-
-
 class SpeechOnsetMixin:
     """Reports onset and offset from a VADAnalyzer without changing what it returns.
 
+    Onset fires once speech has lasted ``min_onset_ms`` (0: on the first voiced frame, the
+    STARTING edge); offset fires on the return to QUIET after an onset, never without one.
     Mix in ahead of the analyzer class. Handlers take no arguments and may be async.
     """
 
+    #: Speech that must last before barge-in, ms. Live 2026-10-23, on STARTING: 20 of 43
+    #: barge-ins had no speech the VAD confirmed and 7 more no words. 200 is the VAD's own
+    #: start (start_secs), the shortest a segment can be.
+    min_onset_ms = 200
     _on_detected: Callable[[], Any] | None = None
     _on_cleared: Callable[[], Any] | None = None
+    _voiced = 0  # samples of speech since the last QUIET
+    _detected = False
+    _on_voice: Callable[[], Any] | None = None
+    _on_pause: Callable[[], Any] | None = None
+    _on_quiet: Callable[[], Any] | None = None
+    _silent = 0  # samples of this silence, in STOPPING
+    _paused = False
 
     def set_onset_handlers(self, *, on_detected: Callable[[], Any] | None = None,
                            on_cleared: Callable[[], Any] | None = None) -> None:
@@ -57,13 +56,41 @@ class SpeechOnsetMixin:
         self._on_detected = on_detected
         self._on_cleared = on_cleared
 
+    def set_reflex_handlers(self, *, on_voice: Callable[[], Any] | None = None,
+                            on_pause: Callable[[], Any] | None = None,
+                            on_quiet: Callable[[], Any] | None = None) -> None:
+        """Set the body's edges: the first voiced frame, ``PAUSE_S`` of silence, back to QUIET."""
+        self._on_voice, self._on_pause, self._on_quiet = on_voice, on_pause, on_quiet
+
+    async def _pausing(self, state: VADState, samples: int) -> None:
+        """Fire the pause once per silence; a VAD stopping as early still counts on its QUIET."""
+        if state == VADState.STOPPING:
+            self._silent += samples
+        ended = state == VADState.QUIET and self._silent > 0
+        if not self._paused and (ended or self._silent >= PAUSE_S * self.sample_rate):
+            self._paused = True
+            await _fire(self._on_pause, "pause")
+        if state != VADState.STOPPING:
+            self._silent, self._paused = 0, False
+
     async def analyze_audio(self, buffer: bytes) -> VADState:
-        """Run the analyzer, then fire a handler if this frame crossed an edge."""
-        prev = self._vad_state
+        """Run the analyzer, then fire a handler if speech crossed the onset or went quiet."""
         state = await super().analyze_audio(buffer)
-        edge = speech_edge(prev, state)
-        if edge:
-            await _fire(self._on_detected if edge == "detected" else self._on_cleared, edge)
+        await self._pausing(state, len(buffer) // 2)
+        if state == VADState.QUIET:
+            if self._voiced:
+                await _fire(self._on_quiet, "quiet")
+            self._voiced = 0
+            if self._detected:
+                self._detected = False
+                await _fire(self._on_cleared, "cleared")
+            return state
+        if not self._voiced:
+            await _fire(self._on_voice, "voice")
+        self._voiced += len(buffer) // 2  # int16 mono
+        if not self._detected and self._voiced * 1000 >= self.min_onset_ms * self.sample_rate:
+            self._detected = True
+            await _fire(self._on_detected, "detected")
         return state
 
 
@@ -79,14 +106,16 @@ async def _fire(handler: Callable[[], Any] | None, label: str) -> None:
         logger.exception("speech onset: %s handler failed", label)
 
 
-def build_speech_onset_silero(params) -> Any:
-    """Return a SileroVADAnalyzer that also reports the STARTING edge."""
+def build_speech_onset_silero(params, min_onset_ms: float = SpeechOnsetMixin.min_onset_ms) -> Any:
+    """Return a SileroVADAnalyzer that also reports speech onset after ``min_onset_ms``."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
 
     class SpeechOnsetSileroVAD(SpeechOnsetMixin, SileroVADAnalyzer):
         pass
 
-    return SpeechOnsetSileroVAD(params=params)
+    analyzer = SpeechOnsetSileroVAD(params=params)
+    analyzer.min_onset_ms = min_onset_ms
+    return analyzer
 
 
 def make_speech_onset_handler(

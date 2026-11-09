@@ -1,20 +1,23 @@
-"""Text to speech: Kokoro 82M (int8, ONNX, CPU) behind OpenAI's speech endpoint.
+"""Text to speech: Kyutai's Pocket TTS (100M, PyTorch, CPU) behind OpenAI's speech endpoint.
 
 Pipecat's OpenAITTSService posts JSON to POST /v1/audio/speech with `input`, `model`, `voice`,
 `response_format: "pcm"` and optionally `speed` and `instructions`, then reads the body as a
-stream of raw 16-bit little-endian mono PCM at 24 kHz. Here the body streams one sentence at a
-time, so the first sentence plays while the rest is synthesised (measured: first audio about
-0.21 s instead of 0.38 s for a two-sentence reply, sage-kernel bench/LEDGER.md).
+stream of raw 16-bit little-endian mono PCM at 24 kHz. Here the body streams each 80 ms frame as
+Pocket decodes it, so the first audio plays while the rest is synthesised.
 
 POST /dev/captioned_speech (Kokoro-FastAPI's path and shape) adds when each word is spoken, so
-an interrupted voice knows exactly what was heard. It runs the timestamped export of the same
-int8 weights, whose extra `durations` output costs about 1 ms per sentence (bench/LEDGER.md).
+an interrupted voice knows what was heard. Pocket times no words: each sentence's audio is shared
+among its words by their length (words_spoken). Streamed, it also comes frame by frame, so the
+words go out with a sentence's first frame, timed over how long the sentence should take.
+
+The voice is azelma (VCTK p303, CC BY 4.0) at temperature 0.6: the owner's choice, 2026-10-23.
 """
 import base64
-import glob
+import functools
 import json
 import os
 import re
+import threading
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -23,44 +26,42 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 RATE = 24000
-REPO = "onnx-community/Kokoro-82M-v1.0-ONNX"
-TIMED_REPO = "onnx-community/Kokoro-82M-v1.0-ONNX-timestamped"  # same weights, plus phoneme durations
-WEIGHTS = "onnx/model_quantized.onnx"  # int8: half the latency of fp32 on an M2 Pro
-DIR = os.environ.get("KOKORO_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), ".local/kokoro"))
-_kokoro = _timed = None
+VOICE = "azelma"
+TEMPERATURE = 0.6  # Kyutai's evals preferred 0.3; the owner chose 0.6
+# How long azelma takes over a sentence, measured: about 0.9 s of pauses plus 21 letters a second.
+PAUSE_S, LETTERS_PER_S = 0.9, 21
+# Only azelma: Kyutai's card gives its source and licence. cosette (Expresso) and jean (EARS) are
+# non-commercial; the rest are unverified. Check tts-voices' card before adding one.
+VOICES = (VOICE,)
+_model = None
 
 
-def fetch(directory=DIR):
-    """Download the weights and every voice, and pack the voices into the npz kokoro-onnx reads."""
-    from huggingface_hub import snapshot_download
-
-    snapshot_download(REPO, allow_patterns=[WEIGHTS, "voices/*.bin"], local_dir=directory)
-    snapshot_download(TIMED_REPO, allow_patterns=[WEIGHTS], local_dir=os.path.join(directory, "timed"))
-    voices = {os.path.basename(p)[:-4]: np.fromfile(p, dtype=np.float32).reshape(-1, 1, 256)
-              for p in glob.glob(os.path.join(directory, "voices/*.bin"))}
-    np.savez(os.path.join(directory, "voices.npz"), **voices)
+def fetch():
+    """Download the weights and the voices into the Hugging Face cache."""
+    model = load()
+    for v in VOICES:
+        model.get_state_for_audio_prompt(v)
 
 
-def load(directory=DIR):
-    """(plain, timed). Two sessions: with timings on, kokoro-onnx also pauses at every comma, which
-    would change the plain endpoint's audio."""
-    from kokoro_onnx import Kokoro
+def load():
+    """Load Pocket's English model at the owner's temperature."""
+    from pocket_tts import TTSModel
 
-    if not os.path.exists(os.path.join(directory, "timed", WEIGHTS)):
-        fetch(directory)
-    voices = os.path.join(directory, "voices.npz")
-    timed = Kokoro(os.path.join(directory, "timed", WEIGHTS), voices)
-    # ponytail: this export names the output `durations`, kokoro-onnx looks for `duration`.
-    timed.has_timings = True
-    return Kokoro(os.path.join(directory, WEIGHTS), voices), timed
+    # int8 halves the time in the Colima image (real-time factor 0.68 to 0.47); natively, no gain.
+    return TTSModel.load_model(temp=TEMPERATURE, quantize=True)
+
+
+@functools.cache
+def state(voice):
+    """Return the voice's prompt state, read once from the baked cache; each generation copies it."""
+    return _model.get_state_for_audio_prompt(voice)
 
 
 @asynccontextmanager
 async def lifespan(_app):
-    global _kokoro, _timed
-    _kokoro, _timed = load()
-    for k in (_kokoro, _timed):
-        k.create("Ready.", voice="af_heart")  # the first call pays for graph setup, not a user
+    global _model
+    _model = load()
+    _model.generate_audio(state(VOICE), "Ready.")  # the first call pays for setup, not a user
     yield
 
 
@@ -69,11 +70,13 @@ app = FastAPI(lifespan=lifespan)
 
 class Speech(BaseModel):  # OpenAI's fields
     input: str
-    voice: str = "af_heart"
-    model: str = "kokoro"  # one model; accepted and ignored
+    voice: str = VOICE
+    model: str = "pocket"  # one model; accepted and ignored
     response_format: str = "pcm"
+    # ponytail: Pocket has no speed control, so the voice styles' 0.9-1.1 are ignored; time-stretch
+    # the audio (pitch-preserving) if the owner misses them.
     speed: float = 1.0
-    instructions: str | None = None  # OpenAI's acting notes; Kokoro has none, ignored
+    instructions: str | None = None  # OpenAI's acting notes; Pocket has none, ignored
 
 
 class CaptionedSpeech(Speech):
@@ -86,18 +89,18 @@ def sentences(text):
 
 @app.get("/health")
 def health():
-    return {"ready": _kokoro is not None}
+    return {"ready": _model is not None}
 
 
 @app.get("/v1/audio/voices")
 def voices():
-    return {"voices": sorted(_kokoro.get_voices())}
+    return {"voices": list(VOICES)}
 
 
 def validated(req: Speech) -> list[str]:
     if req.response_format != "pcm":
         raise HTTPException(400, "only response_format 'pcm' (16-bit mono 24 kHz) is supported")
-    if req.voice not in _kokoro.get_voices():
+    if req.voice not in VOICES:
         raise HTTPException(400, f"unknown voice {req.voice!r}; GET /v1/audio/voices lists them")
     if not 0.5 <= req.speed <= 2.0:
         raise HTTPException(400, "speed must be between 0.5 and 2.0")
@@ -108,82 +111,68 @@ def validated(req: Speech) -> list[str]:
 
 
 def pcm16(audio):
-    return (np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes()
+    return (np.clip(audio.numpy(), -1, 1) * 32767).astype("<i2").tobytes()
 
 
-def words_spoken(sentence, timings, offset):
+def frames(text, voice):
+    """Pocket's audio frames for the text; a closed stream (the listener cut in) stops generating."""
+    stop = threading.Event()
+    try:
+        yield from _model.generate_audio_stream(state(voice), text, stop=stop)
+    finally:
+        stop.set()
+
+
+def words_spoken(sentence, seconds, offset):
     """[{word, start_time, end_time}] for each word of the sentence as written.
 
-    The model times phonemes; espeak separates words with a space phoneme, and a written word can
-    be spoken as several ("25" is "twenty five"), so each word takes as many spoken groups as
-    espeak gives it on its own."""
-    groups, cur = [], []
-    for t in timings:
-        if t.phoneme == " ":
-            if cur:
-                groups.append(cur)
-            cur = []
-        elif t.phoneme not in PUNCTUATION:
-            cur.append(t)
-    if cur:
-        groups.append(cur)
+    ponytail: Pocket times no words, so each word gets a share of the sentence's audio by its
+    length, trailing pause included: a long word or a number ("25") said faster or slower than its
+    letters is misplaced by up to a word or two. Forced alignment (or a timed fork of Pocket) if
+    interruptions show the wrong words heard."""
     words = sentence.split()
-    counts = [max(1, len(_timed.tokenizer.phonemize(w, "en-us").split())) for w in words]
-    if sum(counts) != len(groups):  # ponytail: espeak disagreed with itself; spread the words evenly
-        counts = None
-        span = (groups[0][0].start, groups[-1][-1].end) if groups else (0.0, 0.0)
-    out, i = [], 0
-    for n, w in enumerate(words):
-        if counts:
-            g = groups[i:i + counts[n]]
-            i += counts[n]
-            start, end = g[0][0].start, g[-1][-1].end
-        else:
-            step = (span[1] - span[0]) / len(words)
-            start, end = span[0] + n * step, span[0] + (n + 1) * step
-        out.append({"word": w, "start_time": round(offset + start, 3), "end_time": round(offset + end, 3)})
-    return out
-
-
-PUNCTUATION = set(';:,.!?¡¿—…"«»“”(){}[]')
+    ends = np.cumsum([len(w) for w in words]) / sum(len(w) for w in words) * seconds
+    starts = np.concatenate([[0.0], ends[:-1]])
+    return [{"word": w, "start_time": round(offset + s, 3), "end_time": round(offset + e, 3)}
+            for w, s, e in zip(words, starts, ends, strict=True)]
 
 
 @app.post("/v1/audio/speech")
 def speech(req: Speech):
-    parts = validated(req)
-
-    def pcm():  # a sync generator: Starlette runs each step on its thread pool
-        for part in parts:
-            try:
-                audio, _ = _kokoro.create(part, voice=req.voice, speed=req.speed)
-            except ValueError:  # a sentence with nothing to say ("..."): skip it, the rest still plays
-                continue
-            yield pcm16(audio)
-
-    return StreamingResponse(pcm(), media_type="audio/pcm")
+    validated(req)
+    return StreamingResponse((pcm16(f) for f in frames(req.input, req.voice)), media_type="audio/pcm")
 
 
 @app.post("/dev/captioned_speech")
 def captioned_speech(req: CaptionedSpeech):
     parts = validated(req)
 
-    def chunks():
+    def whole(part, offset):  # the sentence, then its words over its real length
+        audio = b"".join(pcm16(f) for f in frames(part, req.voice))
+        yield audio, words_spoken(part, len(audio) / 2 / RATE, offset)
+
+    def streamed(part, offset):
+        # ponytail: the sentence's length is a guess when its words go out, off by up to a quarter
+        # (numbers and names run long); each next sentence starts from the real audio, so it never
+        # adds up. Send the words with the last frame instead if exact beats the 0.5-0.8 s it costs.
+        guess = PAUSE_S + len("".join(part.split())) / LETTERS_PER_S
+        for i, f in enumerate(frames(part, req.voice)):
+            yield pcm16(f), [] if i else words_spoken(part, guess, offset)
+
+    def chunks(each):
         offset = 0.0
         for part in parts:
-            try:
-                audio, _, timings = _timed.create_timed(part, voice=req.voice, speed=req.speed)
-            except ValueError:
-                continue
-            yield pcm16(audio), words_spoken(part, timings, offset)
-            offset += len(audio) / RATE
+            for audio, stamps in each(part, offset):
+                yield audio, stamps
+                offset += len(audio) / 2 / RATE
 
     def line(audio, stamps):
         return json.dumps({"audio": base64.b64encode(audio).decode(), "audio_format": "audio/pcm",
                            "timestamps": stamps}) + "\n"
 
     if req.stream:
-        return StreamingResponse((line(a, t) for a, t in chunks()), media_type="application/x-ndjson")
-    done = list(chunks())
+        return StreamingResponse((line(a, t) for a, t in chunks(streamed)), media_type="application/x-ndjson")
+    done = list(chunks(whole))
     return Response(line(b"".join(a for a, _ in done), [w for _, t in done for w in t]), media_type="application/json")
 
 

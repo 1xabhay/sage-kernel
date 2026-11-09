@@ -1,0 +1,4 @@
+# Advisories uv audit (make vuln) ignores, one ID per line; # starts a comment.
+# ponytail: each block has no fix inside a pin we can't move. Drop a block the day the pin lifts
+# (uv lock -P <package>, then make vuln), and never add an ID without its reason.
+# None today: reachy-mini 1.14.0 lifted starlette's cap and pipecat-ai 1.15.0 lifted Pillow's.

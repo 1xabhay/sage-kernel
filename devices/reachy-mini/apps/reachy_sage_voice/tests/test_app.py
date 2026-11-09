@@ -15,7 +15,7 @@ from reachy_mini import ReachyMiniApp
 from test_run import ENV, Robot
 
 import reachy_sage_voice.__main__ as voice
-from reachy_sage_voice.kernel import EMOTIONS
+from reachy_sage_voice.manifest import EMOTIONS
 
 SETTINGS = {k: v for k, v in ENV.items() if k != voice.HOST}
 
@@ -29,17 +29,18 @@ def test_the_daemon_finds_the_app_by_its_entry_point():
 @pytest.fixture
 def app(monkeypatch):
     """Build the app with the settings in the environment, a fake pipeline, every service up."""
-    from reachy_sage_voice import kernel, pipeline
+    from reachy_sage_voice import manifest, pipeline
     from reachy_sage_voice.main import ReachySageVoice
 
-    for name in (*ENV, "SAGE_VOICE_PRESENCE", "SAGE_VOICE_LISTEN_CUES"):
+    for name in (*ENV, "SAGE_VOICE_PRESENCE", "SAGE_VOICE_LISTEN_CUES",
+                 "SAGE_VOICE_IDLE"):
         monkeypatch.delenv(name, raising=False)
     for name, value in SETTINGS.items():
         monkeypatch.setenv(name, value)
     ran = {}
 
     async def run(media, play_emote, moves, env, play_sound=None, presence=None, observers=(),
-                  face=None):
+                  face=None, recover=None, executor=None):
         ran.update(env=dict(env), moves=moves)
         try:
             await asyncio.Event().wait() if ran.get("forever") else None
@@ -48,7 +49,7 @@ def app(monkeypatch):
             raise
 
     monkeypatch.setattr(pipeline, "run", run)
-    monkeypatch.setattr(kernel, "load_moves", lambda: dict.fromkeys(EMOTIONS, "a move"))
+    monkeypatch.setattr(manifest, "load_moves", lambda: dict.fromkeys(EMOTIONS, "a move"))
     monkeypatch.setattr(voice, "unreachable", lambda env: [])
     return ReachySageVoice(), ran
 

@@ -63,7 +63,10 @@ class Speakable(unittest.TestCase):
         back to "…for you.", so the robot spoke words the journal never held."""
         first = "Cute voices can be fun! I'll try my best. "
         self.assertEqual(speech.near_cap("Cute voices can ", 160), "Cute voices can ")  # the first streams
-        self.assertEqual(speech.near_cap(first + "If you ", 160), first.rstrip())
+        self.assertEqual(speech.near_cap(first + "If you ", 160), first)
+        # Its gap stays: without it, the sentence's last word looks unfinished and is held too
+        # (a 60-character cap streamed "One two … seven" and no audio, so a barge-in withdrew the turn).
+        self.assertEqual(speech.speakable(speech.near_cap(first + "If you ", 160), (), False), first)
         self.assertEqual(speech.near_cap(first + "If you need. ", 160), first + "If you need. ")
         live = ("Cute voices can be fun! I'll try my best to keep things light and engaging for you. If there's "
                 "anything you'd like to try with a cute voice or if you need help")[:160]

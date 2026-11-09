@@ -8,7 +8,7 @@ Starting point: three prose documents, one image, no application or test suite.
 
 Read in this order: this course → [source review](RESEARCH.md) →
 [first executable contract](TURN-CONTRACT.md) → `tests/test_turn.py` → `sage/turn.py`.
-The original [minimum spec](../Open-Companion-Minimum-Spec-v0.1.md) remains the product reference.
+The original [minimum spec](Open-Companion-Minimum-Spec-v0.1.md) remains the product reference.
 This document proposes a tighter execution order; it does not silently replace that spec.
 
 ## 1. What we are building

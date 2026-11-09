@@ -11,7 +11,7 @@ p50 313-319 ms, p95 537-570 ms against 326-430 / 640-2559 ms (owner;
 sage-kernel bench/LEDGER.md, "Voice first audio").
 
 ponytail: installed on the TTS service's private ``_text_aggregator``; Pipecat
-1.12 has no hook for a custom one. Replace when it grows a constructor argument.
+1.15 has no hook for a custom one. Replace when it grows a constructor argument.
 """
 
 from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType

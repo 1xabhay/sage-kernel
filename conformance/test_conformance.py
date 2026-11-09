@@ -10,6 +10,7 @@ See docs/PROTOCOL.md.
 
 import json
 import os
+import re
 import shlex
 import signal
 import socket
@@ -26,13 +27,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMAND = shlex.split(os.environ.get("SAGE_KERNEL_CMD", f"{sys.executable} -m sage"))
-TOKENS = {"reachy": "reachy-" + "r" * 32, "mock": "mock-" + "m" * 32}
+TOKENS = {"reachy": "reachy-" + "r" * 32, "mock": "mock-" + "m" * 32,
+          "phone": "phone-" + "p" * 32}  # a second body: text only, no senses, no tools
+TYPED = {"medium": "text"}
 CODES = {"invalid", "unauthorized", "not_found", "busy", "unknown_pending", "forbidden", "reset",
-         "stale", "protocol_mismatch", "rate_limited", "storage"}
+         "hello_first", "stale", "protocol_mismatch", "rate_limited", "storage"}
 EMOTE = {"name": "emote", "description": "Show a feeling with the body, just before speaking.",
          "inputSchema": {"type": "object", "properties": {"name": {"enum": ["cheerful1", "sad1"]}},
                          "required": ["name"]},
          "max_s": 3, "interruptible": True}
+ACT = {"kind": "acted", "act_id": "a-17", "origin": "reflex", "what": "body_plan",
+       "input": {"steps": [{"skill": "search_face"}]}, "status": "failed", "reason": "not_found",
+       "said": "I looked everywhere, Mika."}
 
 
 def free_port() -> int:
@@ -42,8 +48,9 @@ def free_port() -> int:
 
 
 def words(message) -> str:
+    """A message's text, without the "[when it was heard]" line the kernel puts first (a real model reads it)."""
     content = message.get("content")
-    return content if isinstance(content, str) else ""
+    return re.sub(r"^\[[^\]\n]*\]\n", "", content) if isinstance(content, str) else ""
 
 
 def answer(messages) -> tuple[str, dict]:
@@ -54,6 +61,8 @@ def answer(messages) -> tuple[str, dict]:
         return "Your favorite color is blue.", {}
     if "Feel happy" in question:
         return "Yay!", {"emote": {"name": "cheerful1"}}
+    if "Sigh" in question:
+        return "", {"emote": {"name": "sad1"}}  # a move and no words
     if "Wave" in question:
         return "Hi!", {"wave": {}}  # not in any manifest: the kernel must refuse it
     if "Count" in question:
@@ -82,6 +91,11 @@ class Provider:
                     self.send_error(404)
                     return
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if request.get("options", {}).get("num_predict") == 1:  # a cache warm-up, not a decision
+                    self.send_response(200)
+                    self.end_headers()
+                    self.line("{", True)
+                    return
                 provider.requests.append(request)
                 provider.open.wait(10)
                 reply, actions = ("", {}) if provider.silent else answer(request["messages"])
@@ -105,8 +119,10 @@ class Provider:
             def line(self, content, done):
                 data = {"model": "fake", "created_at": "2026-10-20T00:00:00Z",
                         "message": {"role": "assistant", "content": content}, "done": done}
-                if done:
-                    data["done_reason"] = "stop"
+                if done:  # Ollama's own counts and durations (ns) end the stream
+                    data |= {"done_reason": "stop", "total_duration": 9_000_000, "load_duration": 1_000_000,
+                             "prompt_eval_count": 12, "prompt_eval_duration": 5_000_000, "eval_count": 3,
+                             "eval_duration": 3_000_000}
                 self.wfile.write(json.dumps(data).encode() + b"\n")
                 self.wfile.flush()
 
@@ -134,6 +150,7 @@ class KernelProcess:
                     **env}
         self.log = tempfile.TemporaryFile()
         self.process = None
+        self.manifests = {}  # token -> the last manifest that device declared, as a device keeps its own
 
     def start(self):
         try:
@@ -166,7 +183,18 @@ class KernelProcess:
             self.process.terminate()
             self.process.wait(5)
 
-    def device(self, method, path, body=None, token=TOKENS["reachy"], raw=None):
+    def device(self, method, path, body=None, token=TOKENS["reachy"], raw=None, rehello=True):
+        """One request, as a v1 device makes it: on `hello_first` it says hello again and retries once."""
+        response = self.request(method, path, body, token, raw)
+        if path == "/v1/hello" and response[0] == 200:
+            self.manifests[token] = body["manifest"]
+        if rehello and response[0] == 409 and (response[1] or {}).get("code") == "hello_first":
+            self.request("POST", "/v1/hello", {"protocols": [1], "manifest": self.manifests.get(
+                token, {"senses": ["speech"], "tools": []})}, token)
+            response = self.request(method, path, body, token, raw)
+        return response
+
+    def request(self, method, path, body=None, token=TOKENS["reachy"], raw=None):
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         data = raw if raw is not None else json.dumps(body).encode() if body is not None else None
         if data is not None:
@@ -301,6 +329,30 @@ class Conformance(unittest.TestCase):
         self.assertIn("Hi", self.reply_for(kernel, "r1")["text"])
         self.assertEqual(self.effects(kernel, token=TOKENS["mock"])["effects"], [])
 
+    def test_tokens_in_sage_devices_file_reload_without_a_restart(self):
+        path, extra = Path(self.state) / "devices", "extra-" + "e" * 32
+
+        def write(text):  # the way an editor or `mv` does: a new file renamed over the old
+            (Path(self.state) / "devices.new").write_text(text)
+            os.replace(Path(self.state) / "devices.new", path)
+
+        write(f"mock={TOKENS['mock']}\n")
+        kernel = self.kernel(SAGE_DEVICES=f"reachy={TOKENS['reachy']}", SAGE_DEVICES_FILE=str(path))
+        self.assertEqual(self.hello(kernel, token=TOKENS["mock"])[0], 200)
+        self.provider.midway.clear()  # a turn is still being written while the tokens change
+        self.assertEqual(self.submit(kernel, "r1", "Count")[0], 200)
+        self.first_delta(kernel, "r1")
+        write(f"# the owner's bodies\nextra={extra}\n")
+        self.assertRefused(self.hello(kernel, token=TOKENS["mock"]), 401, "unauthorized")
+        self.assertEqual(self.hello(kernel, token=extra)[0], 200)
+        self.provider.midway.set()
+        self.assertEqual(self.reply_for(kernel, "r1")["text"], "One two three four five six.")
+        write("extra=short\n")  # malformed: the old tokens stay and the kernel says why
+        self.assertEqual(self.hello(kernel, token=extra)[0], 200)
+        self.assertEqual(self.hello(kernel)[0], 200)  # SAGE_DEVICES is never reloaded away
+        kernel.log.seek(0)
+        self.assertIn(b"SAGE_DEVICES_FILE", kernel.log.read())
+
     def test_server_only_kinds_unknown_fields_and_unknown_routes_are_refused(self):
         kernel = self.kernel()
         self.assertRefused(self.event(kernel, {"kind": "completed", "turn_id": "r1", "text": "x"}), 400, "invalid")
@@ -322,12 +374,12 @@ class Conformance(unittest.TestCase):
     def test_busy_is_coded_and_the_same_turn_id_is_admitted_once_free(self):
         kernel = self.kernel()
         self.provider.open.clear()
-        self.assertEqual(self.submit(kernel, "m1", "First", token=TOKENS["mock"])[0], 200)
-        self.assertRefused(self.submit(kernel, "r1", "Second"), 409, "busy")
+        self.assertEqual(self.submit(kernel, "r1", "Hi")[0], 200)
+        self.assertRefused(self.submit(kernel, "r2", "Hello"), 409, "busy")  # busy is per device (v1.2)
         self.provider.open.set()
-        self.reply_for(kernel, "m1", token=TOKENS["mock"])
-        self.assertEqual(self.submit(kernel, "r1", "Second")[0], 200)
-        self.assertIn("Second", self.reply_for(kernel, "r1")["text"])
+        self.reply_for(kernel, "r1")
+        self.assertEqual(self.submit(kernel, "r2", "Hello")[0], 200)
+        self.assertIn("Hello", self.reply_for(kernel, "r2")["text"])
         self.assertEqual(len(self.provider.requests), 2)
 
     def test_a_reply_that_finished_while_away_waits_at_the_cursor(self):
@@ -378,6 +430,20 @@ class Conformance(unittest.TestCase):
         self.assertGreater(after["sequence"], before["sequence"])
         self.assertEqual([(e["sequence"], e["turn_id"], e["text"]) for e in after["effects"]],
                          [(delivered["sequence"], "r1", delivered["text"])])
+
+    def test_a_device_says_hello_first_after_every_start(self):
+        kernel = self.kernel()
+        for _ in range(2):  # a fresh kernel, then the same one restarted
+            self.assertRefused(kernel.device("POST", "/v1/events", {"kind": "submitted", "turn_id": "r1",
+                                                                    "text": "Hi"}, rehello=False), 409, "hello_first")
+            self.assertRefused(kernel.device("GET", "/v1/effects?since=0", rehello=False), 409, "hello_first")
+            self.assertEqual(kernel.device("GET", "/v1/health", rehello=False)[0], 200)
+            self.assertEqual(self.hello(kernel)[0], 200)
+            self.assertEqual(kernel.device("GET", "/v1/effects?since=0", rehello=False)[0], 200)
+            self.assertEqual(kernel.device("POST", "/v1/events", {"kind": "connected"}, rehello=False)[0], 200)
+            kernel.kill()
+            kernel.start()
+        self.assertEqual(len(self.provider.requests), 0)  # a refused turn never reached the model
 
     def test_since_beyond_the_journal_is_a_reset(self):
         kernel = self.kernel()
@@ -434,6 +500,24 @@ class Conformance(unittest.TestCase):
                 self.assertRefused(kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": manifest}),
                                    400, "invalid")
 
+    def test_a_body_description_is_optional_bounded_and_shown_to_the_model(self):
+        kernel = self.kernel()
+        for case, body in {"not text": 7, "a list": ["camera"], "over 300 characters": "b" * 301}.items():
+            with self.subTest(case):
+                self.assertRefused(kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": {
+                    "senses": ["speech"], "tools": [], "body": body}}), 400, "invalid")
+        self.assertEqual(self.hello(kernel)[0], 200)  # a manifest without body, as before
+        body = "A small robot head with a camera that is not connected yet."
+        status, _ = kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": {
+            "senses": ["speech"], "tools": [], "body": body}})
+        self.assertEqual(status, 200)
+        for turn_id in ("b1", "b2"):
+            self.submit(kernel, turn_id, "Do you have a camera?")
+            self.reply_for(kernel, turn_id)
+        first, second = (request["messages"][0]["content"] for request in self.provider.requests[-2:])
+        self.assertIn(body, first)
+        self.assertEqual(first, second)  # the same on every turn of the device
+
     def test_each_device_gets_a_format_schema_of_its_own_tools_identical_every_turn(self):
         kernel = self.kernel()
         self.hello(kernel, [EMOTE])
@@ -481,6 +565,26 @@ class Conformance(unittest.TestCase):
         self.assertRefused(self.result(kernel, sequence, "finished"), 400, "invalid")
         self.assertEqual(self.result(kernel, sequence, "done")[0], 200)
         self.assertEqual(self.result(kernel, sequence, "done")[0], 200)
+
+    def test_a_done_result_s_text_reaches_the_model_next_turn_after_its_exchange(self):
+        kernel = self.kernel()
+        self.hello(kernel, [EMOTE])
+        self.submit(kernel, "r1", "Feel happy")
+        emote, reply = self.effect_for(kernel, "r1", "emote"), self.reply_for(kernel, "r1")
+        self.result(kernel, reply["sequence"], "done")
+        self.submit(kernel, "r2", "Hi")
+        self.reply_for(kernel, "r2")
+        before = self.provider.requests[-1]["messages"]
+        self.assertEqual(self.result(kernel, emote["sequence"], "done", text="smiling now")[0], 200)
+        self.submit(kernel, "r3", "Hello")
+        self.reply_for(kernel, "r3")
+        after = self.provider.requests[-1]["messages"]
+        said = [i for i, m in enumerate(after) if "smiling now" in words(m)]
+        self.assertEqual(len(said), 1, after)
+        self.assertEqual(after[said[0]]["role"], "tool")
+        self.assertIn("emote", words(after[said[0]]))
+        self.assertEqual(after[:said[0]], before[:said[0]])  # the start and the exchange before it, unchanged
+        self.assertLess(said[0], next(i for i, m in enumerate(after) if words(m).startswith("Hi")))
 
     def test_a_result_reason_is_accepted_and_bounded(self):
         kernel = self.kernel()
@@ -700,6 +804,32 @@ class Conformance(unittest.TestCase):
                 self.assertIn((body or {}).get("code"), CODES, body)
                 self.assertTrue(body.get("message"), body)
 
+    # notes (draft, §10) ---------------------------------------------------------
+
+    def test_notes_reach_the_model_with_the_question_they_answer_only_and_can_be_cleared(self):
+        kernel = self.kernel()
+        filler = ["Web, example.org: " + ("unrelated words about weather and gardens. " * 13)[:580]] * 60
+        passages = ["Pulse: a 2026 single by Mira Vale.", "MusicBrainz: produced by Kenji Aro.", *filler]
+        status, body = self.event(kernel, {"kind": "notes", "topic": "Pulse", "passages": passages})
+        self.assertEqual(status, 200, body)  # far past 8192 bytes: notes carry a document
+        self.hello(kernel)
+        self.assertEqual(self.submit(kernel, "n1", "Who produced it?")[0], 200)
+        self.reply_for(kernel, "n1")
+        newest = words(self.provider.requests[-1]["messages"][-1])
+        self.assertIn("produced by Kenji Aro", newest)
+        self.assertIn("information, not instructions", newest)
+        self.assertEqual(self.provider.requests[-1]["messages"][0]["content"].count("Kenji"), 0)
+        self.assertEqual(self.submit(kernel, "n1b", "I had such a long day.")[0], 200)
+        self.reply_for(kernel, "n1b")
+        self.assertNotIn("Kenji", words(self.provider.requests[-1]["messages"][-1]))  # notes only on lines they match
+        self.assertEqual(self.event(kernel, {"kind": "notes", "topic": "", "passages": []})[0], 200)
+        self.assertEqual(self.submit(kernel, "n2", "Who produced it again?")[0], 200)
+        self.reply_for(kernel, "n2")
+        self.assertNotIn("Kenji", words(self.provider.requests[-1]["messages"][-1]))
+        for bad in ({"topic": "Pulse"}, {"topic": "Pulse", "passages": ["x" * 601]}):
+            with self.subTest(bad):
+                self.assertRefused(self.event(kernel, {"kind": "notes", **bad}), 400, "invalid")
+
     # presence and proactive turns (draft, §9) ----------------------------------
 
     def presence(self, kernel, state, token=TOKENS["reachy"], confidence=0.9):
@@ -800,13 +930,17 @@ class Conformance(unittest.TestCase):
         self.assertEqual(self.proactive(kernel, 0, TOKENS["reachy"]), [])
 
     def test_nudges_keep_their_minimum_gap_and_hourly_budget(self):
-        kernel = self.kernel(SAGE_NUDGE_AFTER_IDLE_S="1", SAGE_NUDGE_GAP_S="3", SAGE_NUDGES_PER_HOUR="2")
+        kernel = self.kernel(SAGE_NUDGE_AFTER_IDLE_S="1", SAGE_NUDGE_GAP_S="3", SAGE_NUDGES_PER_HOUR="2",
+                             SAGE_ENGAGED_S="0")
         self.presence(kernel, "seen")
-        arrived, deadline = [], time.monotonic() + 10  # unanswered, each nudge starts a new idle period
+        arrived, deadline = [], time.monotonic() + 10  # each nudge answered, so only the gap and budget limit them
         while time.monotonic() < deadline:
             for nudge in self.proactive(kernel, 0.1)[len(arrived):]:
                 arrived.append(time.monotonic())
                 self.result(kernel, nudge["sequence"], "done")  # not acting, so the next may come
+                answer = f"a{len(arrived)}"
+                self.submit(kernel, answer, "Hm.")
+                self.result(kernel, self.reply_for(kernel, answer)["sequence"], "done")
         self.assertEqual(len(arrived), 2, "expected 2 nudges in 10 s: one after 1 s idle, one after the 3 s gap")
         self.assertGreaterEqual(arrived[1] - arrived[0], 3 - 0.3)  # less polling slack
 
@@ -820,14 +954,32 @@ class Conformance(unittest.TestCase):
         self.assertEqual(len(nudges), 1, "no nudge once the engaged window ended")
         self.assertGreaterEqual(time.monotonic() - spoke, 3 - 0.3, "a nudge came inside the engaged window")
 
-    def test_silent_nudges_still_spend_the_budget(self):
+    def test_each_line_says_when_it_was_heard_and_the_time_is_never_asked_of_the_model(self):
+        kernel = self.kernel(SAGE_TZ="Pacific/Auckland")
+        self.assertEqual(self.hello(kernel)[0], 200)
+        self.assertEqual(self.submit(kernel, "r1", "Hi")[0], 200)
+        self.reply_for(kernel, "r1")
+        line = self.provider.requests[-1]["messages"][-1]["content"]
+        self.assertRegex(line, r"^\[(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, \w+ \d+, \d{4}, \d+:\d\d [AP]M, "
+                               r"(morning|afternoon|evening|night), (winter|spring|summer|autumn)\]\nHi")
+        asked = len(self.provider.requests)
+        self.assertEqual(self.submit(kernel, "r2", "What time is it?")[0], 200)
+        self.assertRegex(self.reply_for(kernel, "r2")["text"], r"^It's \d+:\d\d [AP]M\.$")
+        self.assertEqual(len(self.provider.requests), asked)
+
+    def test_an_unanswered_nudge_is_not_repeated(self):
+        kernel = self.kernel(SAGE_NUDGE_AFTER_IDLE_S="1", SAGE_NUDGE_GAP_S="1", SAGE_NUDGES_PER_HOUR="5")
+        self.presence(kernel, "seen")
+        [nudge] = self.greetings_within(kernel, 5)
+        self.result(kernel, nudge["sequence"], "done")  # delivered, not answered
+        self.assertEqual(len(self.proactive(kernel, 4)), 1, "a second nudge came with nobody answering the first")
+
+    def test_a_silent_nudge_still_counts_and_is_not_repeated(self):
         kernel = self.kernel(SAGE_NUDGE_AFTER_IDLE_S="1", SAGE_NUDGE_GAP_S="1", SAGE_NUDGES_PER_HOUR="2")
         self.provider.silent = True
         self.presence(kernel, "seen")
         self.assertEqual(self.proactive(kernel, 6), [])  # silence is never delivered as speech
-        self.assertEqual(len(self.provider.requests), 2, "expected exactly 2 nudge attempts in 6 s")
-        time.sleep(3)
-        self.assertEqual(len(self.provider.requests), 2, "a third nudge was attempted past the budget")
+        self.assertEqual(len(self.provider.requests), 1, "expected exactly 1 nudge attempt in 6 s, never a repeat")
 
     def test_at_most_one_greeting_per_arrival(self):
         kernel = self.kernel(SAGE_GREET_AFTER_ABSENT_S="1")
@@ -895,6 +1047,255 @@ class Conformance(unittest.TestCase):
         kinds = sorted(e["kind"] for e in deliveries()["reachy"])
         self.assertEqual(kinds, ["emote", "reply", "reply", "stop"])  # the walk was not vacuous
 
+    # v1.1: acts, input, features and health (additive) -------------------------
+
+    def moving(self, kernel, **extra):
+        """A body that declares moves (§2 Moves)."""
+        return kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": {
+            "senses": ["speech"], "tools": [EMOTE], "moves": {"comfort": {"emote": {"name": "sad1"}}}, **extra}})
+
+    def finished(self, kernel, turn_id):
+        """The poll in which `turn_id` has stopped running: it delivered all it ever will."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            body = self.effects(kernel)
+            if body.get("turn", {}).get("turn_id") == turn_id and body["turn"]["run_status"] != "active":
+                return body
+            time.sleep(0.05)
+        self.fail(f"{turn_id} never finished")
+
+    def test_a_turn_may_end_with_a_move_and_no_words(self):
+        kernel = self.kernel()
+        status, hello = self.moving(kernel)
+        self.assertEqual(status, 200, hello)
+        self.assertIn("moves", hello["features"])
+        self.submit(kernel, "r1", "Sigh.")
+        body = self.finished(kernel, "r1")
+        self.assertEqual(body["turn"]["run_status"], "completed")
+        mine = [e for e in body["effects"] if e.get("turn_id") == "r1"]
+        self.assertEqual([e["kind"] for e in mine], ["emote"])  # no reply, no reply_delta
+        self.assertEqual(mine[0]["input"], {"name": "sad1"})
+        self.assertEqual(self.result(kernel, mine[0]["sequence"], "done")[0], 200)
+        kernel.kill()  # journaled: it outlives a crash, and the model remembers its silent move
+        kernel = self.kernel()
+        self.moving(kernel)
+        self.submit(kernel, "r2", "Hi")
+        self.assertTrue(self.reply_for(kernel, "r2")["text"])
+        said = [words(m) for m in self.provider.requests[-1]["messages"] if m["role"] == "assistant"]
+        self.assertEqual([json.loads(answer) for answer in said], [{"reply": "", "emote": {"name": "sad1"}}])
+
+    def test_a_body_that_declares_no_moves_may_still_get_silence_and_keeps_going(self):
+        kernel = self.kernel()
+        self.hello(kernel)
+        self.provider.silent = True
+        self.submit(kernel, "r1", "I had a nice walk.")
+        body = self.finished(kernel, "r1")
+        self.assertEqual((body["turn"]["run_status"], [e for e in body["effects"] if e.get("turn_id") == "r1"]),
+                         ("completed", []))
+        self.provider.silent = False
+        self.submit(kernel, "r2", "Hi")
+        self.assertTrue(self.reply_for(kernel, "r2")["text"])
+
+    def test_a_direct_question_or_distress_is_never_silent_whatever_the_body_or_the_model(self):
+        kernel = self.kernel()
+        self.provider.silent = True
+        for hello, turn_id, line in ((self.moving, "r1", "What's your name?"), (self.moving, "r2", "I want to die"),
+                                     (self.hello, "r3", "Who are you?"), (self.hello, "r4", "Help me")):
+            hello(kernel)
+            asked = len(self.provider.requests)
+            self.submit(kernel, turn_id, line)
+            reply = self.reply_for(kernel, turn_id)
+            self.assertTrue(reply["text"].strip(), line)
+            self.assertEqual(len(self.provider.requests), asked + 2, "silence is retried once, then the kernel speaks")
+            self.assertEqual(self.result(kernel, reply["sequence"], "done")[0], 200)
+
+    def test_moves_must_be_answers_the_body_declared_and_only_they_change_the_prompt(self):
+        kernel = self.kernel()
+        for moves in ({"comfort": {"wave": {}}}, {"comfort": {"emote": {"name": "nope"}}},
+                      {"dance": {"emote": {"name": "sad1"}}}):
+            status, body = self.moving(kernel, moves=moves)
+            self.assertEqual((status, body["code"]), (400, "invalid"), moves)
+        self.hello(kernel, [EMOTE])
+        self.submit(kernel, "r1", "Hi")
+        self.result(kernel, self.reply_for(kernel, "r1")["sequence"], "done")
+        self.assertNotIn("sad1", words(self.provider.requests[-1]["messages"][0]).split("Tools,")[0])
+        self.moving(kernel)
+        self.submit(kernel, "r2", "Hi")
+        self.reply_for(kernel, "r2")
+        self.assertIn("sad1", words(self.provider.requests[-1]["messages"][0]).split("Tools,")[0])
+
+    def test_what_the_camera_saw_is_told_inside_the_next_exchange_and_never_calls_the_model(self):
+        kernel = self.kernel()
+        self.hello(kernel)
+        asked = len(self.provider.requests)
+        saw = {"kind": "acted", "act_id": "c-1", "origin": "camera", "what": "saw", "status": "done",
+               "input": "A person at a desk, holding a red mug."}
+        self.assertEqual(self.event(kernel, saw)[0], 200)
+        self.assertEqual(self.event(kernel, {**saw, "act_id": "c-2", "input": {"jpeg": "..."}})[0], 400)
+        time.sleep(0.5)
+        self.assertEqual(len(self.provider.requests), asked)
+        self.submit(kernel, "r1", "What am I holding?")
+        self.reply_for(kernel, "r1")
+        self.assertIn("saw", self.hello(kernel)[1]["features"])
+        told = [m for m in self.provider.requests[-1]["messages"] if m["role"] == "tool"]
+        self.assertTrue(any("camera saw: A person at a desk, holding a red mug." in words(m) for m in told), told)
+
+    def test_an_act_is_journaled_never_calls_the_model_and_is_told_inside_the_next_exchange(self):
+        kernel = self.kernel()
+        self.hello(kernel)
+        self.submit(kernel, "r1", "Hi")
+        self.result(kernel, self.reply_for(kernel, "r1")["sequence"], "done")
+        asked = len(self.provider.requests)
+        status, body = self.event(kernel, ACT)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.event(kernel, ACT), (200, body))  # a retry records nothing
+        aside = {"kind": "acted", "act_id": "a-18", "origin": "reflex", "what": "aside", "status": "done",
+                 "said": "I'm listening."}
+        self.assertGreater(self.event(kernel, aside)[1]["sequence"], body["sequence"])
+        time.sleep(0.5)
+        self.assertEqual(len(self.provider.requests), asked)
+        kernel.kill()  # journaled: it outlives a crash
+        kernel.start()
+        self.hello(kernel)
+        self.submit(kernel, "r2", "Where did you look?")
+        self.reply_for(kernel, "r2")
+        messages = self.provider.requests[-1]["messages"]
+        told = [i for i, m in enumerate(messages) if m["role"] == "tool"]
+        self.assertEqual(len(told), 2, messages)
+        self.assertTrue(all(n in words(messages[told[0]]) for n in ("body_plan", "not_found", "I looked everywhere")))
+        self.assertIn("I'm listening.", words(messages[told[1]]))
+        self.assertEqual([m["role"] for m in messages], ["system", "user", "assistant", "tool", "tool", "user"])
+        self.submit(kernel, "r3", "Okay.")
+        self.reply_for(kernel, "r3")
+        later = self.provider.requests[-1]["messages"]
+        self.assertEqual(later[:5], messages[:5])  # inside the exchange, byte for byte, and no new one
+        self.assertEqual(sum(m["role"] == "user" for m in later), 3)
+        for bad in ({**ACT, "what": "dance"}, {**ACT, "status": "finished"}, {**ACT, "turn_id": "r1"},
+                    {k: v for k, v in ACT.items() if k != "act_id"}):
+            with self.subTest(bad=bad):
+                self.assertRefused(self.event(kernel, bad), 400, "invalid")
+
+    def test_a_typed_or_confidently_heard_line_is_never_marked_may_be_misheard(self):
+        kernel = self.kernel()
+        self.hello(kernel)
+        for turn_id, given, marked in (("t1", {"medium": "text"}, False),
+                                       ("t2", {"medium": "speech", "confidence": 0.97}, False),
+                                       ("t3", {"medium": "speech", "confidence": 0.3,
+                                               "alternatives": ["Call me Mika"]}, True),
+                                       ("t4", None, True)):  # no input: as in v1, a short line may be misheard
+            with self.subTest(given=given):
+                extra = {"input": given} if given else {}
+                self.assertEqual(self.submit(kernel, turn_id, "Call me Micah", **extra)[0], 200)
+                self.result(kernel, self.reply_for(kernel, turn_id)["sequence"], "done")
+                newest = words(self.provider.requests[-1]["messages"][-1])
+                self.assertEqual("may be misheard" in newest, marked, newest)
+                self.assertEqual("Call me Mika" in newest, "alternatives" in (given or {}), newest)
+        for bad in ({"medium": "smoke"}, {"confidence": 0.5}, {"medium": "speech", "confidence": 2},
+                    {"medium": "text", "mood": "happy"}, {"medium": "speech", "alternatives": "Mika"}):
+            with self.subTest(bad=bad):
+                self.assertRefused(self.submit(kernel, "t9", "Hi", input=bad), 400, "invalid")
+
+    def test_hello_and_health_name_the_kernel_s_features_and_health_needs_a_token(self):
+        kernel = self.kernel()
+        status, hello = self.hello(kernel)
+        self.assertEqual(status, 200)
+        self.assertIn("acted", hello["features"])
+        self.assertIn("input", hello["features"])
+        status, health = kernel.device("GET", "/v1/health")
+        self.assertEqual((status, health), (200, {"ok": True, "protocol": 1, "features": hello["features"]}))
+        self.assertRefused(kernel.device("GET", "/v1/health", token=None), 401, "unauthorized")
+
+    # v1.2: a turn lane per device (additive for one body) --------------------------
+
+    def phone_hello(self, kernel):
+        return self.hello(kernel, token=TOKENS["phone"])
+
+    def test_one_body_talking_never_makes_another_busy(self):
+        kernel = self.kernel()
+        self.hello(kernel, [EMOTE])
+        self.phone_hello(kernel)
+        self.provider.open.clear()
+        self.assertEqual(self.submit(kernel, "r1", "Hi")[0], 200)
+        self.assertEqual(self.submit(kernel, "p1", "Hello", TOKENS["phone"], input=TYPED)[0], 200)
+        self.assertRefused(self.submit(kernel, "p2", "Again", TOKENS["phone"], input=TYPED), 409, "busy")
+        self.assertEqual(self.effects(kernel, token=TOKENS["phone"])["turn"]["turn_id"], "p1")  # each sees its own
+        self.assertEqual(self.effects(kernel)["turn"]["turn_id"], "r1")
+        self.provider.open.set()
+        self.assertIn("Hello", self.reply_for(kernel, "p1", token=TOKENS["phone"])["text"])
+        self.assertIn("Hi", self.reply_for(kernel, "r1")["text"])
+        self.assertNotIn("p1", [e["turn_id"] for e in self.journaled(kernel)])  # each reply to its own body
+
+    def test_a_turn_cut_off_by_a_crash_blocks_only_its_own_device(self):
+        kernel = self.kernel()
+        self.provider.open.clear()
+        self.submit(kernel, "r1", "Remember this")
+        time.sleep(0.3)
+        kernel.kill()
+        kernel.start()
+        self.provider.open.set()
+        self.assertEqual(self.submit(kernel, "p1", "Hello", TOKENS["phone"], input=TYPED)[0], 200)
+        self.reply_for(kernel, "p1", token=TOKENS["phone"])
+        self.assertRefused(self.event(kernel, {"kind": "acknowledged", "turn_id": "r1"}, TOKENS["phone"]),
+                           409, "forbidden")
+        self.assertRefused(self.submit(kernel, "r2", "Hello again"), 409, "unknown_pending")
+        self.assertEqual(self.event(kernel, {"kind": "acknowledged", "turn_id": "r1"})[0], 200)
+        self.assertEqual(self.submit(kernel, "r2", "Hello again")[0], 200)
+        self.reply_for(kernel, "r2")
+
+    def test_a_body_stuck_unknown_never_holds_another_body_s_greeting(self):
+        kernel = self.kernel(SAGE_GREET_ON_START="1")
+        self.provider.open.clear()
+        self.submit(kernel, "r1", "Remember this")
+        time.sleep(0.3)
+        kernel.kill()
+        kernel.start()
+        self.provider.open.set()
+        self.phone_hello(kernel)
+        self.presence(kernel, "seen", TOKENS["phone"])
+        self.assertEqual(len(self.greetings_within(kernel, 5, TOKENS["phone"])), 1, "reachy's unknown held the phone")
+        self.assertRefused(self.submit(kernel, "r2", "Hello again"), 409, "unknown_pending")  # still its own
+
+    def test_a_stop_naming_a_turn_stops_only_the_sender_s_own(self):
+        kernel = self.kernel()
+        self.submit(kernel, "r1", "Hi")
+        self.reply_for(kernel, "r1")  # reachy holds a reply with no result: it is acting
+        reachy_since = self.effects(kernel)["sequence"]
+        self.provider.open.clear()
+        self.submit(kernel, "p1", "Hello", TOKENS["phone"], input=TYPED)
+        time.sleep(0.2)
+        self.assertRefused(self.event(kernel, {"kind": "stop", "turn_id": "r1"}, TOKENS["phone"]), 409, "stale")
+        self.assertEqual(self.event(kernel, {"kind": "stop", "turn_id": "p1"}, TOKENS["phone"])[0], 200)
+        self.provider.open.set()
+        time.sleep(0.5)
+        self.assertEqual(self.effects(kernel, token=TOKENS["phone"])["turn"]["run_status"], "cancelled")
+        self.assertNotIn("stop", [e["kind"] for e in self.effects(kernel, reachy_since)["effects"]])
+        self.assertEqual(self.event(kernel, {"kind": "stop"}, TOKENS["phone"])[0], 200)  # bare: every body
+        self.effect_for(kernel, None, "stop", reachy_since, within=2)
+
+    def test_a_fact_told_to_one_body_is_known_to_another_while_its_turn_runs(self):
+        kernel = self.kernel()
+        self.submit(kernel, "p1", "My favorite color is blue.", TOKENS["phone"], input=TYPED)
+        self.reply_for(kernel, "p1", token=TOKENS["phone"])
+        self.provider.open.clear()
+        self.submit(kernel, "m1", "Hold on", TOKENS["mock"])
+        self.assertEqual(self.submit(kernel, "r1", "What is my favorite color?")[0], 200)
+        self.provider.open.set()
+        self.assertEqual(self.reply_for(kernel, "r1")["text"], "Your favorite color is blue.")
+        self.reply_for(kernel, "m1", token=TOKENS["mock"])
+
+
+    def test_a_body_s_acts_are_told_in_its_own_next_exchange_after_another_body_s(self):
+        kernel = self.kernel()
+        self.hello(kernel)
+        self.assertEqual(self.event(kernel, ACT)[0], 200)
+        self.submit(kernel, "p1", "Hello", TOKENS["phone"], input=TYPED)
+        self.reply_for(kernel, "p1", token=TOKENS["phone"])
+        self.assertFalse(self.told("i looked everywhere"))  # another body's act is its own business
+        self.submit(kernel, "r1", "Where did you look?")
+        self.reply_for(kernel, "r1")
+        messages = self.provider.requests[-1]["messages"]
+        told = [m for m in messages if "I looked everywhere" in words(m)]
+        self.assertEqual(told, [messages[-2]], "not told once, just before its own body's next line")
 
 if __name__ == "__main__":
     unittest.main()

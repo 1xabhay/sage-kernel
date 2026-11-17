@@ -24,7 +24,7 @@ MAX_WAIT_S = 25.0
 MIN_CONFIDENCE = 0.5  # a seen edge below this is journaled but is no arrival (lead, 2026-10-20)
 NOTHING = {"senses": (), "tools": ()}
 # What this kernel serves beyond v1's core, so a device can degrade gracefully instead of probing (v1.1).
-FEATURES = ("acted", "body", "done_text", "health", "input", "moves", "notes", "presence", "saw")
+FEATURES = ("acted", "body", "done_text", "health", "input", "moves", "notes", "presence", "saw", "search")
 
 Decide = Callable[[CompiledPrompt, Callable[[str], None]], str]
 
@@ -188,7 +188,9 @@ class Kernel:
             if kind == "submitted" and more:
                 declared = self.manifests.get(source, NOTHING)
                 prompt = policy.compile_prompt(state, source, declared)
-                query = policy.needs_search(text, data.get("input"), state.facts) if self.search else ""
+                # A body may say its lines never go to the web (manifest.search false): a notebook's file stays.
+                web = self.search and declared.get("search", True)
+                query = policy.needs_search(text, data.get("input"), state.facts) if web else ""
                 threading.Thread(target=self._think, args=(source, turn_id, prompt, declared, query),
                                  daemon=True).start()
             return {"sequence": self.journal.head, **self.view(source)}
@@ -321,6 +323,12 @@ class Kernel:
         try:
             if exact := policy.clock_answer(line, self.local()):  # never guessed by the model
                 raise _Exact(json.dumps({"reply": exact}))
+            with self.lock:
+                quiet = policy.quiet_move(line, policy.lane(self.state, source).input,
+                                          policy.last_replies(self.state, source), self._names(declared),
+                                          policy.clips(declared["tools"]))
+            if quiet:  # no one said it to Sage: a move, and the model is not asked
+                raise _Exact(quiet)
             # A guard retries only while the device has heard nothing of the answer: a retry is new words, and
             # what already streamed must stay the reply's start. Past that, the answer stands (`decided` repairs
             # a claim), rather than a second call whose answer is then cut back to the streamed piece.

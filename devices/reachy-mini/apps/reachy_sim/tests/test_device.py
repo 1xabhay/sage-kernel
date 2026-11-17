@@ -97,7 +97,7 @@ def test_an_emote_effect_moves_the_simulated_head_and_is_reported_done(kernel, n
         watcher.join()
 
     by_kind = {r["kind"]: r for r in results}
-    assert by_kind["emote"] == by_kind["emote"] | {"name": "cheerful1", "status": "done"}
+    assert (by_kind["emote"]["name"], by_kind["emote"]["status"]) == ("cheerful1", "done")
     assert 2000 < by_kind["emote"]["duration_ms"] < 6000  # cheerful1 is 2.8 s
     # The kernel journals the move time under the effect's sequence.
     assert by_kind["emote"]["journaled_ms"] == by_kind["emote"]["duration_ms"]
@@ -152,7 +152,8 @@ def test_a_busy_kernel_is_retried_with_the_same_turn_until_it_is_free(kernel, si
     assert {r["kind"] for r in results} == {"reply"}
 
 
-def test_a_kernel_busy_for_more_than_about_5_s_is_given_up(kernel, sim):
+def test_a_kernel_busy_past_the_retry_window_is_given_up(kernel, sim):
+    """The window is 5 s by default (device.turn); half a second here proves the same rule."""
     kernel.provider.open.clear()
     kernel.process.device(
         "POST",
@@ -162,8 +163,8 @@ def test_a_kernel_busy_for_more_than_about_5_s_is_given_up(kernel, sim):
     )
     start = time.monotonic()
     with pytest.raises(device.KernelBusyError):
-        device.turn(kernel.url, kernel.token, API, "Hello", "sim-busy")
-    assert 4.5 < time.monotonic() - start < 7
+        device.turn(kernel.url, kernel.token, API, "Hello", "sim-busy", retry_s=0.5)
+    assert 0.4 < time.monotonic() - start < 2.5
     kernel.provider.open.set()
 
 
@@ -188,7 +189,7 @@ def test_a_newer_emote_supersedes_the_playing_one(sim, neutral):
     body.wait()
 
     (old, old_event), (new, new_event) = sorted(reported, key=lambda r: r[1]["sequence"])
-    assert old_event | {"status": "interrupted", "reason": "superseded"} == old_event
+    assert (old_event["status"], old_event["reason"]) == ("interrupted", "superseded")
     assert old["duration_ms"] < 2000 and old_event["duration_ms"] == old["duration_ms"]
     assert new_event["status"] == "done" and new["name"] == "yes1"
     assert new["duration_ms"] > 3000  # yes1 is 3.4 s: played in full

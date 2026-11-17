@@ -15,8 +15,10 @@ STANDARD = {"test", "lint", "imports", "vuln", "secrets", "up", "down", "hygiene
 # `hygiene` is these, and CI runs them, except `secrets`: the root CI job scans the whole repo.
 HYGIENE = ["lint", "imports", "vuln", "secrets", "test"]
 IN_CI = [t for t in HYGIENE if t != "secrets"]
-# The voice app and its services are the VOICE lane's; strict, so this fails once they comply.
 VOICE = "devices/reachy-mini/apps/reachy_sage_voice"
+# The services' lint and imports are the voice app's (their Makefile hands them up, and the app's
+# cover the folder), and their `test` loads the speech models: CI runs the tests that need none.
+IN_CI_FOR = {f"{VOICE}/services": ["vuln", "test-research"]}
 PROJECTS = sorted(
     str(Path(f).parent)
     for f in subprocess.run(
@@ -28,12 +30,6 @@ PROJECTS = sorted(
     ).stdout.split()
     if not f.endswith("/robot/Makefile")  # installs on the robot: not a project
 )
-IN_CI_PROJECTS = [
-    pytest.param(p, marks=pytest.mark.xfail(strict=True, reason="VOICE lane adds the CI job"))
-    if p.startswith(VOICE)
-    else p
-    for p in PROJECTS
-]
 
 
 def targets(makefile: Path) -> dict[str, list[str]]:
@@ -63,7 +59,8 @@ def ci_makes() -> dict[str, set[str]]:
 
 
 def test_found_the_projects():
-    assert "devices/reachy-mini" in PROJECTS
+    expected = {"devices/reachy-mini", "devices/common/sage_device", VOICE, f"{VOICE}/services"}
+    assert expected <= set(PROJECTS)
 
 
 @pytest.mark.parametrize("project", PROJECTS)
@@ -73,10 +70,21 @@ def test_makefile_has_the_standard_targets(project):
     assert rules["hygiene"] == HYGIENE
 
 
-@pytest.mark.parametrize("project", IN_CI_PROJECTS)
+@pytest.mark.parametrize("project", PROJECTS)
 def test_ci_runs_the_hygiene_targets(project):
-    ran = ci_makes().get(project, set())
-    assert set(IN_CI) <= ran, f"reachy.yml never runs make {sorted(set(IN_CI) - ran)} in {project}"
+    ran, wanted = ci_makes().get(project, set()), set(IN_CI_FOR.get(project, IN_CI))
+    assert wanted <= ran, f"reachy.yml never runs make {sorted(wanted - ran)} in {project}"
+
+
+def test_the_services_hand_lint_and_imports_to_the_voice_app_which_ci_runs():
+    services = (ROOT / VOICE / "services" / "Makefile").read_text()
+    assert re.search(r"^lint imports secrets:\n\t\$\(MAKE\) -C \.\. \$@$", services, re.M)
+    assert {"lint", "imports"} <= ci_makes()[VOICE]
+
+
+def test_ci_runs_the_tests_installed_on_the_robot():
+    """robot/ is no project (its Makefile installs on the robot); its stdlib tests run anywhere."""
+    assert re.search(r"^\s+- run: make -C robot test$", WORKFLOW.read_text(), re.M)
 
 
 def test_targets_parser(tmp_path):

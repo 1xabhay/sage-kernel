@@ -8,6 +8,8 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from sage_device import latency, pet
 
 PATTERNS = pet.compile_patterns({
@@ -32,6 +34,13 @@ PATTERNS = pet.compile_patterns({
     "overheard": r"body\.sage:overheard: quiet",
     "watching": r"body\.sage:media: watching ",
     "watched": r"body\.sage:media: ended",
+})
+#: A body that also moves and tilts: its motion writer's lines and the lines it did not catch.
+MOVING = PATTERNS | pet.compile_patterns({
+    "sudden_move": r"body\.motion:sudden move",
+    "motion_gates": (r"body\.motion:gates: (?P<ticks>\d+) ticks, (?P<hz>[\d.]+) Hz, "
+                     r"clamped (?P<clamped>\d+), still (?P<still>[\d.]+) s"),
+    "unsure": r"body\.sage:unsure: ",
 })
 SESSION = "body:session: build abc1234 config 0123456789ab"
 
@@ -58,9 +67,9 @@ def spoke(s, turn):
     return own(s, turn, "body.sage:" + latency.AUDIO)
 
 
-def rows(lines, name=None):
+def rows(lines, name=None, patterns=PATTERNS):
     return {key: (row.value, row.target, row.result)
-            for key, row in pet.report(lines, PATTERNS, name).items()}
+            for key, row in pet.report(lines, patterns, name).items()}
 
 
 SECRET = "my bank code is nine"
@@ -100,7 +109,6 @@ def test_the_owners_table_for_a_session():
     assert table["replied_misheard"] == ("0% (0/2)", "<=25%", "pass")
     assert table["question"] == ("50% (1/2)", "<=10%", "fail")
     assert table["name"] == ("50% (1/2)", "<=5%", "fail")
-    assert rows(SESSION_LOG, name="Nobody|Ada")["name"][0] == "50% (1/2)"  # written|spoken
     assert table["median_words"] == ("6", "<=4", "fail")  # of 5 and 7
     assert table["longest_words"] == ("7", "<=12", "pass")
     assert table["longest_s"] == ("3 s", "<=4 s", "pass")
@@ -111,6 +119,11 @@ def test_the_owners_table_for_a_session():
     assert table["kernel_unreachable"] == ("1", "-", "-")
     assert table["voice_silent"] == ("1", "-", "-")
     assert table["arrived"][0] == table["left"][0] == "1"
+
+
+def test_the_name_is_matched_written_or_spoken():
+    assert rows(SESSION_LOG, name="Nobody|Ada")["name"][0] == "50% (1/2)"
+    assert rows(SESSION_LOG, name="Nobody")["name"][0] == "0% (0/2)"
 
 
 def test_a_turn_replaced_before_it_answered_is_no_turn_in_the_shares():
@@ -139,6 +152,13 @@ def test_a_missing_line_is_not_logged_never_zero():
         assert table[key] == ("not logged", table[key][1], "-"), key
     assert rows(["nothing here at all"])["replied"][0] == "not logged"
     assert rows([])["barge_usable_first"][0] == "not logged"
+
+
+def test_a_line_whose_time_cannot_be_read_is_skipped():
+    lost = own(40, "-", "body.link:lost it")
+    assert rows([own(0, "-", SESSION), lost])["link_drops"][0] == "1"
+    assert rows([own(0, "-", SESSION), lost.replace(" 10:00:40,", " 10:61:40,")])[
+        "link_drops"][0] == "0"
 
 
 def test_the_session_line_promises_the_bodys_lines_so_their_absence_is_a_real_zero():
@@ -197,15 +217,21 @@ def test_the_printed_table_has_counts_and_no_ones_speech(capsys, tmp_path):
         assert spoken not in out
 
 
+NAMES = ("COMMON", "TO_SAGE", "REQUESTS", "HANGING")
+
+
 def test_misheard_is_the_kernels():
     """The meter holds a copy (a device imports no kernel code): kernel changes must reach it."""
     policy = Path(__file__).resolve().parents[4] / "sage" / "policy.py"
     picked = [node for node in ast.parse(policy.read_text()).body
-              if getattr(node, "name", None) == "misheard"
-              or (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "COMMON")]
+              if getattr(node, "name", None) in ("misheard", "said_to_sage")
+              or (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") in NAMES)]
     kernel = {"re": re, "SURE": 1.0}
     exec(compile(ast.Module(picked, []), str(policy), "exec"), kernel)
-    for line in ("", "Hello.", "hi there", "What is it?", "the fridge banana", "Short one.",
+    copies = [pet._COMMON, pet._TO_SAGE, pet._REQUESTS, pet._HANGING]
+    assert [kernel[name] for name in NAMES] == copies
+    for line in ("I'm sad.", "I'm just gonna.", "Sing a song.", "Only the kettle.", "", "Hello.",
+                 "hi there", "What is it?", "the fridge banana", "Short one.",
                  "This one is a long and whole sentence.", "la la la la and then we sang it all.",
                  "Is this a question without", "A much longer line that ends fine, doesn't it?"):
         assert pet.misheard(line) == kernel["misheard"](line), line
@@ -222,10 +248,36 @@ def test_speech_begun_over_a_voice_is_scored_once_per_start_of_audio():
     assert table["talk_over"][2] == "fail"
 
 
-def test_overheard_lines_are_counted_and_absent_is_not_zero():
-    assert rows([own(0, "-", "body.sage:overheard: quiet"),
-                 own(1, "-", "body.sage:overheard: quiet")])["overheard"][0] == "2"
-    assert rows(["nothing here at all"])["overheard"][0] == "not logged"
+@pytest.mark.parametrize("kind", ["overheard", "unsure"])
+def test_lines_it_kept_out_of_or_did_not_catch_are_counted_and_absent_is_not_zero(kind):
+    kept = own(1, "-", f"body.sage:{kind}: quiet")
+    assert rows([own(0, "-", SESSION), kept, kept], patterns=MOVING)[kind] == ("2", "-", "-")
+    assert rows(["nothing here at all"], patterns=MOVING)[kind][0] == "not logged"
+
+
+def test_sudden_moves_are_counted_and_a_session_with_none_says_zero():
+    sudden = own(1, "-", "body.motion:sudden move: yaw too fast")
+    assert rows([own(0, "-", SESSION)], patterns=MOVING)["sudden_moves"][0] == "0"
+    assert rows([own(0, "-", SESSION), sudden, sudden], patterns=MOVING)["sudden_moves"][0] == "2"
+
+
+def test_the_motion_rows_read_the_worst_full_minute_and_score_it():
+    """At least 40 Hz, no clamped target, still at most 5 s: from the writer's line each minute."""
+    def gates(minute, ticks, hz, clamped, still):
+        return own(60 * minute, "-", f"body.motion:gates: {ticks} ticks, {hz} Hz, "
+                                     f"clamped {clamped}, still {still} s")
+    full = pet.MIN_GATE_TICKS
+    table = rows([own(0, "-", SESSION), gates(1, 2990, 49.8, 1, 1.2), gates(2, full, 41.5, 2, 6.5),
+                  gates(3, full - 1, 12.0, 0, 0.4)],  # a minute it barely ran: nothing of its rate
+                 patterns=MOVING)
+    assert table["motion_hz"] == ("41.5 Hz", ">=40 Hz", "pass")
+    assert table["clamped"] == ("3", "<=0", "fail")  # every minute's, added up
+    assert table["still_max"] == ("6.5 s", "<=5 s", "fail")
+    slow = rows([own(0, "-", SESSION), gates(1, 2990, 39.9, 0, 5.0)], patterns=MOVING)
+    assert [slow[key][2] for key in ("motion_hz", "clamped", "still_max")] == [
+        "fail", "pass", "pass"]
+    none = rows([own(0, "-", SESSION)], patterns=MOVING)  # no minute line yet: unmeasured
+    assert {none[key][0] for key in ("motion_hz", "clamped", "still_max")} == {"not logged"}
 
 
 def test_speech_over_a_voice_while_watching_is_its_own_row_the_tv_or_the_person():

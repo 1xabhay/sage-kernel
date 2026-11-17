@@ -11,6 +11,13 @@ and every protocol change is listed under **Protocol**.
 
 ### Added
 
+- **Protocol** (v1.4, additive): a browser body. `SAGE_ORIGINS` lists the web origins whose
+  pages may call the kernel (CORS); unset, no page is answered, and any other origin gets 403.
+  `"search": false` in a manifest keeps that body's lines from the web, and the `search` feature
+  says the kernel heeds it.
+- The text body (`python -m sage_device.text`) and the device conformance suite
+  (`make conformance-device`): a body run against this kernel, with a tool check.
+
 - **Protocol** (v1.1, additive): `moves` in a manifest and the `moves` feature. A
   turn may end with a move and no words on any body; a direct question or a line of
   distress is never silent (retried once, then a short line of the kernel's own).
@@ -36,6 +43,14 @@ and every protocol change is listed under **Protocol**.
   Parakeet STT on 58 synthetic clips and 20 live ones; verdict no (worse WER
   outside clean speech, and its joint "heard + reply" JSON invents what it
   heard). Results in `bench/LEDGER.md`.
+
+### Fixed
+
+- `make backup` names the `colima` Docker context, so a default context that has fallen back to
+  another daemon is never the one asked for the journal.
+- The push guard also scans commit messages for a private address, a MAC address or a home folder.
+- The voice's pet scorecard counts what Sage says again (its pattern named a Pipecat function that
+  1.15 renamed).
 
 ### Protocol
 

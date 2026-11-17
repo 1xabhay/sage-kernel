@@ -1,4 +1,4 @@
-.PHONY: test lint imports vuln secrets up down hygiene deploy up-tag
+.PHONY: test test-research lint imports vuln secrets up down hygiene deploy up-tag
 
 # Native runs keep the Hugging Face cache inside this folder.
 export HF_HOME := $(CURDIR)/.local/hf
@@ -14,6 +14,10 @@ export SAGE_SERVICES_TAG
 test:
 	uv run python -m unittest discover -s stt -t stt
 	uv run python -m unittest discover -s tts -t tts
+	uv run python -m unittest discover -s research -t research
+
+# The tests that load no model (the web and Shazam are fakes): what CI runs of this folder.
+test-research:
 	uv run python -m unittest discover -s research -t research
 
 # Each image installs only its own group, with hashes.

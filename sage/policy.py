@@ -439,10 +439,23 @@ COMMON = {"hi", "hello", "hey", "hi there", "hello there", "okay", "ok", "yes", 
           "thank you", "bye", "good night", "good morning"}
 
 
+TO_SAGE = {"sage", "i", "i'm", "i've", "i'll", "i'd", "me", "my", "you", "your", "you're", "we", "us", "our", "let's"}
+REQUESTS = {"sing", "tell", "dance", "count", "show", "play", "wake", "search", "find"}  # not "come on", "look", "wait"
+HANGING = {"gonna", "to", "the", "a", "an", "and", "but", "or", "so", "just", "of", "because", "if", "that", "was",
+           "is", "i", "i'm", "my", "your", "you're"}
+
+
+def said_to_sage(said: list[str]) -> bool:
+    """Whether a short whole line reads as said to someone: it names Sage, says I or you, or starts as a request,
+    and does not end hanging ("I'm just gonna.").
+    ponytail: English word lists; the addressee signal (voice direction, confidence) replaces this guess."""
+    return said[-1] not in HANGING and (bool(TO_SAGE & set(said)) or said[0] in REQUESTS)
+
+
 def misheard(line: str, input: dict | None = None) -> bool:
     """Whether a line may be misheard. Never when typed, or heard with confidence SURE or more. Otherwise:
     unfinished (no end mark), unsure (confidence below SURE; with no confidence, 4 words or fewer, not a
-    question or a common reply), or repeating itself as song lyrics do."""
+    question, a common reply or a line said to Sage), or repeating itself as song lyrics do."""
     input = input or {}
     if input.get("medium") == "text" or input.get("confidence", 0) >= SURE:
         return False
@@ -452,8 +465,45 @@ def misheard(line: str, input: dict | None = None) -> bool:
     repeating = any(w[i:i + n] == w[i + n:i + 2 * n] for w in (re.findall(r"[\w']+", part)
                                                             for part in re.split(r"[.!?]", line.lower()))
                     for n in (1, 2, 3) for i in range(len(w) - 2 * n + 1))  # within a sentence
-    unsure = input["confidence"] < SURE if "confidence" in input else len(said) <= 4 and end != "?"
+    unsure = input["confidence"] < SURE if "confidence" in input else (
+        len(said) <= 4 and end != "?" and not said_to_sage(said))
     return end not in ".!?" or unsure or repeating
+
+
+BACKCHANNEL = {"yeah", "yes", "yep", "no", "nope", "mm", "hmm", "uh", "huh", "okay", "ok", "oh", "right", "sure"}
+
+
+def clips(tools: list[dict]) -> tuple[str, ...]:
+    """The emote names a body declared; () when it declared none or left them open."""
+    return tuple(next((t.get("inputSchema", {}).get("properties", {}).get("name", {}).get("enum", ())
+                       for t in tools if t["name"] == "emote"), ()))
+
+
+def quiet_move(line: str, input: dict | None, last_replies: tuple[str, ...], tools: tuple[str, ...],
+               clips: tuple[str, ...] = ()) -> str:
+    """The kernel's own answer to a heard line no one said to Sage, as model output: a move and no words; "" to
+    ask the model. A fragment or unsure line (`misheard`), or a bare "yeah"/"no" when Sage did not just ask.
+    Replay 11-09: the 4B model put words to these despite the persona, and then "remembered" them.
+    ponytail: English backchannels; an addressee classifier on labelled turns if the replay shows misses."""
+    input = input or {}
+    if line.startswith("[") or input.get("medium") != "speech" or DISTRESS.search(_plain(line)):
+        return ""
+    if line.rstrip()[-1:] in ".!?" and needs_words(line, input):  # a whole question; "How" alone is a fragment
+        return ""
+    words = set(_normal(line).split())
+    asked = bool(last_replies) and last_replies[-1].rstrip().endswith("?")
+    if (words <= BACKCHANNEL and asked) if words else True:  # "Yeah." to Sage's own question is an answer
+        return ""
+    guessed = "confidence" not in input and misheard(line, input)  # a scored line, alternatives too, is the model's
+    if not (guessed or words <= BACKCHANNEL):
+        return ""
+    clip = "attentive1" if not clips or "attentive1" in clips else clips[0]  # the body's own, when it listed them
+    return json.dumps({"reply": "", **({"emote": {"name": clip}} if "emote" in tools else {})})
+
+
+def last_replies(state: Companion, device: str) -> tuple[str, ...]:
+    """The replies heard on `device`, as said."""
+    return tuple(x.reply for x in state.exchanges if x.device in (device, "") and x.reply.strip())[-RECENT:]
 
 
 def needs_words(line: str, input: dict | None = None) -> str:
@@ -466,6 +516,8 @@ def needs_words(line: str, input: dict | None = None) -> str:
         return ""
     if DISTRESS.search(plain):
         return DISTRESS_LINE
+    if (input or {}).get("medium") == "speech" and plain[-1:] not in ".!?":  # "How do you": cut off, not asked
+        return ""
     asked = "?" in plain or any(QUESTION.match(sentence.strip()) for sentence in re.split(r"[.!]", plain))
     return (WATCHING_LINE if (input or {}).get("media") else QUESTION_LINE) if asked else ""
 
@@ -480,6 +532,9 @@ FRESH = re.compile(r"\b(?:weather|forecast|news|headlines?|latest|newest|recent(
 LOOK_UP = re.compile(r"(?:^|[.!?]\s+)(?:(?:can|could|would|will) you |please )?"
                      r"(?:look (?:it |that )?up|search (?:for|the web)|google)\b", re.IGNORECASE)
 WHO_IS = re.compile(r"\b(?i:who|what) (?i:is|was|are|were)\s+(?!I\b)[A-Z]")  # a name: "Who is Taylor Swift?"
+# About Sage's own words or thoughts ("what were you talking about when you said..."): its history answers.
+ABOUT_SAGE = re.compile(r"\bwere you\b|\byou (?:just )?(?:said|meant|were (?:saying|talking|thinking))\b"
+                        r"|\bdid you (?:say|mean)\b", re.IGNORECASE)
 
 
 def needs_search(line: str, input: dict | None, facts: tuple[str, ...]) -> str:
@@ -487,6 +542,8 @@ def needs_search(line: str, input: dict | None, facts: tuple[str, ...]) -> str:
     misheard: noise does not leave the Mac. Names the person told Sage (capitalized in a fact) are dropped:
     the line alone leaves, never memory or history."""
     if line.startswith("[") or misheard(line, input) or not (needs_words(line, input) or LOOK_UP.search(line)):
+        return ""
+    if ABOUT_SAGE.search(line) and not LOOK_UP.search(line):
         return ""
     about = ((input or {}).get("media") or {}).get("about", "")
     if not (FRESH.search(line) or LOOK_UP.search(line) or WHO_IS.search(line) or about):

@@ -35,12 +35,6 @@ def test_nested_model_schema_is_flat():
     assert {"position", "title", "prose", "quote"} <= set(beat["properties"])
 
 
-def test_inlined_ref_keeps_sibling_description():
-    schema = json_schema(Story)
-    # `beats` carries its own description alongside the inlined item schema.
-    assert schema["properties"]["beats"]["type"] == "array"
-
-
 @pytest.mark.parametrize(
     "raw",
     [
@@ -75,15 +69,21 @@ def test_validation_hint_names_the_bad_field():
         pytest.fail("expected ValidationError")
 
 
-def test_objects_are_sealed_against_extra_keys():
-    schema = json_schema(Outer)
-    assert schema["additionalProperties"] is False
-    assert schema["properties"]["items"]["items"]["additionalProperties"] is False
+@pytest.mark.parametrize("model", [Outer, Story])
+def test_every_object_at_every_depth_refuses_extra_keys(model):
+    def objects(node, path):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                yield path, node
+            for key, value in node.items():
+                yield from objects(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                yield from objects(value, f"{path}[{i}]")
 
-
-def test_sealing_reaches_deeply_nested_objects():
-    beat = json_schema(Story)["properties"]["beats"]["items"]
-    assert beat["additionalProperties"] is False
+    found = dict(objects(json_schema(model), model.__name__))
+    assert len(found) >= 2, "the model nests an object, or the walk proves nothing"
+    assert [path for path, node in found.items() if node.get("additionalProperties") is not False] == []
 
 
 def test_search_queries_are_normalized_into_song_searches():

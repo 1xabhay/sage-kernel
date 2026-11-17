@@ -6,7 +6,7 @@
   },
   {
    "role": "user",
-   "content": "heard (may be misheard): \"My name's Mika.\"\n\n[Stay Sage: a move, or a few words.]\n[JSON fields you may add: emote, voice_style, vocal, listen_to_song]"
+   "content": "My name's Mika.\n\n[Stay Sage: a move, or a few words.]\n[JSON fields you may add: emote, voice_style, vocal, listen_to_song]"
   },
   {
    "role": "assistant",
@@ -14,7 +14,7 @@
   },
   {
    "role": "user",
-   "content": "heard (may be misheard): \"Show me happy.\"\n\n[Stay Sage: a move, or a few words.]\n[JSON fields you may add: emote, voice_style, vocal, listen_to_song]"
+   "content": "Show me happy.\n\n[Stay Sage: a move, or a few words.]\n[JSON fields you may add: emote, voice_style, vocal, listen_to_song]"
   },
   {
    "role": "assistant",

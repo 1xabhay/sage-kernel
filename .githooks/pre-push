@@ -1,7 +1,8 @@
 #!/bin/sh
 # The push guard (`make hooks` enables it). Local-only branches (history/*, reachy/*, backup/*,
 # private-history) never leave this machine, and no pushed commit may add a private address, a MAC
-# address or a home folder (the same scanner as the tree check: .githooks/hygiene.py).
+# address or a home folder, in what it changes or in its message (the same scanner as the tree
+# check: .githooks/hygiene.py).
 # ponytail: `git push --no-verify` skips it; CI's tree check and main's protection are the backstop.
 hooks=$(dirname "$0")
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -20,8 +21,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         range="$local_sha --not --remotes"
     fi
     # shellcheck disable=SC2086
-    if ! git log -p --no-color --format= $range | grep '^+' | grep -v '^+++ ' | python3 "$hooks/hygiene.py" --stdin; then
-        echo "pre-push: $local_ref adds a private address, MAC or home folder (lines above); refused." >&2
+    if ! { git log --no-color --format=%B $range; git log -p --no-color --format= $range | grep '^+' | grep -v '^+++ '; } \
+        | python3 "$hooks/hygiene.py" --stdin; then
+        echo "pre-push: $local_ref adds a private address, MAC or home folder, or names one in a commit message (lines above); refused." >&2
         exit 1
     fi
 done

@@ -1,4 +1,4 @@
-"""The STT server's contract, as Pipecat's OpenAISTTService uses it. Loads the real model.
+"""The STT server's contract, as Pipecat's OpenAISTTService uses it. Loads the real model, once.
 
     cd services && uv run python -m unittest discover -s stt -t stt
 """
@@ -18,15 +18,38 @@ from fastapi.testclient import TestClient
 FIXTURE = pathlib.Path(__file__).parent / "fixtures/good-morning-little-robot.wav"
 
 
+client = None
+
+
+def setUpModule():
+    """Start the app with no voiceprint: its lifespan loads the model once."""
+    # No voiceprint, whatever SAGE_VOICEPRINT or a mounted /profiles holds: the same run natively,
+    # in `make test-docker` and in a deploy. OwnerVoice enrolls its own.
+    global client
+    patch = mock.patch.object(app, "VOICEPRINT", pathlib.Path("/nonexistent/owner.npy"))
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
+    client = TestClient(app.app).__enter__()  # the lifespan: one model load for every test here
+    unittest.addModuleCleanup(client.__exit__, None, None, None)
+
+
 def wav(audio, rate):
     buf = io.BytesIO()
     sf.write(buf, audio, rate, format="WAV")
     return buf.getvalue()
 
 
+def noise(seconds=2.0):
+    return np.random.default_rng(0).normal(0, 0.05, int(16000 * seconds)).astype("float32")
+
+
 class NoVoiceprint(unittest.TestCase):
     def test_the_speaker_model_stays_out_of_memory_until_a_voiceprint_needs_it(self):
-        with mock.patch.object(app, "load"), mock.patch.object(app, "load_speaker") as speaker, TestClient(app.app):
+        # A start of its own; `loaded` puts the shared model back after it.
+        loaded = mock.patch.multiple(app, _model=app._model, _speaker=app._speaker,
+                                     _voiceprint=app._voiceprint)
+        with loaded, mock.patch.object(app, "load"), \
+                mock.patch.object(app, "load_speaker") as speaker, TestClient(app.app):
             speaker.assert_not_called()
 
 
@@ -47,7 +70,7 @@ class Confidence(unittest.TestCase):
         result = mock.Mock(text=" Hi there", tokens=[" Hi", " there"], logprobs=[-0.1, -0.2])
         fake = mock.Mock()
         fake.with_timestamps.return_value.recognize.return_value = result
-        with mock.patch.object(app, "load", return_value=fake), TestClient(app.app) as client:
+        with mock.patch.object(app, "_model", fake):
             r = client.post("/v1/audio/transcriptions",
                             files={"file": ("a.wav", wav(noise(1.0), 16000), "audio/wav")}).json()
         self.assertEqual(r["text"], " Hi there")
@@ -57,29 +80,21 @@ class Confidence(unittest.TestCase):
 
 
 class TranscriptionContract(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.client = TestClient(app.app).__enter__()  # runs the lifespan: the model loads once
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.client.__exit__(None, None, None)
-
     def post(self, data: bytes, **fields):
-        return self.client.post("/v1/audio/transcriptions", files={"file": ("a.wav", data, "audio/wav")},
+        return client.post("/v1/audio/transcriptions", files={"file": ("a.wav", data, "audio/wav")},
                                 data={"model": "parakeet-tdt-0.6b-v2", **fields})
 
     def test_health_is_ready_once_the_model_is_loaded(self):
-        self.assertEqual(self.client.get("/health").json(), {"ready": True, "enrolled": False})
+        self.assertEqual(client.get("/health").json(), {"ready": True, "enrolled": False})
 
-    def test_speech_comes_back_as_its_words(self):
-        r = self.post(FIXTURE.read_bytes())
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(re.findall(r"[a-z]+", r.json()["text"].lower()), ["good", "morning", "little", "robot"])
-
-    def test_openai_fields_pipecat_may_send_are_accepted(self):
-        r = self.post(FIXTURE.read_bytes(), language="en", prompt="", temperature="0", response_format="json")
-        self.assertEqual(r.status_code, 200)
+    def test_speech_comes_back_as_its_words_whichever_openai_fields_pipecat_sends(self):
+        every = {"language": "en", "prompt": "", "temperature": "0", "response_format": "json"}
+        for fields in ({}, every):
+            with self.subTest(fields):
+                r = self.post(FIXTURE.read_bytes(), **fields)
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(re.findall(r"[a-z]+", r.json()["text"].lower()),
+                                 ["good", "morning", "little", "robot"])
 
     def test_silence_is_empty_text_not_an_error(self):
         r = self.post(wav(np.zeros(16000, dtype="float32"), 16000))
@@ -90,15 +105,12 @@ class TranscriptionContract(unittest.TestCase):
         a24 = np.interp(np.arange(0, len(a), rate / 24000), np.arange(len(a)), a).astype("float32")
         self.assertIn("morning", self.post(wav(a24, 24000)).json()["text"].lower())
 
-    def test_not_audio_is_a_400(self):
-        self.assertEqual(self.post(b"not a wav").status_code, 400)
-
-    def test_a_format_it_cannot_answer_is_a_400(self):
-        self.assertEqual(self.post(FIXTURE.read_bytes(), response_format="srt").status_code, 400)
-
-
-def noise(seconds=2.0):
-    return np.random.default_rng(0).normal(0, 0.05, int(16000 * seconds)).astype("float32")
+    def test_what_it_cannot_read_or_answer_is_a_400(self):
+        speech = FIXTURE.read_bytes()
+        for why, data, fields in (("not audio", b"not a wav", {}),
+                                  ("a format it cannot answer", speech, {"response_format": "srt"})):
+            with self.subTest(why):
+                self.assertEqual(self.post(data, **fields).status_code, 400)
 
 
 class OwnerVoice(unittest.TestCase):
@@ -106,7 +118,6 @@ class OwnerVoice(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.client = TestClient(app.app).__enter__()
         cls.recordings = tempfile.TemporaryDirectory()
         sf.write(pathlib.Path(cls.recordings.name) / "turn-1.wav", sf.read(FIXTURE, dtype="float32")[0], 16000)
         sf.write(pathlib.Path(cls.recordings.name) / "too-short.wav", np.zeros(4000, dtype="float32"), 16000)
@@ -117,29 +128,28 @@ class OwnerVoice(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         app._voiceprint = None
-        cls.client.__exit__(None, None, None)
         cls.recordings.cleanup()
 
     def verify(self, data: bytes):
-        return self.client.post("/v1/speaker/verify", files={"file": ("a.wav", data, "audio/wav")}).json()
+        return client.post("/v1/speaker/verify", files={"file": ("a.wav", data, "audio/wav")}).json()
 
     def test_enrolling_averages_the_recordings_long_enough_to_judge(self):
         self.assertEqual([name for name, _ in self.report], ["turn-1.wav"])
         self.assertEqual(np.load(self.voiceprint).shape, (256,))
 
     def test_health_says_a_voiceprint_is_enrolled(self):
-        self.assertEqual(self.client.get("/health").json(), {"ready": True, "enrolled": True})
+        self.assertEqual(client.get("/health").json(), {"ready": True, "enrolled": True})
 
     def test_the_owner_is_verified_and_transcribed(self):
         answer = self.verify(FIXTURE.read_bytes())
         self.assertTrue(answer["owner"] and answer["enrolled"])
         self.assertGreater(answer["similarity"], app.THRESHOLD)
-        r = self.client.post("/v1/audio/transcriptions", files={"file": ("a.wav", FIXTURE.read_bytes(), "audio/wav")})
+        r = client.post("/v1/audio/transcriptions", files={"file": ("a.wav", FIXTURE.read_bytes(), "audio/wav")})
         self.assertIn("morning", r.json()["text"].lower())
 
     def test_any_other_sound_is_not_the_owner_and_comes_back_as_no_text(self):
         self.assertFalse(self.verify(wav(noise(), 16000))["owner"])
-        r = self.client.post("/v1/audio/transcriptions", files={"file": ("a.wav", wav(noise(), 16000), "audio/wav")})
+        r = client.post("/v1/audio/transcriptions", files={"file": ("a.wav", wav(noise(), 16000), "audio/wav")})
         self.assertEqual((r.status_code, r.json()["text"]), (200, ""))
 
 

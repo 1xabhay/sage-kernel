@@ -34,8 +34,10 @@ STATUS = ('{"state": "running", "backend_status": {"ready": true, "control_loop_
 
 
 def fake_proc(processes: dict) -> str:
-    """A /proc with `{pid: (cmdline bytes, stat text)}`."""
-    root = tempfile.mkdtemp()
+    """A /proc with `{pid: (cmdline bytes, stat text)}`, gone when the tests are done."""
+    directory = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(directory.cleanup)
+    root = directory.name
     for pid, (cmdline, stat) in processes.items():
         os.mkdir(os.path.join(root, str(pid)))
         with open(os.path.join(root, str(pid), "cmdline"), "wb") as f:
@@ -54,7 +56,7 @@ class Parsing(unittest.TestCase):
         self.assertEqual(sage_health.throttled("throttled=0x0")["undervolt_now"], 0)
         self.assertEqual(sage_health.throttled(""), {})
 
-    def test_temperature(self):
+    def test_the_temperature_is_read_in_celsius(self):
         self.assertEqual(sage_health.temperature("temp=43.3'C"), {"temp_c": 43.3})
         self.assertEqual(sage_health.temperature("nope"), {})
 
@@ -64,7 +66,7 @@ class Parsing(unittest.TestCase):
                           "tx_retries": 1203, "tx_failed": 7, "beacon_loss": 2})
         self.assertEqual(sage_health.wifi("Not connected.", ""), {"wifi": "down"})
 
-    def test_wifi_power_save(self):
+    def test_wifi_power_saving_is_reported_on_or_off(self):
         self.assertEqual(sage_health.power_save("Power save: off\n"), {"power_save": "off"})
         self.assertEqual(sage_health.power_save("Power save: on\n"), {"power_save": "on"})
         self.assertEqual(sage_health.power_save(""), {})
@@ -130,6 +132,22 @@ class Parsing(unittest.TestCase):
         self.assertEqual(sample["power_save"], "off")
         self.assertEqual(sample["loop_max_ms"], 28)
         self.assertNotIn("daemon_cpu", sample)  # the first sample has nothing to compare with
+
+    def test_every_sampled_field_has_a_place_in_the_line(self):
+        """`line` writes only the fields in ORDER: one sampled and not listed would vanish."""
+        answers = {"get_throttled": "throttled=0x50005", "measure_temp": "temp=43.3'C",
+                   "link": LINK, "station": STATION, "get": "Power save: off\n"}
+
+        def run(argv):
+            return answers[argv[3] if argv[0] == "iw" else argv[1]]
+        last = {}
+        busy = STAT.replace(" 351257 85622 ", " 351357 85672 ")
+        for stat in (STAT, busy):  # twice: the second sample has daemon_cpu
+            proc = fake_proc({944: (DAEMON_CMDLINE, stat)})
+            sample = sage_health.sample(run, loadavg="0.64 0.16 0.05 1/200 900", proc=proc,
+                                        meminfo="MemAvailable:  3395000 kB\n",
+                                        status=lambda: STATUS, last=last)
+        self.assertEqual(set(sample), set(sage_health.ORDER))
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ Only the wire is real here; clocks and sleeps are injected so retries run instan
 """
 
 import asyncio
+import socket
+import urllib.request
 
 import pytest
 from conftest import TOKEN
@@ -44,8 +46,36 @@ def test_rate_limited_events_wait_retry_after_then_go_through(kernel):
     assert len(kernel.events("result")) == 2  # the same event, resent
 
 
+def test_a_kernel_that_keeps_rate_limiting_gets_five_tries_then_the_429_back(kernel):
+    kernel.script("POST", "/v1/events", (429, {"code": "rate_limited", "retry_after": 0.25}))
+    slept = []
+    status, _ = client(kernel, sleep=slept.append).event({"kind": "result", "sequence": 2,
+                                                          "status": "done"})
+    assert status == 429  # given back, so the voice is never blocked for good
+    assert len(kernel.events("result")) == len(slept) == 5
+
+
+def test_a_long_poll_outlasts_its_own_wait(kernel, monkeypatch):
+    """A quiet poll is no outage: the socket waits the poll's ``wait`` on top of its own timeout."""
+    kernel.script("GET", "/v1/effects", (200, {"sequence": 9, "effects": []}))
+    kernel.script("POST", "/v1/hello", (200, {"protocol": 1, "sequence": 9}))
+    urlopen, waits = urllib.request.urlopen, []
+
+    def timed(request, timeout):
+        waits.append(timeout)
+        return urlopen(request, timeout=timeout)
+    monkeypatch.setattr(urllib.request, "urlopen", timed)
+    wire = client(kernel, timeout_s=3.0)
+    wire.effects(since=9, wait=20)
+    wire.hello(MANIFEST)
+    assert waits == [23.0, 3.0]
+
+
 def test_an_unreachable_kernel_is_not_an_oserror():
-    dead = KernelClient("http://127.0.0.1:9", TOKEN, timeout_s=0.5)
+    with socket.socket() as free:  # a port nothing listens on: refused at once, never filtered
+        free.bind(("127.0.0.1", 0))
+        port = free.getsockname()[1]
+    dead = KernelClient(f"http://127.0.0.1:{port}", TOKEN, timeout_s=0.5)
     with pytest.raises(KernelUnavailableError) as caught:
         dead.hello(MANIFEST)
     assert not isinstance(caught.value, OSError)
@@ -59,7 +89,13 @@ def test_a_garbled_answer_is_an_outage_too(kernel):
 
 def test_a_coded_error_comes_back_as_its_status_and_body(kernel):
     kernel.script("POST", "/v1/events", (409, {"code": "forbidden", "message": "not yours"}))
-    assert client(kernel).event({"kind": "acknowledged", "turn_id": "x"})[0] == 409
+    assert client(kernel).event({"kind": "acknowledged", "turn_id": "x"}) == (
+        409, {"code": "forbidden", "message": "not yours"})
+
+
+def test_an_error_with_no_json_body_is_its_status_and_nothing(kernel):
+    kernel.script("POST", "/v1/events", (502, b"<html>bad gateway</html>"))
+    assert client(kernel).event({"kind": "acknowledged", "turn_id": "x"}) == (502, {})
 
 
 # --- the session: one conversation's rules ------------------------------------
@@ -137,17 +173,26 @@ def test_an_outage_says_hello_again_the_kernel_may_have_forgotten_the_manifest(k
         "/v1/hello", "/v1/events", "/v1/events", "/v1/hello", "/v1/events"]
 
 
-def test_a_reset_journal_says_hello_again(kernel):
-    hello_ok(kernel)
-    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+def test_a_refused_hello_is_an_outage(kernel):
+    kernel.script("POST", "/v1/hello", (401, {"code": "unauthorized"}))
+    s = session(kernel)
+    with pytest.raises(KernelUnavailableError):
+        asyncio.run(s.start("reachy-1", "hi", {}))
+    assert kernel.events() == [] and s.cursor is None  # nothing sent to a kernel that said no
+
+
+def test_a_reset_journal_restarts_from_its_sequence_and_says_hello_again(kernel):
+    hello_ok(kernel, sequence=900)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 901}))
     kernel.script("GET", "/v1/effects", (409, {"code": "reset", "sequence": 12}))
     s = session(kernel)
 
     async def go():
         await s.start("reachy-1", "hi", {})
-        await s.poll(offset=0, wait=0)
+        polled = await s.poll(offset=0, wait=0)
         await s.start("reachy-2", "hi", {})
-    asyncio.run(go())
+        return polled
+    assert asyncio.run(go()) == {"sequence": 12, "effects": []}
     assert [r["path"] for r in kernel.requests] == [
         "/v1/hello", "/v1/events", "/v1/effects", "/v1/hello", "/v1/events"]
     assert s.cursor == 12  # the reset's, not the new hello's head
@@ -291,25 +336,22 @@ def test_poll_advances_the_cursor_and_passes_the_offset(kernel):
 
     async def go():
         await s.start("reachy-1", "hi", {})
-        return await s.poll(offset=0, wait=2)
+        return await s.poll(offset=3, wait=2)
     body = asyncio.run(go())
     assert body["effects"][0]["text"] == "Hel" and s.cursor == 44
-    assert kernel.requests[-1]["query"]["since"] == ["40"]
+    assert kernel.requests[-1]["query"] == {"since": ["40"], "wait": ["2"], "offset": ["3"]}
 
 
-def test_a_reset_restarts_from_the_kernels_sequence(kernel):
-    hello_ok(kernel, sequence=900)
-    kernel.script("POST", "/v1/events", (200, {"sequence": 901}))
-    kernel.script("GET", "/v1/effects", (409, {"code": "reset", "sequence": 12}))
+def test_a_refused_poll_is_an_outage_and_the_cursor_stays(kernel):
+    hello_ok(kernel)
+    kernel.script("GET", "/v1/effects", (500, {}))
     s = session(kernel)
-
-    async def go():
-        await s.start("reachy-1", "hi", {})
-        return await s.poll(offset=0, wait=0)
-    assert asyncio.run(go())["effects"] == [] and s.cursor == 12
+    with pytest.raises(KernelUnavailableError):
+        asyncio.run(s.poll(offset=0, wait=0))
+    assert s.cursor == 40
 
 
-def test_results_and_stop_go_out_as_events(kernel):
+def test_results_go_out_as_events(kernel):
     kernel.script("POST", "/v1/events", (200, {"sequence": 50}))
     s = session(kernel)
 
@@ -318,7 +360,6 @@ def test_results_and_stop_go_out_as_events(kernel):
         await s.result(41, "done", duration_ms=2300)
         await s.result(43, "failed", reason="stale")
         await s.result(None, "interrupted", text="Once upon", turn_id="reachy-2")
-        await s.stop("reachy-1")
     asyncio.run(go())
     assert kernel.events() == [
         {"kind": "result", "sequence": 42, "status": "interrupted", "text": "Hello, I was",
@@ -327,8 +368,13 @@ def test_results_and_stop_go_out_as_events(kernel):
         {"kind": "result", "sequence": 43, "status": "failed", "reason": "stale"},
         # A reply still streaming has no sequence yet: it is named by its turn
         # (assumed shape of the pending v1 amendment for streaming devices).
-        {"kind": "result", "turn_id": "reachy-2", "status": "interrupted", "text": "Once upon"},
-        {"kind": "stop", "turn_id": "reachy-1"}]
+        {"kind": "result", "turn_id": "reachy-2", "status": "interrupted", "text": "Once upon"}]
+
+
+def test_stop_names_the_turn_to_cancel(kernel):
+    kernel.script("POST", "/v1/events", (200, {"sequence": 50}))
+    asyncio.run(session(kernel).stop("reachy-1"))
+    assert kernel.events() == [{"kind": "stop", "turn_id": "reachy-1"}]
 
 
 def test_presence_goes_out_as_an_event(kernel):
@@ -337,3 +383,17 @@ def test_presence_goes_out_as_an_event(kernel):
     assert kernel.events() == [{"kind": "presence", "state": "seen", "confidence": 1.0}]
 
 
+
+
+def test_notes_go_out_with_their_topic_and_passages_and_a_refusal_is_an_outage(kernel):
+    kernel.script("POST", "/v1/events", (200, {"sequence": 7}), (409, {"code": "forbidden"}))
+    s = session(kernel)
+    passages = ["Written in a week, in a rented room.", "The bridge was added last."]
+
+    async def go():
+        await s.notes("a made-up song", passages)
+        with pytest.raises(KernelUnavailableError):
+            await s.notes("a made-up song", passages)
+    asyncio.run(go())
+    assert kernel.events("notes")[0] == {
+        "kind": "notes", "topic": "a made-up song", "passages": passages}

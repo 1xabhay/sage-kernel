@@ -23,10 +23,15 @@ class Asks(unittest.TestCase):
                      "When does the new Zelda come out?", "Search for pasta recipes."):
             with self.subTest(line):
                 self.assertTrue(policy.needs_search(line, SURE, ()))
+        # The voice sends no confidence: a whole question still asks the web.
+        self.assertTrue(policy.needs_search("What's the weather like today?", {"medium": "speech"}, ()))
 
     def test_talk_with_sage_itself_does_not(self):
         for line in ("How are you?", "What's your name?", "I love the news.", "Do you like music?",
-                     "What did you just say?", "Thanks!", "Who are you?", "What is it?", "What was I doing?"):
+                     "What did you just say?", "Thanks!", "Who are you?", "What is it?", "What was I doing?",
+                     # replay, 11-09: asked about its own words, Sage searched the web (a Bible verse came back)
+                     "What were you talking about when you said that about tomorrow?",
+                     "Why were you thinking about this weekend?"):
             with self.subTest(line):
                 self.assertEqual(policy.needs_search(line, SURE, ()), "")
 
@@ -86,6 +91,26 @@ class Turn(unittest.TestCase):
         self.assertIn("found on the web", prompts[-1].context[-1]["content"])
         self.assertEqual(kernel.state.topic, "What's the weather like today?")  # journaled, with its source
 
+    def test_a_body_that_says_no_search_never_has_its_lines_sent_to_the_web(self):
+        """A notebook page whose file must not leave the machine: asked to look something up, the kernel
+        answers from the model alone, and the other body's lines are searched as before."""
+        kernel, prompts, asked = self.kernel(lambda q: ["x"])
+        kernel.hello("page", {"protocols": [1], "manifest": {"senses": [], "tools": [], "search": False}})
+        kernel.event("page", {"kind": "submitted", "turn_id": "p1", "text": "Search for my landlord's phone number.",
+                              "input": {"medium": "text"}})
+        deadline = time.monotonic() + 5
+        while policy.lane(kernel.state, "page").status == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual((asked, len(prompts)), ([], 1))
+        self.ask(kernel, "What's the weather like today?")
+        self.assertEqual(asked, ["What's the weather like today?"])
+
+    def test_search_in_a_manifest_is_true_or_false_and_the_kernel_says_it_heeds_it(self):
+        kernel, _, _ = self.kernel(lambda q: [])
+        self.assertIn("search", kernel.health()["features"])
+        with self.assertRaises(policy.Refused):
+            kernel.hello("page", {"protocols": [1], "manifest": {"senses": [], "tools": [], "search": "no"}})
+
     def test_a_line_that_needs_no_web_is_not_searched(self):
         kernel, prompts, asked = self.kernel(lambda q: ["x"])
         self.ask(kernel, "How are you?")
@@ -104,9 +129,10 @@ class Turn(unittest.TestCase):
                 self.assertEqual(kernel.state.exchanges[-1].reply, "Sunny.")
 
     def test_a_turn_stopped_while_searching_never_reaches_the_model(self):
-        started, release = threading.Event(), threading.Event()
+        started, release, searching = threading.Event(), threading.Event(), []
 
         def slow(query):
+            searching.append(threading.current_thread())
             started.set()
             release.wait(5)
             return ["bbc.co.uk: a score."]
@@ -116,8 +142,8 @@ class Turn(unittest.TestCase):
         self.assertTrue(started.wait(5))
         kernel.event("reachy", {"kind": "stop", "turn_id": "r1"})
         release.set()
-        time.sleep(0.2)
-        self.assertEqual(prompts, [])
+        searching[0].join(5)  # the turn's own thread: it ends once the kernel has dropped what came back
+        self.assertEqual((prompts, kernel.state.topic), ([], ""))  # the stopped turn kept no notes either
 
 
 class Adapter(unittest.TestCase):
@@ -138,7 +164,7 @@ class Adapter(unittest.TestCase):
             def log_message(self, *args):
                 pass
         server = HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_port}", seen
@@ -151,11 +177,11 @@ class Adapter(unittest.TestCase):
         self.assertEqual(len(passages[0]), 600)
 
     def test_a_slow_search_gives_up_within_its_budget(self):
-        url, _ = self.serve({"passages": ["late"]}, delay=1.0)
+        url, _ = self.serve({"passages": ["late"]}, delay=0.4)
         started = time.monotonic()
         with self.assertRaises(OSError):
-            search.provider(url, timeout=0.3)("Who won?")
-        self.assertLess(time.monotonic() - started, 0.9)
+            search.provider(url, timeout=0.1)("Who won?")
+        self.assertLess(time.monotonic() - started, 0.35)
 
     def test_only_this_machine_over_plain_http(self):
         for url in ("http://example.com:8783", "ftp://127.0.0.1", "http://127.0.0.1:8783/path"):

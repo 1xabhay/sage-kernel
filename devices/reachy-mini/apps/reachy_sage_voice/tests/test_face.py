@@ -58,3 +58,18 @@ def test_a_daemon_stamp_is_put_on_this_clock_when_it_is_seen_to_move():
     assert restamp(reading(ts=900.2)).ts is None
     moved = restamp(reading(detected=False, x=None, ts=900.3))
     assert (moved.detected, moved.x, moved.ts) == (False, None, 6.0)
+
+
+def test_a_detector_stale_for_a_minute_is_rearmed_at_most_once_a_minute():
+    # Live, 11-10: a media reset's restart of tracking failed once, and the daemon's face stamp
+    # stayed frozen for 3 h: no presence, nobody seen, until something asked for tracking again.
+    from reachy_sage_voice.perception.face import rearmer
+
+    clock, calls = [0.0], []
+    check = rearmer(lambda: calls.append(clock[0]), every=60.0, now=lambda: clock[0])
+    seen = ((0, True), (30, True), (61, True), (90, True), (122, True),
+            (130, False), (140, True), (199, True))
+    for t, stale in seen:
+        clock[0] = t
+        check(stale)
+    assert calls == [61, 122]  # fresh again at 130 starts the minute over: 140 + 60 is not yet

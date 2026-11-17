@@ -18,16 +18,34 @@ Rollback today is the same from the previous good commit. The journal is untouch
   up without `--build`, a mounts check, kernel and robot status, the SHA logged.
 - Rollback: deploy the previous SHA's image, no rebuild (coming: plan C4).
 
+## The whole of Sage, on and off
+
+On the owner's Mac, where the kernel, the voice's services, the TTS and the voice were each
+deployed once:
+
+```sh
+make sage-down   # backs up the journal, turns the jobs off, stops the containers and frees the model
+make sage-up     # starts the VM and the containers, waits until they are healthy, then loads the jobs
+```
+
+Neither builds, deploys or removes anything. After `sage-down`, Sage stays down across a reboot;
+after `sage-up`, a reboot brings it back (the `ai.sage.up` login job runs `make sage-up`).
+
 ## Journal
 
 The journal is the agent's memory: the `kernel-data` volume of the compose project `sage-kernel`.
 `make down` keeps it. Never `down -v`, never remove the volume, never point a test at it.
 
-- **Today:** there is no backup target. Before anything that touches the volume, the owner takes
-  a copy by hand into the gitignored `.backups/` (plan WP1 records the baseline: integrity check,
-  row count, last sequence, mounts).
-- `make backup` (coming: plan C2), run by `make deploy` before every deploy (coming: plan C4).
-- The volume's name pinned in `compose.yaml` (coming: repo/guards).
+- `make backup` writes a read-only, integrity-checked copy into the gitignored `.backups/`
+  (mode 600). `make deploy` and `make sage-down` run it first, and so does the nightly
+  `ai.sage.maintain` job.
+- `make restore-drill` proves the newest backup restores, without touching the live kernel: a
+  throwaway kernel opens a copy and answers a new line. The nightly job runs it after the backup.
+- `make restore BACKUP=.backups/journal-<time>.sqlite3`, after `make sage-down`, puts a backup
+  into the live volume. The journal it replaces is kept in the volume as
+  `kernel.sqlite3.before-restore-<time>`; nothing is deleted. `make sage-up` then starts Sage on it.
+- Every copy is on this Mac's disk, by the owner's choice (2026-11-17): none leaves the machine.
+- The volume's name is pinned in `compose.yaml`.
 
 ## Voice (on the Mac)
 

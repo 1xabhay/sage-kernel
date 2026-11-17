@@ -87,7 +87,8 @@ def test_correction_beats_the_open_loop_error():
 
     result = settle_to_pose(head, tolerance_deg=1.0, max_iterations=8)
 
-    assert abs(result["achieved"]["roll"]) < 6.0, "should improve on the raw deadband"
+    assert result["converged"]
+    assert abs(result["achieved"]["roll"]) < 1.0, "inside the tolerance, not just the deadband"
     assert result["worst_angular_deg"] == pytest.approx(
         abs(result["achieved"]["roll"]), abs=1e-6
     )
@@ -120,7 +121,7 @@ def test_non_zero_target_is_honoured():
     result = settle_to_pose(head, target={"roll": 20.0}, tolerance_deg=1.0, max_iterations=8)
 
     assert result["goal"]["roll"] == 20.0
-    assert abs(result["achieved"]["roll"] - 20.0) < 4.0
+    assert abs(result["achieved"]["roll"] - 20.0) < 1.0
 
 
 def test_unknown_pose_component_is_rejected():
@@ -163,7 +164,7 @@ def test_body_yaw_is_corrected_too():
     result = settle_to_pose(head, body_yaw_deg=20.0, tolerance_deg=1.0, max_iterations=8)
 
     assert result["goal"]["body_yaw"] == 20.0
-    assert abs(result["achieved"]["body_yaw"] - 20.0) < 6.0, "must beat the raw deadband"
+    assert abs(result["achieved"]["body_yaw"] - 20.0) < 1.0, "inside the tolerance"
 
 
 def test_body_yaw_can_be_left_alone():

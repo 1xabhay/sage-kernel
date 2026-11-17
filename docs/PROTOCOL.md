@@ -58,8 +58,12 @@ SAGE_KERNEL_CMD="/path/to/your-kernel" make conformance
 It may then say "conforms to Sage device protocol v1 (Draft), conformance
 suite at commit `<sha>`" (or at a release tag, once there are releases),
 naming the suite's commit because a Draft can still change. A partial pass is
-not conformance. There is no device-side suite yet
-([ROADMAP.md](ROADMAP.md)); a device relies on the rules in §8.
+not conformance. A body is checked from its own side by
+`make conformance-device` (`conformance/test_device.py`), which runs the body
+named by `SAGE_DEVICE_CMD` against this kernel: lines go in on its stdin and
+what it shows comes out on its stdout. It covers hello, the token, one turn,
+its result, the cursor and a kernel restart; tools, Stop and stale replies are
+not in it yet, and for those a device relies on the rules in §8.
 
 ## 1. Transport and identity (unchanged from v0)
 
@@ -83,6 +87,18 @@ device from the token; a body that names a `source` is refused. JSON bodies are
 at most 131072 bytes (notes, §10, carry a document). Unknown query parameters are ignored. The version is in the
 path: v1 routes start with `/v1/`.
 
+**A body in a browser** (v1.4). A web page can be a body only when the owner
+names its origin: `SAGE_ORIGINS=https://notebook.example` (exact origins,
+comma-separated: scheme, host and port, no path, never `*`; unset: no page). The kernel then
+answers that page's preflight (`OPTIONS`, 204, with
+`Access-Control-Allow-Methods: GET, POST` and
+`Access-Control-Allow-Headers: Authorization, Content-Type`) and adds
+`Access-Control-Allow-Origin: <that origin>` and `Vary: Origin` to its
+answers. A request that names any other `Origin` gets 403 with no body and no
+permission header, before its token is read. A request with no `Origin`, as
+every body that is not a page sends, is unchanged. The page still needs a
+device token.
+
 | Route | Body / query | Success |
 | --- | --- | --- |
 | `POST /v1/hello` | `{"protocols": [1], "manifest": {...}}` | `{"protocol": 1, "sequence": N, "features": [...]}` |
@@ -96,7 +112,7 @@ own latest turn (v1.2: each device has its own), and appears once it has one.
 
 **Features** (v1.1) name what the kernel serves beyond v1's core, so a device
 degrades gracefully instead of probing with `invalid`: `acted`, `body`,
-`done_text`, `health`, `input`, `moves`, `notes`, `presence`. A device ignores names it
+`done_text`, `health`, `input`, `moves`, `notes`, `presence`, `saw`, `search`. A device ignores names it
 does not know; a kernel without `features` is v1.
 
 **Health** (v1.1) changes nothing and is never rate-limited. `ok` is true when
@@ -148,6 +164,12 @@ the reply in the answer format and where it is cut back to whole sentences.
 For `text` the model is told it is chatting by text: no spoken-reply rule, no
 robot or "in front of you" wording, and no line is ever framed "(may be
 misheard)", whatever its `submitted.input`.
+
+**Search** (v1.4). A manifest may carry `"search": false`: the kernel never
+asks the web for a line this body submitted, whatever the line says. Other
+bodies are unchanged. Anything but true or false is `invalid`. A kernel that
+heeds it lists `search` in `features`; a body whose words must not leave the
+machine checks for that before it sends any.
 
 **Moves** (v1.1, feature `moves`). A turn may end with tool effects and no
 words, on any body: the model answers `{"reply": "", "<tool>": {...}}`, the
@@ -349,7 +371,8 @@ running turn's reply grows past `offset`.
 
 **Streaming.** While a turn this device started is running, the response also
 holds at most one `reply_delta`: the reply text the model has written so far
-from character `offset` on (default 0).
+from character `offset` on (default 0). Characters are Unicode code points,
+not UTF-16 units.
 
 ```json
 {"kind": "reply_delta", "turn_id": "reachy-1f…", "offset": 12, "text": "and then"}

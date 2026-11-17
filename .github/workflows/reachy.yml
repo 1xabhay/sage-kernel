@@ -1,10 +1,12 @@
-# Reachy Mini device apps (devices/reachy-mini): the workspace's, the Sage voice app's and the simulator's
-# tests and gates (`make lint imports vuln test`; `secrets` is the root CI's): no robot, no GPU, no models.
+# Reachy Mini device apps (devices/reachy-mini): the workspace's, the Sage voice app's, its services' and
+# the simulator's tests and gates (`make lint imports vuln test`; `secrets` is the root CI's): no robot,
+# no GPU, no models. The STT and TTS contract tests load the speech models, so they run on the Mac only
+# (`make -C services test`); of the services, CI runs the research tests, which need none.
 name: reachy
 
 on:
   push:
-    branches: [main] # main runs everything
+    branches: [main, live] # main runs everything; live is the branch that is deployed
   pull_request:
     paths:
       - devices/reachy-mini/**
@@ -45,8 +47,29 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: uv sync --locked
       # A stuck test prints its stack, and a hung job ends instead of holding the check open.
-      - run: uv run pytest -q -o faulthandler_timeout=120
+      - run: make lint imports vuln test
         timeout-minutes: 15
+        env:
+          PYTEST_ADDOPTS: -o faulthandler_timeout=120
+      # What is installed on the robot (health logger, guard, journal): stdlib only.
+      - run: make -C robot test
+
+  voice-services:
+    # The voice's local services: their own lock's audit, and the research contract tests (the web
+    # and Shazam are fakes). Lint and imports are the voice app's, which cover this folder.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: devices/reachy-mini/apps/reachy_sage_voice/services
+    env:
+      UV_NO_SYNC: "1" # only the research group is installed: no torch, no speech models
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --locked --no-default-groups --group research
+      - run: make vuln test-research
 
   reachy-sim:
     runs-on: ubuntu-latest

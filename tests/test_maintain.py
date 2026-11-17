@@ -58,7 +58,9 @@ class StaleTests(unittest.TestCase):
 @unittest.skipUnless(SOURCE, "checks the source tree; the image ships without make/")
 class PruneRunTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.tmp = Path(directory.name)
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
         (self.bin / "docker").write_text(FAKE_DOCKER)
@@ -117,7 +119,7 @@ class MaintainAgentTests(unittest.TestCase):
     def test_the_template_backs_up_then_prunes_nightly_and_names_no_home(self):
         text = TEMPLATE.read_text()
         self.assertNotRegex(text, r"/Users/|/home/")
-        self.assertIn("make -k backup prune", text)
+        self.assertIn("make -k backup restore-drill prune", text)  # each night proves the backup restores
         self.assertIn("StartCalendarInterval", text)
         self.assertNotIn("KeepAlive", text)
 

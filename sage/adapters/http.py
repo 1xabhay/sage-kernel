@@ -22,6 +22,7 @@ STATUS = {"invalid": 400, "unauthorized": 401, "not_found": 404, "busy": 409, "u
           "rate_limited": 429}
 ROUTES = {("POST", "/v1/hello"), ("POST", "/v1/events"), ("GET", "/v1/effects"), ("GET", "/v1/health")}
 NAME = re.compile(r"[a-z0-9_-]{1,64}")
+ORIGIN = re.compile(r"https?://[A-Za-z0-9.-]+(?::\d{1,5})?")  # scheme, host and port: no path, never "*"
 MAX_BODY = 131072  # notes carry a document (64 passages of 600 characters, JSON-escaped)
 
 
@@ -78,11 +79,51 @@ class Devices:
         return self.tokens
 
 
-def serve(kernel: Kernel, devices: Devices, host: str, port: int) -> ThreadingHTTPServer:
+def parse_origins(spec: str) -> frozenset[str]:
+    """Read SAGE_ORIGINS, `origin,...`: the exact origins of the pages whose browser may call this kernel."""
+    origins = frozenset(filter(None, (part.strip() for part in spec.split(","))))
+    if not all(ORIGIN.fullmatch(origin) for origin in origins):
+        raise ValueError("SAGE_ORIGINS entries must be web origins, such as https://notebook.example: no path, not *")
+    return origins
+
+
+def serve(kernel: Kernel, devices: Devices, host: str, port: int,
+          origins: frozenset[str] = frozenset()) -> ThreadingHTTPServer:
+    """`origins`: the pages (SAGE_ORIGINS) whose browser may call this kernel; none by default. A request that
+    names any other Origin is refused before its token is read, and gets no permission header."""
+
     class Handler(BaseHTTPRequestHandler):
+        def page(self) -> bool | None:
+            """Whether this request comes from the named page; None when it comes from no page at all."""
+            asked = self.headers.get("Origin")
+            return None if asked is None else asked in origins
+
+        def allow(self) -> None:
+            self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
+            self.send_header("Vary", "Origin")
+
+        def forbid(self) -> None:
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_OPTIONS(self):  # a browser asks before it sends a token
+            if not self.page():
+                return self.forbid()
+            self.send_response(204)
+            self.allow()
+            self.send_header("Access-Control-Allow-Methods", "GET, POST")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Access-Control-Max-Age", "600")
+            if self.headers.get("Access-Control-Request-Private-Network"):  # Chrome, for a loopback address
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.end_headers()
+
         def send(self, status: int, data: dict) -> None:
             body = json.dumps(data).encode()
             self.send_response(status)
+            if self.page():
+                self.allow()
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
@@ -116,6 +157,8 @@ def serve(kernel: Kernel, devices: Devices, host: str, port: int) -> ThreadingHT
             return data
 
         def handle_route(self, method: str) -> None:
+            if self.page() is False:
+                return self.forbid()
             url = urlparse(self.path)
             try:
                 if (method, url.path) not in ROUTES:

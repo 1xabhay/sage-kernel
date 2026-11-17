@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Nightly upkeep as a LaunchAgent, rendered by `make maintain-on`: a journal backup, then make prune.
-     -k: prune runs even if the backup fails (the kernel down), and the exit code still says it failed. -->
+<!-- Nightly upkeep as a LaunchAgent, rendered by `make maintain-on`: a journal backup, a drill that the newest
+     backup restores, then make prune. -k: each runs even if the one before fails (the kernel down), and the
+     exit code still says it failed. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -10,7 +11,7 @@
 	<array>
 		<string>/bin/sh</string>
 		<string>-c</string>
-		<string>date -u +%Y-%m-%dT%H:%M:%SZ; exec make -k backup prune</string>
+		<string>date -u +%Y-%m-%dT%H:%M:%SZ; exec make -k backup restore-drill prune</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>@ROOT@</string>

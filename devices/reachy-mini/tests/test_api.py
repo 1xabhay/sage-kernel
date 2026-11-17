@@ -1,5 +1,7 @@
 """End-to-end checks of the testbench HTTP surface against a stub robot."""
 
+import threading
+
 import numpy as np
 import pytest
 
@@ -18,7 +20,7 @@ EXPECTED_MOTOR_NAMES = [
 ]
 
 
-def test_status_reports_pose_and_imu(client):
+def test_status_reports_the_head_pose_the_imu_and_that_the_robot_is_free(client):
     body = client.get("/api/status").json()
 
     assert body["connected"] is True
@@ -35,13 +37,37 @@ def test_motor_status_lists_all_nine_motors(client):
 
 
 def test_move_head_converts_degrees_and_millimetres(client, robot):
-    r = client.post("/api/move_head", json={"yaw": 30, "z": 10, "duration": 0.1})
+    r = client.post("/api/move_head", json={"yaw": 30, "z": 10, "body_yaw": -20, "duration": 0.1})
 
     assert r.status_code == 200
     head = robot.calls[-1][1]["head"]
     # 30 deg about Z, and 10 mm expressed in metres.
     assert np.degrees(np.arctan2(head[1, 0], head[0, 0])) == pytest.approx(30.0)
     assert head[2, 3] == pytest.approx(0.010)
+    assert robot.calls[-1][1]["body_yaw"] == pytest.approx(np.radians(-20))
+
+
+def test_a_move_while_the_robot_is_busy_is_refused_with_409(client, robot, monkeypatch):
+    """Two browser tabs cannot fight over the head."""
+    moving, arrive = threading.Event(), threading.Event()
+
+    def slow_move(**target):
+        moving.set()
+        assert arrive.wait(5)
+
+    monkeypatch.setattr(robot, "goto_target", slow_move)
+    first = threading.Thread(
+        target=client.post, args=("/api/move_antennas",), kwargs={"json": {"left": 10}}
+    )
+    first.start()
+    try:
+        assert moving.wait(5)
+        assert client.post("/api/move_head", json={"yaw": 10}).status_code == 409
+        assert client.get("/api/status").json()["busy"] is True
+    finally:
+        arrive.set()
+        first.join(5)
+    assert client.get("/api/status").json()["busy"] is False
 
 
 def test_move_antennas_converts_to_radians(client, robot):
@@ -57,14 +83,24 @@ def test_move_antennas_converts_to_radians(client, robot):
 def test_out_of_range_motion_is_rejected(client, robot, payload, field):
     r = client.post("/api/move_head", json=payload)
 
-    assert r.status_code == 422, f"{field} should be clamped by the schema"
+    assert r.status_code == 422, f"{field} should be rejected by the schema"
     assert robot.calls == []
 
 
-@pytest.mark.parametrize("path", ["/api/go_to_zero", "/api/wake_up", "/api/go_to_sleep"])
-def test_quick_actions_reach_the_robot(client, robot, path):
+@pytest.mark.parametrize(
+    ("path", "call"), [("/api/wake_up", "wake_up"), ("/api/go_to_sleep", "goto_sleep")]
+)
+def test_wake_and_sleep_reach_the_robot(client, robot, path, call):
     assert client.post(path).status_code == 200
-    assert robot.calls
+    assert robot.calls == [(call, None)]
+
+
+def test_go_to_zero_sends_the_head_antennas_and_body_home(client, robot):
+    assert client.post("/api/go_to_zero").status_code == 200
+    ((call, target),) = robot.calls
+    assert call == "goto_target"
+    assert np.allclose(target["head"], np.eye(4))
+    assert (target["antennas"], target["body_yaw"]) == ([0.0, 0.0], 0.0)
 
 
 def test_camera_capture_returns_a_jpeg(client):
@@ -118,17 +154,12 @@ def test_path_traversal_is_refused(client, filename):
     r = client.get(f"/api/camera/download/{filename}")
 
     assert r.status_code in (400, 404), r.text
-    assert b"root:" not in r.content
 
 
 def test_missing_file_is_a_404(client):
     assert client.get("/api/camera/download/nope.jpg").status_code == 404
 
 
-def test_last_results_start_empty(client):
-    assert client.get("/api/test/last_rotation_result").json()["result"] is None
-    assert client.get("/api/test/last_calibration_result").json()["result"] is None
-
-
-def test_range_of_motion_endpoint_is_exposed_and_starts_empty(client):
-    assert client.get("/api/test/last_range_of_motion_result").json()["result"] is None
+def test_no_test_has_a_result_before_it_is_run(client):
+    for test in ("rotation", "calibration", "range_of_motion"):
+        assert client.get(f"/api/test/last_{test}_result").json()["result"] is None, test

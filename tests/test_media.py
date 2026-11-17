@@ -79,10 +79,6 @@ class Search(unittest.TestCase):
         self.assertEqual(policy.needs_search("Who's leading?", SURE, ()), "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Kept(unittest.TestCase):
     def test_what_was_heard_on_the_tv_is_never_kept(self):
         """watch/behaviour.md H7: the TV's lines are this turn's context, never journal or memory."""
@@ -102,3 +98,7 @@ class Fallback(unittest.TestCase):
         self.assertTrue(said)
         self.assertNotRegex(said.lower(), r"don'?t know|can'?t see|as an ai")
         self.assertEqual(policy.needs_words("Who's going to win?"), policy.QUESTION_LINE)
+
+
+if __name__ == "__main__":
+    unittest.main()

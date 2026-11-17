@@ -35,13 +35,9 @@ def test_distinctness_bonus_is_bounded():
     overturn a gap wider than the bonus.
     """
     bonus = ScoredTrack.DISTINCTNESS_BONUS
-    assert _scored(80, 100).score - _scored(80, 0).score == bonus
+    assert _scored(80, 100).score - _scored(80, 0).score == bonus > 0  # so it does break a tie
     gap = int(bonus) + 1
     assert _scored(75 + gap, 0).score > _scored(75, 100).score
-
-
-def test_distinctness_breaks_ties():
-    assert _scored(80, 90).score > _scored(80, 10).score
 
 
 def test_pick_prefers_matching_duration():

@@ -20,10 +20,10 @@ TEST := SAGE_TAG=$(TEST_TAG) docker compose -p sage-kernel-test-$(LANE) -f compo
 LIVE := sage-kernel-kernel-1
 DEPLOY_LOG ?= $(HOME)/Library/Logs/reachy-sage/DEPLOYS.log
 # Every project in the monorepo.
-PROJECTS := . devices/reachy-mini experiments/sage-os experiments/music-telling
-.PHONY: help hooks deploy up up-tag down image dev-image test-image backup run smoke release test check unit \
+PROJECTS := . devices/common/sage_device devices/reachy-mini experiments/sage-os experiments/music-telling
+.PHONY: conformance-device help hooks deploy up up-tag down image dev-image test-image backup run smoke release test check unit \
   conformance eval source imports docs lint vuln secrets hygiene test-all hygiene-all conventions latency \
-  prune maintain-plist maintain-on maintain-off
+  prune maintain-plist maintain-on maintain-off sage-up sage-down restore restore-drill
 
 help:
 	@echo "make test        unit + conformance inside the commit's image (dirty tree: dev-<lane> image)"
@@ -31,8 +31,12 @@ help:
 	@echo "make run         a throwaway kernel on a free port, temp state, fake model (never 8776, never the journal)"
 	@echo "make smoke       run + the README's curl walkthrough, then stop"
 	@echo "make backup      read-only snapshot of the live journal into .backups/ (mode 600, integrity-checked)"
+	@echo "make restore-drill  proves the newest backup (or BACKUP=<file>) restores: a throwaway kernel opens it"
+	@echo "make restore     BACKUP=<file>, after make sage-down: into the live volume; the old journal is moved aside"
 	@echo "make deploy      main checkout only: image, test, backup, up that image, check mounts + hello, log it"
 	@echo "                 (make up is make deploy)"
+	@echo "make sage-up     the whole of Sage: VM, kernel, services, TTS, voice; back by itself after a reboot"
+	@echo "make sage-down   backs up the journal, stops everything, removes nothing; stays down across a reboot"
 	@echo "rollback         SAGE_TAG=<previous sha> make up-tag   (shas: tail \$$HOME/Library/Logs/reachy-sage/DEPLOYS.log)"
 	@echo "make prune       old sage-kernel/reachy-sage-* tags, voice exports, recordings, journal backups (DRY_RUN=1)"
 	@echo "make maintain-on nightly backup + prune under launchd (ai.sage.maintain); maintain-off removes it"
@@ -92,7 +96,7 @@ down:
 # running container), mode 600, integrity-checked. Safe at any time: it never writes to the container.
 backup:
 	@umask 077 && mkdir -p .backups && f=.backups/journal-$$(date -u +%Y%m%dT%H%M%SZ).sqlite3 \
-	  && docker exec $(LIVE) python3 -c "import sqlite3, sys; sys.stdout.buffer.write(sqlite3.connect(\
+	  && docker --context colima exec $(LIVE) python3 -c "import sqlite3, sys; sys.stdout.buffer.write(sqlite3.connect(\
 	  'file:/data/kernel.sqlite3?mode=ro', uri=True).serialize())" > $$f && [ -s $$f ] \
 	  && [ "$$($(PYTHON) -c "import sqlite3, sys; print(sqlite3.connect(f'file:{sys.argv[1]}?immutable=1', \
 	  uri=True).execute('pragma integrity_check').fetchone()[0])" $$f)" = ok ] && echo "backup: $$f" \
@@ -125,6 +129,37 @@ maintain-on: maintain-plist
 maintain-off:
 	-launchctl bootout gui/$$(id -u)/$(MAINTAIN_LABEL) 2>/dev/null
 	rm -f "$(MAINTAIN_PLIST)"
+
+# A backup is only worth what restores from it (make/restore.py). The drill never touches the live kernel: a
+# throwaway kernel opens a copy of the newest backup (or BACKUP=<file>) and answers a new line. The restore puts
+# BACKUP into the live volume, the kernel stopped (make sage-down); the journal it replaces is moved aside in
+# the volume, never deleted.
+restore-drill:
+	$(PYTHON) make/restore.py drill $(BACKUP)
+
+restore:
+	$(MAIN_ONLY)
+	@[ -n "$(BACKUP)" ] || { echo "usage: make restore BACKUP=.backups/journal-<time>.sqlite3 (after make sage-down)" >&2; exit 1; }
+	$(PYTHON) make/restore.py restore "$(BACKUP)"
+
+# The whole of Sage: the VM, the kernel, the voice's services, the TTS and the voice (make/updown.py). Nothing
+# is built or deployed here: it starts what the deploys left. sage-down backs up the journal, stops and removes
+# nothing, and stays down across a reboot; after sage-up, a reboot brings Sage back (the ai.sage.up login job).
+UP_LABEL := ai.sage.up
+UP_PLIST ?= $(HOME)/Library/LaunchAgents/$(UP_LABEL).plist
+UP_LOG ?= $(HOME)/Library/Logs/reachy-sage/up.log
+sage-up:
+	$(MAIN_ONLY)
+	@mkdir -p "$(dir $(UP_PLIST))" "$(dir $(UP_LOG))"
+	@sed -e "s|@LABEL@|$(UP_LABEL)|g" -e "s|@ROOT@|$(MAIN_ROOT)|g" -e "s|@PATH@|$(LAUNCH_PATH)|g" \
+	  -e "s|@LOG@|$(UP_LOG)|g" make/up.plist.in > "$(UP_PLIST)"
+	plutil -lint -s "$(UP_PLIST)"
+	$(PYTHON) make/updown.py up
+	$(CHECK_LIVE)
+
+sage-down:
+	$(MAIN_ONLY)
+	$(PYTHON) make/updown.py down
 
 # A throwaway native kernel: free port, temp state, the conformance suite's fake model.
 run:
@@ -164,7 +199,12 @@ eval: test-image
 # Source-tree checks on the host (sealed containers, ignore files, hooks, no machine names, the core's
 # imports); they need the checkout, so they skip inside the image.
 source:
-	$(PYTHON) -m unittest tests.test_deploy tests.test_boundary tests.test_maintain $(if $(wildcard tests/test_docs.py),tests.test_docs)
+	$(PYTHON) -m unittest tests.test_deploy tests.test_boundary tests.test_maintain tests.test_moves tests.test_updown tests.test_restore $(if $(wildcard tests/test_docs.py),tests.test_docs)
+	$(MAKE) conformance-device
+
+# A body against this kernel: the text body, or SAGE_DEVICE_CMD="<command>" for another (conformance/test_device.py).
+conformance-device:
+	$(PYTHON) -m unittest discover -s conformance -p test_device.py -v
 
 # The core imports only the standard library and its own modules.
 imports:

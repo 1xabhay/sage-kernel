@@ -14,11 +14,11 @@ def centroid_x(frame, geom_name, scene="minimal"):
     return cols.mean()
 
 
-def test_head_yaw_left_is_within_limits_and_moves_the_duck_in_the_eye(neutral):
+def test_turning_the_head_left_30_degrees_brings_the_duck_toward_the_centre_of_the_eye(neutral):
     left = goto(yaw=30)
 
     assert abs(left["yaw"] - 30) < 1.5
-    assert abs(left["pitch"]) < 40 and abs(left["roll"]) < 40
+    assert abs(left["pitch"]) < 3 and abs(left["roll"]) < 3  # a turn, not a tilt
     assert abs(left["body_yaw"] - left["yaw"]) <= 65
 
     before = sim.eye_camera(neutral["head_joints"], neutral["antennas"], segment=True)

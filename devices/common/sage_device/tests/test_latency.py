@@ -1,8 +1,14 @@
 """v2v_ms from the bot's log (LAYERS.md §0), scored per turn and lane from synthetic lines.
 
-The stamps, on a real handler and the processor's own turns, are checked in the Reachy app's
-tests/test_latency.py.
+The stamps on the processor's own turns are checked in the Reachy app's tests/test_latency.py.
 """
+
+import contextvars
+import io
+import logging
+import time
+
+import pytest
 
 from sage_device import latency
 from sage_device.latency import LEAD_MS, Turn
@@ -31,6 +37,7 @@ LOG = [
     "uv run python -m reachy_sage_voice",
     line(100, "-", "INFO:reachy_sage_voice.executor:idle action"),
     line(101, "reachy-a", start("kernel", 300)),
+    line(101.5, "reachy-a", "INFO:reachy_sage_voice.executor:bot started speaking"),  # not sage.py
     line(102.2, "reachy-a", SPOKE),
     line(102.9, "reachy-a", SPOKE),
     line(104, "reachy-b", start("reflex", 200)),
@@ -65,6 +72,40 @@ def test_the_cli_prints_each_lane(tmp_path, capsys):
     latency.main([str(path)])
     out = capsys.readouterr().out
     assert "kernel" in out and "reflex" in out and str(1500 + LEAD_MS) in out
+
+
+def test_a_log_with_no_turns_says_so_and_exits(tmp_path):
+    path = tmp_path / "bot.log"
+    path.write_text("uv run python -m reachy_sage_voice\n")
+    with pytest.raises(SystemExit, match="no turns found"):
+        latency.main([str(path)])
+
+
+def test_every_line_has_wall_time_monotonic_time_and_the_turn():
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)  # as a body's ``make run`` stamps its stderr
+    handler.setFormatter(logging.Formatter(latency.FORMAT))
+    handler.addFilter(latency.stamp)
+    log = logging.getLogger("body.sage")
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    days = {time.strftime("%Y-%m-%d")}
+    before = time.monotonic()
+    try:
+        log.info("between turns")
+
+        def during():
+            latency.TURN_ID.set("body-x")
+            log.info("in a turn")
+
+        contextvars.copy_context().run(during)
+    finally:
+        log.removeHandler(handler)
+    lines = [latency.LINE.match(line) for line in stream.getvalue().splitlines()]
+    assert [m["turn"] for m in lines] == ["-", "body-x"]
+    assert all(before - 0.001 <= float(m["mono"]) <= time.monotonic() + 0.001 for m in lines)
+    assert lines[0]["wall"].split()[0] in days | {time.strftime("%Y-%m-%d")}
+    assert (lines[1]["name"], lines[1]["message"]) == ("body.sage", "in a turn")
 
 
 def released(ago):

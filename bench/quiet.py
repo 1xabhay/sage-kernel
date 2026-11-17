@@ -4,6 +4,9 @@ with the old prompt (the manifest without moves), then with moves, and checks do
 One transcript a line, as one conversation, on a throwaway journal. Exits 1 if a threshold fails.
 
     python bench/quiet.py <lines.txt> --model <name> [--url http://127.0.0.1:11434] [--limit N]
+
+A .jsonl of {"text", "to_sage"} (a labelled evening, kept out of git) is heard as speech, as the robot sends it,
+and scores how often Sage spoke to a line no one said to it.
 """
 
 import argparse
@@ -33,14 +36,18 @@ def p95(values) -> int:
 def score(turns: list[dict]) -> dict:
     """The aggregates of turns {line, reply, tools, first_ms}: first_ms is None when no words were written."""
     spoken = [t for t in turns if t["reply"]]
-    statements = [t for t in turns if not policy.needs_words(t["line"])]
-    must = [t for t in turns if policy.needs_words(t["line"])]
+    def needs(t):  # a labelled line was heard as speech: cut off, it needs no words
+        return policy.needs_words(t["line"], {"medium": "speech"} if "to_sage" in t else None)
+    statements = [t for t in turns if not needs(t)]
+    must = [t for t in turns if needs(t)]
     return {"turns": len(turns),
             "question_ending": sum(t["reply"].rstrip().endswith("?") for t in spoken) / max(1, len(spoken)),
             "movement_only": sum(not t["reply"] and bool(t["tools"]) for t in statements) / max(1, len(statements)),
             "silent_on_must_speak": sum(not t["reply"] for t in must),
             "last_resort": sum(t["reply"] in (policy.QUESTION_LINE, policy.DISTRESS_LINE) for t in must),
-            "first_piece_p95_ms": p95([t["first_ms"] for t in turns if t["first_ms"] is not None])}
+            "first_piece_p95_ms": p95([t["first_ms"] for t in turns if t["first_ms"] is not None]),
+            "noise": sum(t.get("to_sage") is False for t in turns),
+            "spoke_to_noise": sum(t.get("to_sage") is False and bool(t["reply"]) for t in turns)}
 
 
 def failures(before: dict, after: dict) -> list[str]:
@@ -53,7 +60,8 @@ def failures(before: dict, after: dict) -> list[str]:
     return [why for ok, why in checks if not ok]
 
 
-def replay(lines: list[str], declared: dict, decide) -> list[dict]:
+def replay(lines: list, declared: dict, decide) -> list[dict]:
+    """Each line a str (typed, unlabelled) or {"text", "to_sage"} (heard as speech, labelled)."""
     with tempfile.TemporaryDirectory() as directory:
         started, first = [0.0], [None]
 
@@ -66,18 +74,29 @@ def replay(lines: list[str], declared: dict, decide) -> list[dict]:
 
         kernel, done, cursor = Kernel(Journal(Path(directory) / "k.sqlite3"), timed), [], 0
         kernel.hello("bench", {"protocols": [1], "manifest": declared})
-        for n, line in enumerate(lines):
+
+        def send(event: dict) -> None:  # a quiet move ends a turn at once, faster than a device may send
+            while True:
+                try:
+                    return kernel.event("bench", event)
+                except policy.Refused as refused:
+                    if refused.code != "rate_limited":
+                        raise
+                    time.sleep(0.2)
+        for n, item in enumerate(lines):
+            line, label = (item, {}) if isinstance(item, str) else (item["text"], {"to_sage": item["to_sage"]})
             started[0], first[0] = time.monotonic(), None
-            kernel.event("bench", {"kind": "submitted", "turn_id": f"q{n}", "text": line})
+            send({"kind": "submitted", "turn_id": f"q{n}", "text": line,
+                  **({"input": {"medium": "speech"}} if label else {})})
             while policy.lane(kernel.state, "bench").status == "active":
                 time.sleep(0.01)
             effects = kernel.effects("bench", cursor, 0, 0)
             cursor = effects["sequence"]
             for effect in effects["effects"]:  # performed at once: a timeout would be told to the model as a failure
-                kernel.event("bench", {"kind": "result", "sequence": effect["sequence"], "status": "done"})
+                send({"kind": "result", "sequence": effect["sequence"], "status": "done"})
             exchange = kernel.state.exchanges[-1]
             done.append({"line": line, "reply": exchange.reply, "tools": [call.name for call in exchange.calls],
-                         "first_ms": first[0]})
+                         "first_ms": first[0], **label})
             print(json.dumps(done[-1]), file=sys.stderr)
         return done
 
@@ -89,7 +108,8 @@ def main(argv=None) -> None:
     parser.add_argument("--url", default="http://127.0.0.1:11434")
     parser.add_argument("--limit", type=int)
     args = parser.parse_args(argv)
-    lines = [line.strip() for line in args.lines.read_text().splitlines() if line.strip()][:args.limit]
+    rows = [line.strip() for line in args.lines.read_text().splitlines() if line.strip()]
+    lines = [json.loads(row) if args.lines.suffix == ".jsonl" else row for row in rows][:args.limit]
     moving = json.loads((ROOT / "tests" / "voice_manifest.json").read_text())
     old = {key: value for key, value in moving.items() if key not in ("moves", "output")}
     decide = model.provider(args.url, args.model)

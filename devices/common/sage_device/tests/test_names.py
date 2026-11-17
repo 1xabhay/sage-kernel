@@ -8,6 +8,9 @@ The owner picked "Mee-kah" by ear.
 from sage_device import names
 
 SPEC = "Mika:Mee-kah:Micah|Mica|Meeka"
+#: Made-up names, as SAGE_VOICE_NAMES gives them: each with the STT's variants of it.
+TABLE = "Kiri:Kee-ree:Keery|Kiree|Kearie,Tomo::Tomoh|Tomow"
+FRAMES = ["My name is {}.", "{}, hi", "Hi {}!", "It's {}'s turn.", "{}"]
 
 
 def test_the_setting_names_a_word_how_to_say_it_and_what_the_stt_hears_instead():
@@ -16,6 +19,9 @@ def test_the_setting_names_a_word_how_to_say_it_and_what_the_stt_hears_instead()
     assert name.heard == ("Micah", "Mica", "Meeka")
     assert names.parse("") == ()
     assert names.parse("Sage::")[0].spoken == "Sage"  # no respelling: said as written
+    # Entries are split on commas: stray spaces and an empty one are no names.
+    assert names.parse(" Ada : Ay-da : Aida , ,Bo") == (
+        names.Name("Ada", "Ay-da", ("Aida",)), names.Name("Bo", "Bo"))
 
 
 def test_what_the_stt_hears_instead_is_corrected_as_a_whole_word():
@@ -54,13 +60,8 @@ def test_a_name_being_disowned_stays_as_remembered_so_it_can_be_forgotten():
     assert names.correct("Forget Mika.", known) == "Forget Mika."
 
 
-#: Made-up names, as SAGE_VOICE_NAMES gives them: each with the STT's variants of it.
-TABLE = "Kiri:Kee-ree:Keery|Kiree|Kearie,Tomo::Tomoh|Tomow"
-FRAMES = ["My name is {}.", "{}, hi", "Hi {}!", "It's {}'s turn.", "{}"]
-
-
-def test_p2_every_listed_variant_becomes_the_name():
-    """P2: every variant in the table, and the respelling heard back, comes out as the name."""
+def test_every_listed_variant_in_any_case_and_any_sentence_comes_out_as_the_name():
+    """Every variant in the table, and the respelling heard back, comes out as the name."""
     known = names.parse(TABLE)
     for name in known:
         for variant in {*name.heard, name.spoken, name.written}:

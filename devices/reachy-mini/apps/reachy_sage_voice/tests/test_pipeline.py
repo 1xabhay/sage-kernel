@@ -593,7 +593,10 @@ def test_barge_in_needs_speech_that_lasts_and_the_hold_comes_from_the_environmen
         sage = next(p for p in processors if isinstance(p, SageProcessor))
         return vad._vad_controller._vad_analyzer.min_onset_ms, sage._hold_s
 
-    assert parts(ENV) == (200, 0.0)  # the hold is off until a live A/B says otherwise
+    # Live, 11-09: unheld, "How" / "How do you" / "How many" each went alone, and the
+    # kernel now ends a fragment's turn at once (a quiet move), so the rest can no longer
+    # join it there. Offline (eval/LEDGER.md): a 1.5 s hold splits 12 points less.
+    assert parts(ENV) == (200, 1.5)
     assert parts({**ENV, "SAGE_VOICE_BARGE_IN_MS": "0", "SAGE_VOICE_HOLD_MS": "2000"}) == (0, 2.0)
 
 

@@ -4,7 +4,15 @@ import math
 
 import pytest
 
-from sage_device.hearing import COOLDOWN_S, PASS, QUIET, UNSURE, decide, trustworthy
+from sage_device.hearing import (
+    COOLDOWN_S,
+    PASS,
+    QUIET,
+    UNSURE,
+    decide,
+    trustworthy,
+    unfinished,
+)
 
 
 @pytest.mark.parametrize("line", [
@@ -25,6 +33,7 @@ def test_noise_shapes_are_not_trustworthy(line):
     "Yes, I went to the shop and then I came back to the house",  # long: cut off, still real
     "So, like, I like it, I like the way it looks, like I like the colour, like really.",  # "like"s
     "No, no, no.", "Don't walk away. Don't walk away.",  # emphasis, not a stuck decoder
+    "Yeah, yeah, yeah.", "Go on, go on, go on.",  # people stop at three, whatever the word
 ])
 def test_real_speech_is_trustworthy(line):
     assert trustworthy(line)
@@ -67,13 +76,33 @@ def test_noise_is_unsure_when_the_body_can_show_it():
 def test_noise_within_the_cooldown_or_on_a_busy_body_is_quiet():
     assert decide("So the", COOLDOWN_S - 0.1) == QUIET
     assert decide("So the", math.inf, busy=True) == QUIET
+    # A statement the caller found cut off: no tilt over a dance or its own voice.
+    assert decide("We went over to the place and uh.", math.inf, busy=True, half=True) == QUIET
 
 
 def test_anything_answers_a_question_just_asked():
     assert decide("Teapot.", math.inf, asked=True) == PASS
     assert decide("So the", math.inf, asked=True) == PASS
+    assert decide("Somewhat like the", asked=True, half=True) == PASS  # however cut off
 
 
 def test_nothing_heard_is_not_unsure():
     assert trustworthy("")
     assert trustworthy("  ...  ")
+    assert decide("") != UNSURE
+
+
+@pytest.mark.parametrize("text", [
+    "Remind me to call", "So I was going to say, uh", "Play something we could dance to,",
+    "I want to go and.", "So, um.",  # closed, on a word no sentence ends on
+])
+def test_a_line_with_no_closing_mark_or_closing_on_a_filler_is_unfinished(text):
+    assert unfinished(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Is it raining today?", "Turn the lights on.", "I think so.", "No.", "Wow!",
+    "", "  ", "...",  # nothing: there is no rest to wait for
+])
+def test_a_finished_sentence_or_nothing_is_not_unfinished(text):
+    assert not unfinished(text)

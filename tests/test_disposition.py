@@ -54,6 +54,14 @@ class Quiet(unittest.TestCase):
         self.assertEqual(said, [("greet", 0)])  # no greeting back into quiet either
 
 
+    def test_the_end_of_quiet_is_not_followed_at_once_by_a_nudge(self):
+        ended = 1 + d.QUIET_S
+        _, said = run([("seen", 0), ("spoke", 1, "Shh."), ("tick", ended + 1), ("tick", ended + d.RESTLESS_S - 1)])
+        self.assertEqual(said, [("greet", 0)])  # idle is counted from the end of quiet
+        _, said = run([("seen", 0), ("spoke", 1, "Shh."), ("tick", ended + 1), ("tick", ended + d.RESTLESS_S)])
+        self.assertEqual(said, [("greet", 0), ("nudge", ended + d.RESTLESS_S)])
+
+
 class Nudging(unittest.TestCase):
     def test_a_long_idle_presence_becomes_restless_and_is_nudged_within_budget(self):
         events = [("seen", 0)] + [("tick", t * MIN) for t in range(1, 121)]
@@ -79,7 +87,7 @@ class Nudging(unittest.TestCase):
         _, said = run(events)
         self.assertEqual([name for name, _ in said], ["greet"])
 
-    def test_states(self):
+    def test_a_present_person_left_idle_becomes_restless_and_an_empty_room_never_does(self):
         state, _ = run([("seen", 0)])
         self.assertEqual(d.state(state, 1), "available")
         self.assertEqual(d.state(state, d.RESTLESS_S), "restless")

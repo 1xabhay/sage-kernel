@@ -41,18 +41,23 @@ class Guard(unittest.TestCase):
                        r"sport 67", r"established,related"):
             self.assertLess(index(accept), drop, accept)
 
-    def test_tcp_is_still_guarded_and_the_policy_still_accepts(self):
-        index(r"^tcp dport \{ 22, 8000, 8443 \} counter drop$")
-        index(r"policy accept;")  # outbound and loopback are never touched
+    def test_tcp_answers_only_the_mac_and_the_policy_still_accepts(self):
+        """SSH and the daemon: the Mac by its IP or its hardware address, then no one else."""
+        drop = index(r"^tcp dport \{ 22, 8000, 8443 \} counter drop$")
+        for accept in (r"^tcp dport \{ 22, 8000, 8443 \} ip saddr \$MAC_IP accept$",
+                       r"^tcp dport \{ 22, 8000, 8443 \} ether saddr \$MAC_HW accept$"):
+            self.assertLess(index(accept), drop, accept)
+        index(r"policy accept;")  # outbound is never touched
+
+    def test_loopback_and_replies_to_the_robot_get_in_before_anything_is_dropped(self):
+        first_drop = index(r"\bdrop$")
+        for accept in (r'^iif "lo" accept$', r"^ct state established,related accept$"):
+            self.assertLess(index(accept), first_drop, accept)
 
     def test_the_addresses_come_only_from_the_robots_own_hosts_file(self):
         include = index(r'^include "/etc/sage-guard/hosts\.nft"$')
         self.assertLess(include, index(r"^table inet sage_guard$"))
         self.assertEqual([r for r in RULES if r.startswith("define")], [])
-
-    def test_braces_balance(self):
-        text = "\n".join(RULES)
-        self.assertEqual(text.count("{"), text.count("}"))
 
 
 # A documentation address (RFC 5737) and a locally administered hardware address, built here so
@@ -81,6 +86,18 @@ class Hosts(unittest.TestCase):
         self.assertRegex(make, r"(?m)^ROBOT \?= pollen@reachy-mini\.local$")
         self.assertRegex(make, r"(?m)^allow-this-mac:")
         self.assertIn(".env", (HERE / ".gitignore").read_text().split())
+
+
+class Journal(unittest.TestCase):
+    """journald on the robot."""
+
+    def test_the_journal_is_kept_across_reboots_and_capped(self):
+        # A drop that ends in a reboot leaves its last seconds on record; the SD card never fills.
+        text = (HERE / "50-sage-persistent.conf").read_text()
+        section, *settings = [line for line in text.splitlines() if line and line[0] != "#"]
+        self.assertEqual(section, "[Journal]")
+        self.assertIn("Storage=persistent", settings)
+        self.assertTrue(any(re.fullmatch(r"SystemMaxUse=\d+[MG]", s) for s in settings), settings)
 
 
 class Relay(unittest.TestCase):

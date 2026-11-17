@@ -55,6 +55,8 @@ def check_manifest(manifest) -> dict:
             raise ValueError(f"Tool {name}: max_s must be a number of seconds ≥ 0")
         if not isinstance(tool.get("interruptible", False), bool):
             raise ValueError(f"Tool {name}: interruptible must be true or false")
+    if not isinstance(manifest.get("search", True), bool):
+        raise ValueError("manifest.search must be true or false")
     if "moves" in manifest:
         _check_moves(manifest["moves"], tools)
     return {"senses": tuple(senses),
@@ -62,6 +64,7 @@ def check_manifest(manifest) -> dict:
                             if key in tool} for tool in tools),
             **({"moves": manifest["moves"]} if "moves" in manifest else {}),
             **({"body": manifest["body"]} if "body" in manifest else {}),
+            **({"search": manifest["search"]} if "search" in manifest else {}),
             **({"output": dict(output)} if "output" in manifest else {})}
 
 

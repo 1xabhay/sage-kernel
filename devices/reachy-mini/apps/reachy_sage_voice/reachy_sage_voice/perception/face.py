@@ -7,6 +7,7 @@ room. A reading counts only while the detector is on and its stamp is at most
 with time passed in.
 """
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -51,3 +52,29 @@ def restamped(clock: Callable[[], float]):
         return SimpleNamespace(detected=reading.detected, x=getattr(reading, "x", None),
                                ts=last["at"])
     return restamp
+
+
+#: How long a stale reading lasts, with the detector wanted, before tracking is asked for again.
+REARM_S = 60.0
+
+
+def rearmer(rearm: Callable[[], None], every: float = REARM_S,
+            now: Callable[[], float] = time.monotonic) -> Callable[[bool], None]:
+    """Return ``check(stale)``, which calls ``rearm`` once ``stale`` has held ``every`` seconds.
+
+    It calls again at most every ``every`` seconds while it holds. A media reset restarts the
+    daemon's camera, and its one restart of tracking can fail; the detector then stays dead
+    with no other sign.
+    """
+    since: list[float | None] = [None]
+
+    def check(stale: bool) -> None:
+        t = now()
+        if not stale:
+            since[0] = None
+        elif since[0] is None:
+            since[0] = t
+        elif t - since[0] >= every:
+            since[0] = t
+            rearm()
+    return check

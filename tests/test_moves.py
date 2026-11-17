@@ -225,6 +225,23 @@ class Replay(unittest.TestCase):
         self.assertEqual(quiet.failures(got, {**got, "question_ending": 0, "movement_only": 0, "first_piece_p95_ms": 9999}),
                          ["movement-only 0% < 40%", "first piece p95 9999 ms against " + str(got["first_piece_p95_ms"]) + " ms"])
 
+    @unittest.skipUnless((Path(__file__).parents[1] / "bench" / "quiet.py").exists(), "the image has only bench/latency.py")
+    def test_labelled_lines_are_heard_as_speech_and_words_to_noise_are_counted(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parents[1] / "bench"))
+        import quiet
+
+        def decide(prompt, heard):
+            raw = answer("Sure, tomorrow then.")
+            heard(raw)
+            return raw
+        lines = [{"text": "Yeah.", "to_sage": False}, {"text": "The rain kept on falling all night long.", "to_sage": False},
+                 {"text": "Sage, what did you just say?", "to_sage": True}, {"text": "How do you", "to_sage": True}]
+        got = quiet.score(quiet.replay(lines, MOVING, decide))
+        self.assertEqual(got["silent_on_must_speak"], 0)  # heard cut off, a fragment needs no words
+        self.assertEqual((got["spoke_to_noise"], got["noise"]), (1, 2))  # "Yeah." gets the kernel's quiet move
+        self.assertEqual(got["turns"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

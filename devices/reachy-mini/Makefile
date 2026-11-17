@@ -27,8 +27,14 @@ up down:
 
 hygiene: lint imports vuln secrets test
 
+# Every test here that needs no speech model: each app's, the voice against the real kernel, and the
+# robot-side files. The STT and TTS contract tests load theirs: make -C $(VOICE)/services test.
+VOICE := apps/reachy_sage_voice
 test-all: test
 	for app in $(APPS); do $(MAKE) -C $$app test || exit 1; done
+	$(MAKE) -C $(VOICE) integration
+	$(MAKE) -C $(VOICE)/robot test
+	$(MAKE) -C $(VOICE)/services test-research
 
 hygiene-all: hygiene
 	for app in $(APPS); do $(MAKE) -C $$app hygiene || exit 1; done

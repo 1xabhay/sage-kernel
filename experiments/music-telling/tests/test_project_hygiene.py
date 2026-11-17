@@ -34,8 +34,9 @@ def test_compose_is_named_local_and_pinned():
     compose = (ROOT / "compose.yaml").read_text()
     assert re.search(r"^name: music-telling$", compose, re.M)
     assert ":latest" not in compose
-    for port in re.findall(r'^\s+- "([^"]+)"$', compose.split("ports:", 1)[1], re.M)[:1]:
-        assert port.startswith("127.0.0.1:"), port
+    ports = [port for block in re.findall(r"^\s+ports:\n((?:\s+- .*\n)+)", compose, re.M)
+             for port in re.findall(r'- "?([^"\n]+)', block)]
+    assert ports and all(port.startswith("127.0.0.1:") for port in ports), ports
     assert "./src:" not in compose  # Colima can't see bind mounts
 
 

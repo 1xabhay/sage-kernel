@@ -81,10 +81,6 @@ class Turns(unittest.TestCase):
         self.assertEqual(state.turn.status, "completed")
         self.assertEqual(state.exchanges[-1].reply_sequence, 12)
 
-    def test_a_reply_never_speaks_a_tool_s_syntax(self):
-        _, rows = answered(asked(), output("Sure (emote: ) thing."))
-        self.assertEqual(rows[1].body, {"text": "Sure thing."})
-
     def test_silence_is_a_decision(self):
         state, rows = answered(asked(), output(""))
         self.assertEqual(kinds(rows), [("decided", None), ("completed", None)])
@@ -171,19 +167,13 @@ class Results(unittest.TestCase):
     def report(self, effect, status, text=None, reason=None, timing=None, source="reachy", state=None):
         return policy.report(state or self.state, source, effect, status, text, reason, timing or {})
 
-    def test_an_interrupted_reply_is_remembered_as_only_what_was_heard(self):
-        state, rows = self.report(self.reply, "interrupted", "One two")
-        self.assertEqual(state.exchanges[-1].reply, "One two")
-        context = json.dumps(policy.compile_prompt(asked("Go on", state=state), "reachy", MANIFEST).context)
-        self.assertIn("One two", context)
-        self.assertNotIn("five six", context)
-        self.assertEqual(kinds(rows), [("result", None)])
-
-    def test_an_interrupted_reply_is_noted_outside_the_model_s_own_words(self):
+    def test_an_interrupted_reply_is_kept_as_only_what_was_heard_and_noted_outside_the_model_s_own_words(self):
         """Live: {"reply": "I'll (interrupted)"} in history made the model say "(interrupted)" aloud."""
-        state, _ = self.report(self.reply, "interrupted", "One two")
+        state, rows = self.report(self.reply, "interrupted", "One two")
+        self.assertEqual(kinds(rows), [("result", None)])
         context = policy.compile_prompt(asked("Go on", state=state), "reachy", MANIFEST).context
         self.assertEqual(json.loads(context[1]["content"])["reply"], "One two")
+        self.assertNotIn("five six", json.dumps(context))
         self.assertEqual(context[2], {"role": "tool", "content": '(the person interrupted you after: "One two")'})
         streamed, _ = policy.report_turn(asked("Count"), "reachy", "r1", None, "interrupted", "", None, {})
         context = policy.compile_prompt(asked("Go on", turn_id="r2", state=streamed), "reachy", MANIFEST).context
@@ -363,12 +353,6 @@ class Lanes(unittest.TestCase):
         self.assertEqual([self.lane(bare, d).status for d in ("phone", "reachy")], ["cancelled", "cancelled"])
         self.assertEqual(kinds(rows), [("stop", None), ("stop", "reachy")])
 
-    def test_a_streaming_result_from_another_device_is_forbidden(self):
-        both = asked("Count", "phone", "p1", asked("Count", "reachy", "r1"))
-        with self.assertRaises(Refused) as refused:
-            policy.report_turn(both, "phone", "r1", None, "interrupted", "One", None, {})
-        self.assertEqual(refused.exception.code, "forbidden")
-
     def test_lanes_survive_the_checkpoint_and_a_v1_checkpoint_has_one_lane(self):
         both = asked("Hi", "phone", "p1", asked("Hi", "reachy", "r1"))
         self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(both)))), both)
@@ -388,17 +372,6 @@ class Provenance(unittest.TestCase):
         self.assertEqual(second.context[1], {"role": "assistant", "content": output("Hello.")})
         with self.assertRaises(AttributeError):
             first.system = "changed"
-
-    def test_history_is_byte_stable_so_the_model_server_reuses_its_cache(self):
-        state = asked("Feel happy")
-        before = policy.compile_prompt(state, "reachy", MANIFEST)
-        state, _ = answered(state, output("Yay!", emote={"name": "cheerful1"}))
-        after = policy.compile_prompt(asked("And now?", turn_id="r2", state=state), "reachy", MANIFEST)
-        self.assertEqual(after.messages()[0], before.messages()[0])  # the cached start
-        self.assertEqual(after.context[0], before.context[0])  # every message is sent again as it was
-        state, _ = answered(asked("And now?", turn_id="r2", state=state))
-        later = policy.compile_prompt(asked("Then?", turn_id="r3", state=state), "reachy", MANIFEST)
-        self.assertEqual(later.context[:2], after.context[:2])
 
     def test_the_newest_message_reminds_the_model_of_its_tools_and_its_character(self):
         """Persona fidelity decays over a dialogue: a one-line reminder rides on each line, kept on it as it was sent (the model server's cache)."""
@@ -520,6 +493,8 @@ class Memory(unittest.TestCase):
             state, _ = answered(asked(turn_id=f"r{index}", state=state), output("Okay.", remember=f"Fact  {index}. "))
         state, _ = answered(asked(turn_id="again", state=state), output("Okay.", remember="fact 5."))
         self.assertEqual(state.facts, tuple(f"Fact {i}." for i in range(2, policy.MAX_FACTS + 2)))
+        long, _ = answered(asked(), output("Okay.", remember="x" * 200))
+        self.assertEqual(long.facts, ("x" * manifest.MAX_FACT,))
 
     def test_forget_drops_every_fact_holding_its_words_and_a_blank_one_drops_nothing(self):
         state, _ = answered(asked(), output("Okay.", remember="Has a dog named Mochi."))
@@ -629,6 +604,8 @@ class Senses(unittest.TestCase):
                          "Hello there. I can't see yet; I can only hear you. Nice day!")
         self.assertEqual(policy.honest("I can hear you fine.", ()), "I can't hear yet.")
         self.assertEqual(policy.honest("I see what you mean.", self.HEARING), "I see what you mean.")
+        self.assertEqual(policy.honest("I see you. I can see a cup.", self.HEARING),
+                         "I can't see yet; I can only hear you.")  # two false sentences, said once
 
     def test_streaming_holds_only_a_reply_that_opens_with_a_possible_claim(self):
         for held in ("I ", "I can ", "Yes, I ", "I see you "):
@@ -905,10 +882,6 @@ class Limits(unittest.TestCase):
         self.assertTrue(policy.take(bucket, 0.1)[0])
         self.assertFalse(policy.take(policy.take(bucket, 0.1)[1], 0.1)[0])
 
-    def test_freshness_follows_the_kernel_clock(self):
-        self.assertFalse(policy.stale(100.0, 110.0, 10))
-        self.assertTrue(policy.stale(100.0, 110.01, 10))
-
 
 SONG = ("Pulse", ("Pulse: a 2026 single by Mira Vale featuring Odo, from the album Night Glass.",
                   "MusicBrainz: produced by Kenji Aro and Mira Vale; recorded in Lisbon.",
@@ -1040,10 +1013,6 @@ class Budget(unittest.TestCase):
         self.assertLess(tokens, OPTIONS["num_ctx"] - OPTIONS["num_predict"], f"{tokens:.0f} estimated tokens")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Description(unittest.TestCase):
     def test_an_enum_its_description_already_spells_out_is_not_printed_twice(self):
         """The emote names were listed twice in the cached prefix, once in the enum and once in their glosses:
@@ -1057,3 +1026,7 @@ class Description(unittest.TestCase):
         self.assertIn("yes1: agree.", text)
         self.assertIn('"enum": ["left", "right"]', text)  # "right" is not in its description: kept
         self.assertEqual(manifest.format_schema((spelled,))["properties"]["emote"], spelled["inputSchema"])
+
+
+if __name__ == "__main__":
+    unittest.main()

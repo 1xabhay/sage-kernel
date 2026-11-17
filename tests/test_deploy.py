@@ -251,10 +251,6 @@ class CommitGateTests(unittest.TestCase):
         self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^test: unit conformance$")
         self.assertRegex((ROOT / "Makefile").read_text(), r"(?m)^check: test$")
 
-# ponytail: these are red until repo/experiments merges (it names them, drops `down -v`, and moves
-# music-telling to experiments/); delete this list then.
-NOT_YET = {"apps/music-telling/docker-compose.yml", "apps/music-telling/Makefile", "experiments/sage-os/compose.yaml"}
-
 
 @unittest.skipUnless((ROOT / ".git").exists(), "checks the git checkout")
 class RepoWideComposeTests(unittest.TestCase):
@@ -262,7 +258,7 @@ class RepoWideComposeTests(unittest.TestCase):
 
     def tracked(self, pattern: str) -> list[str]:
         out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
-        return [p for p in out.split("\0") if re.search(pattern, p) and p not in NOT_YET]
+        return [p for p in out.split("\0") if re.search(pattern, p)]
 
     def test_every_compose_file_pins_its_project_name(self):
         files = self.tracked(r"(^|/)(docker-)?compose[\w.-]*\.ya?ml$")
@@ -295,6 +291,7 @@ class HygieneTests(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text()
         self.assertRegex(makefile, r"(?m)^hygiene: source docs lint vuln secrets test$")
         self.assertIn("-m unittest tests.test_deploy tests.test_boundary", recipe("source"))
+        self.assertIn("tests.test_moves", recipe("source"))  # its bench replay needs bench/quiet.py: host only
         runs = re.findall(r"(?m)^\s+run: (.*)$", (ROOT / ".github/workflows/ci.yml").read_text())
         self.assertEqual(runs, ["make hygiene"])
 
@@ -363,7 +360,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_the_root_fans_out_to_every_project(self):
         makefile = (ROOT / "Makefile").read_text()
-        self.assertRegex(makefile, r"(?m)^PROJECTS := \. devices/reachy-mini experiments/sage-os experiments/music-telling$")
+        self.assertRegex(makefile, r"(?m)^PROJECTS := \. devices/common/sage_device devices/reachy-mini experiments/sage-os experiments/music-telling$")
         self.assertIn("for p in $(PROJECTS); do", makefile)
         for target in ("test-all", "hygiene-all"):
             with self.subTest(target=target):

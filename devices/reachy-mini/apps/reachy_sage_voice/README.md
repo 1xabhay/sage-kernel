@@ -165,7 +165,7 @@ missing one stops the app with its name.
 | `SAGE_VOICE_TTS_VOICE` | `azelma` | Any voice the TTS lists (`GET /v1/audio/voices`) |
 | `SAGE_VOICE_TURN` | `silence` | `silence`: a pause ends your turn. `smart`: Smart Turn v3 decides, and the STT hears the turn whole |
 | `SAGE_VOICE_TURN_END_MS` | `600` | Silence that ends a turn. Measured on the owner's live turns (`eval/turn_taking.py`, `eval/LEDGER.md (turn-taking rows)`); each 100 ms more is 100 ms on every reply |
-| `SAGE_VOICE_HOLD_MS` | `0` (off) | A turn whose transcript stops mid-sentence (no closing `.?!`, or ends on "and", "uh"...) waits this long in all from the end of speech, so the rest joins it; e.g. `2000` |
+| `SAGE_VOICE_HOLD_MS` | `1500` (`0`: off) | A turn whose transcript stops mid-sentence (no closing `.?!`, or ends on "and", "uh"...) waits this long in all from the end of speech, so the rest joins it. A whole sentence never waits |
 | `SAGE_VOICE_BARGE_IN_MS` | `200` | Speech that must last before the robot stops talking; `0` stops it on the VAD's first voiced frame (breaths, knocks and its own voice did, live) |
 | `SAGE_VOICE_TURN_TIMEOUT_MS` | `1500` | `smart` only: silence that ends a turn Smart Turn calls incomplete |
 | `SAGE_VOICE_MIC_CHANNEL` | `mean` | `mean`, `0` or `1` of the mic array's stereo |

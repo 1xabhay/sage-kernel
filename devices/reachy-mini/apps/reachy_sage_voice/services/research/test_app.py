@@ -5,6 +5,7 @@
 import asyncio
 import re
 import unittest
+from unittest import mock
 
 import app
 import httpx
@@ -78,16 +79,23 @@ class FakeShazam:
     answer = {}
 
     async def recognize(self, data):
+        if isinstance(self.answer, Exception):
+            raise self.answer
         return self.answer
 
 
 class ResearchContract(unittest.TestCase):
     def setUp(self):
         self.handler = web
-        app.TRANSPORT = httpx.MockTransport(lambda r: self.handler(r))
-        app.MB_GAP = 0
-        app.Shazam = FakeShazam
+        transport = httpx.MockTransport(lambda r: self.handler(r))
+        self.set(TRANSPORT=transport, MB_GAP=0, Shazam=FakeShazam)
         self.client = TestClient(app.app)
+
+    def set(self, **settings):
+        """Change the app's settings for this test only."""
+        patch = mock.patch.multiple(app, **settings)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def research(self):
         r = self.client.post("/research", json={"title": TITLE, "artist": ARTIST})
@@ -105,8 +113,49 @@ class ResearchContract(unittest.TestCase):
     def test_search_with_searxng_down_or_slow_finds_nothing_in_its_budget(self):
         def down(request):
             raise httpx.ConnectError("connection refused")
-        self.handler = down
-        self.assertEqual(self.client.post("/search", json={"q": "Who won?"}).json()["passages"], [])
+
+        async def slow(request):
+            await asyncio.sleep(5)
+            return web(request)
+        self.set(SEARCH_BUDGET=0.05)
+        for self.handler in (down, slow):
+            with self.subTest(self.handler.__name__):
+                r = self.client.post("/search", json={"q": "Who won?"})
+                self.assertEqual((r.status_code, r.json()["passages"]), (200, []))
+
+    def test_search_sends_at_most_200_characters_and_skips_results_without_a_link_or_text(self):
+        asked = []
+
+        def results(request):
+            asked.append(request.url.params["q"])
+            return httpx.Response(200, json={"results": [
+                {"title": "No link", "content": "Nowhere to point."},
+                {"title": "", "content": "", "url": "https://www.empty.example/"},
+                {"title": "Tide times", "content": "High at noon.",
+                 "url": "https://www.tides.example/today"}]})
+        self.handler = results
+        body = self.client.post("/search", json={"q": "tide " * 100}).json()
+        self.assertEqual(body["passages"], ["tides.example: Tide times. High at noon."])
+        self.assertEqual([len(q) for q in asked], [200])
+
+    def test_a_result_that_is_not_https_is_never_fetched(self):
+        """A search result can name any URL: one on plain http (a home router's, say) stays shut."""
+        fetched = []
+
+        def handler(request):
+            fetched.append(str(request.url))
+            if request.url.host == "searxng" and request.url.params.get("categories") != "news":
+                return httpx.Response(200, json={"results": [
+                    {"title": "The router", "content": "Its admin page.",
+                     "url": "http://router.example/admin"},
+                    {"title": "What Blinding Lights means", "content": "A song about longing.",
+                     "url": "https://www.page1.example/blinding"}]})
+            return web(request)
+        self.handler = handler
+        text = "\n".join(self.research()["passages"])
+        self.assertEqual([u for u in fetched if "router.example" in u], [])
+        # The https page beside it is still read.
+        self.assertIn("Web, page1.example: The song was written", text)
 
     def test_health_is_ready_when_searxng_answers(self):
         self.assertEqual(self.client.get("/health").json(), {"ready": True})
@@ -124,21 +173,18 @@ class ResearchContract(unittest.TestCase):
         self.assertEqual(r.status_code, 200)  # a dead dependency is not a dead container
         return r.json()
 
-    def test_health_is_not_ready_when_searxng_does_not_answer(self):
-        body = self.searxng_health(httpx.ConnectError("connection refused"))
-        self.assertIs(body["ready"], False)
-        self.assertIn("connection refused", body["searxng"])
+    def test_health_is_not_ready_and_says_why_when_searxng_is_down_or_unhealthy(self):
+        refused = httpx.ConnectError("connection refused")
+        for answer, why in ((refused, "connection refused"), (503, "503")):
+            with self.subTest(why):
+                body = self.searxng_health(answer)
+                self.assertIs(body["ready"], False)
+                self.assertIn(why, body["searxng"])
 
-    def test_health_is_not_ready_when_searxng_is_unhealthy(self):
-        body = self.searxng_health(503)
-        self.assertIs(body["ready"], False)
-        self.assertIn("503", body["searxng"])
-
-    def test_the_topic_names_the_song(self):
-        self.assertEqual(self.research()["topic"], '"Blinding Lights" by The Weeknd')
-
-    def test_passage_zero_is_the_card(self):
-        card = self.research()["passages"][0]
+    def test_the_answer_names_the_song_and_leads_with_its_card(self):
+        answer = self.research()
+        self.assertEqual(answer["topic"], '"Blinding Lights" by The Weeknd')
+        card = answer["passages"][0]
         for part in ("Card", TITLE, ARTIST, "Guest", "After Hours", "2019-11-29", "synth-pop", "3:20", "XO"):
             self.assertIn(part, card)
         self.assertNotIn("\n", card)
@@ -192,26 +238,41 @@ class ResearchContract(unittest.TestCase):
                 await asyncio.sleep(5)
             return web(request)
         self.handler = slow
-        app.BUDGET, budget = 0.5, app.BUDGET
-        try:
-            passages = self.research()["passages"]
-        finally:
-            app.BUDGET = budget
+        self.set(BUDGET=0.2)
+        passages = self.research()["passages"]
         self.assertFalse(any(p.startswith("Lyrics") for p in passages))
         self.assertTrue(any(p.startswith("Wikipedia") for p in passages))
 
+    def test_a_wikipedia_page_about_something_else_is_left_out(self):
+        def other_page(request):
+            asked = request.url.params.get("gsrsearch", "song")
+            if request.url.host == "en.wikipedia.org" and "song" not in asked:
+                return httpx.Response(200, json={"query": {"pages": [
+                    {"title": "Weekend (disambiguation)", "extract": ARTIST_ARTICLE}]}})
+            return web(request)
+        self.handler = other_page
+        text = "\n".join(self.research()["passages"])
+        self.assertNotIn("Wikipedia, the artist", text)
+        self.assertIn("Wikipedia, the song: ", text)
+
     def identify(self, answer):
+        self.addCleanup(setattr, FakeShazam, "answer", FakeShazam.answer)
         FakeShazam.answer = answer
-        return self.client.post("/identify", files={"file": ("a.wav", b"RIFF....WAVE", "audio/wav")}).json()
+        clip = {"file": ("a.wav", b"RIFF....WAVE", "audio/wav")}
+        return self.client.post("/identify", files=clip)
 
-    def test_identify_not_found(self):
-        self.assertEqual(self.identify({"matches": []}), {"found": False})
+    def test_a_snippet_shazam_cannot_name_is_not_found(self):
+        self.assertEqual(self.identify({"matches": []}).json(), {"found": False})
 
-    def test_identify_found(self):
+    def test_shazam_not_answering_is_a_502(self):
+        """The voice says it cannot look the song up (reachy_sage_voice/song.py)."""
+        self.assertEqual(self.identify(ConnectionError("no route")).status_code, 502)
+
+    def test_a_named_song_comes_back_with_album_year_and_genre(self):
         track = {"title": TITLE, "subtitle": ARTIST, "genres": {"primary": "Pop"}, "sections": [
             {"type": "SONG", "metadata": [{"title": "Album", "text": "After Hours"},
                                           {"title": "Released", "text": "2019"}]}]}
-        self.assertEqual(self.identify({"matches": [{}], "track": track}), {
+        self.assertEqual(self.identify({"matches": [{}], "track": track}).json(), {
             "found": True, "title": TITLE, "artist": ARTIST, "album": "After Hours", "year": "2019", "genre": "Pop"})
 
 

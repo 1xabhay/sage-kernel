@@ -30,6 +30,9 @@ services:
       # The web, through the voice's research service (its POST /search); empty: never searched.
       # e.g. http://host.docker.internal:8783. Only the asked line leaves this Mac (docs/PROTOCOL.md, Web search).
       SAGE_SEARCH_URL: ${SAGE_SEARCH_URL:-}
+      # The web pages whose browser may call this kernel, e.g. https://notebook.example (comma-separated); empty: none
+      # (docs/PROTOCOL.md §1, "A body in a browser").
+      SAGE_ORIGINS: ${SAGE_ORIGINS:-}
     # 8765/8766 belong to the previous kernel while it runs.
     ports:
       - "127.0.0.1:8776:8766"

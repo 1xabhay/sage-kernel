@@ -82,6 +82,6 @@ def test_grab_accepts_a_frame_that_changed():
 
     first = _scene()
     second = _rotate_head(first, "yaw", 10.0)
-    stuck = type("M", (), {"media": type("Md", (), {"get_frame": lambda self: second})()})()
+    moving = type("M", (), {"media": type("Md", (), {"get_frame": lambda self: second})()})()
 
-    assert rotation_test._grab(stuck, after=first, timeout=0.3) is second
+    assert rotation_test._grab(moving, after=first, timeout=0.3) is second

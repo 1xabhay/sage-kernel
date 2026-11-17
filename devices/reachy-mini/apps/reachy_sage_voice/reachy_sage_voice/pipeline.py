@@ -19,7 +19,7 @@ here can reach the internet unless someone configures it to.
     SAGE_VOICE_TURN_END_MS   silence that ends a turn; default 600, measured on the
                              owner's live turns (``eval/turn_taking.py``)
     SAGE_VOICE_HOLD_MS       a turn whose transcript stops mid-sentence waits this long
-                             in all from the end of speech for the rest; default 0 (off)
+                             in all from the end of speech for the rest; default 1500 (0: off)
     SAGE_VOICE_BARGE_IN_MS   speech that must last before the bot yields; default 200
     SAGE_VOICE_TURN          silence (default): the VAD's silence ends a turn; smart:
                              Smart Turn v3 decides, after a 0.2 s VAD stop,
@@ -366,7 +366,7 @@ def build(media: ReachyMedia, play_emote: Callable, moves: Mapping,
                       executor=executor, finish=frozenset(
                           name for name, move in moves.items()
                           if getattr(move, "duration", math.inf) <= EMOTE_FINISH_S),
-                      hold_s=int(env.get("SAGE_VOICE_HOLD_MS", 0)) / 1000, rng=random),
+                      hold_s=int(env.get("SAGE_VOICE_HOLD_MS", 1500)) / 1000, rng=random),
         tts,
         ReachyOutputTransport(media, TransportParams(
             audio_out_enabled=True, audio_out_sample_rate=media.get_output_audio_samplerate())),

@@ -48,6 +48,8 @@ def rendered(prompt: policy.CompiledPrompt) -> dict:
 
 
 class SingleDevice(unittest.TestCase):
+    maxDiff = None  # 17 KB of prompt: show the changed bytes, not a truncated diff
+
     def test_one_device_s_prompt_is_byte_for_byte_the_golden_one(self):
         """The prompt v1.1 sent for one body; per-device rendering must not change a byte of it (cache, evals).
         SAGE_WRITE_GOLDEN=1 rewrites the file: only for a change meant to alter every prompt."""

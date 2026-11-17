@@ -36,13 +36,14 @@ def main() -> None:
         if not zone:
             print("sage: SAGE_TZ is not set: times are this machine's, UTC in a container", file=sys.stderr)
         host, port = os.environ.get("SAGE_DEVICE_BIND", "127.0.0.1"), int(os.environ.get("SAGE_DEVICE_PORT", "8766"))
+        origins = http.parse_origins(os.environ.get("SAGE_ORIGINS", ""))  # pages whose browser may call; empty: none
     except (OSError, ValueError, KeyError) as error:  # KeyError: an unknown SAGE_TZ
         sys.exit(f"sage: {error}")
     journal = Journal(Path(os.environ.get("SAGE_STATE_DIR", ".local/state")) / "kernel.sqlite3")
     kernel = Kernel(journal, decide, fresh_s, timings=timings, warm=warm, tz=tz,
                     place=os.environ.get("SAGE_PLACE", ""), search=look)
     threading.Thread(target=kernel.ticking, daemon=True).start()
-    server = http.serve(kernel, devices, host, port)
+    server = http.serve(kernel, devices, host, port, origins)
     print(f"sage: devices on {host}:{port}", file=sys.stderr)
     server.serve_forever()
 

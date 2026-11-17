@@ -143,11 +143,13 @@ def test_the_voiceprint_volume_keeps_its_name_whatever_the_project():
 
 def test_deploy_builds_each_image_from_the_commit_and_rolls_back_through_up_tag():
     deploy, up_tag = recipe("deploy"), recipe("up-tag")
-    # From the top: run in a subfolder, git archive of a tree keeps only that subfolder's paths (live: empty).
+    # From the top: run in a subfolder, git archive of a tree keeps only that subfolder's
+    # paths (live: empty).
     assert 'git -C "$$top" archive "$$sha:$$here$$s" | docker build' in deploy
     assert "docker compose build" not in deploy and "--build" not in deploy + up_tag
-    # Live 2026-11-09: a second STT beside the live one ran the VM out of memory, and the owner's voiceprint
-    # dropped the test clip. The live STT stops for the test, which never reads the voiceprint, and a failure
+    # Live 2026-11-09: a second STT beside the live one ran the VM out of memory, and the
+    # owner's voiceprint dropped the test clip. The live STT stops for the test, which never
+    # reads the voiceprint, and a failure
     # brings the running tag back.
     assert deploy.index("docker compose stop stt") < deploy.index("python -m unittest")
     assert "-e SAGE_VOICEPRINT=/nonexistent" in deploy

@@ -14,6 +14,8 @@ COMMENTARY = [
     "Strategy will be key in the second half of this race with rain expected in twenty minutes.",
     "He has made a superb start from fourth on the grid and is up into second place already.",
 ]
+#: The four of them that read as a broadcast's: "give up" makes the second one the person's.
+BROADCAST = [line for line in COMMENTARY if "give up" not in line]
 
 
 def watching(lines=COMMENTARY, start=0.0, every=8.0):
@@ -23,6 +25,11 @@ def watching(lines=COMMENTARY, start=0.0, every=8.0):
     return watch
 
 
+def f1_watching():
+    lap = "Lap thirty of fifty seven here at the Grand Prix, and the pit wall is busy."
+    return watching([*COMMENTARY, lap])
+
+
 def test_sustained_commentary_starts_a_session_with_no_command():
     watch = media.Watch()
     kinds = []
@@ -30,8 +37,14 @@ def test_sustained_commentary_starts_a_session_with_no_command():
         watch, kind = media.heard(watch, i * 8.0, line)
         kinds.append(kind)
     assert watch.on
+    assert len(BROADCAST) == media.START_LINES and watching(BROADCAST).on
+    assert not watching(BROADCAST[:-1]).on  # one line short: nothing yet
     assert kinds[-1] == media.COMMENTARY  # once it is on, a long broadcast line is the TV's
     assert media.context(watch)["about"] == "a sports broadcast"
+
+
+def test_commentary_spread_over_more_than_a_minute_starts_nothing():
+    assert not watching(BROADCAST, every=media.WINDOW_S / 2).on
 
 
 def test_one_long_line_from_the_person_starts_nothing():
@@ -49,15 +62,14 @@ def test_the_person_is_still_heard_during_the_broadcast():
     watch = watching()
     for line in ("Yeah.", "That was crazy, buddy.", "Oh no!", "Sage, who do you think wins?",
                  "Do you think he can hold on to it?",
-                 "I'm so tired, I need help with dinner later tonight please."):
+                 "I'm so tired, I need help with dinner later tonight please.",
+                 "Remember that the race starts at three tomorrow afternoon."):
         kind = media.heard(watch, 50.0, line, named=lambda word: word == "sage")[1]
         assert kind == media.PERSON, line
 
 
 def test_the_person_gets_what_is_on_and_a_profile_from_its_words():
-    lap = "Lap thirty of fifty seven here at the Grand Prix, and the pit wall is busy."
-    watch = watching([*COMMENTARY, lap])
-    about = media.context(watch)
+    about = media.context(f1_watching())
     assert about["about"] == "a Formula 1 race"
     assert about["heard"][-1].startswith("Lap thirty")
     assert len(about["heard"]) <= media.HEARD
@@ -69,6 +81,14 @@ def test_it_ends_after_a_quiet_spell():
     watch, kind = media.heard(watch, 40.0 + media.END_S + 1, "So, what do you want for dinner?")
     assert not watch.on and kind == media.PERSON
     assert media.context(watch) is None
+
+
+def test_short_commentary_keeps_the_session_from_ending():
+    """A run of short calls is still the race: it ends END_S after the last of them."""
+    watch, kind = media.heard(f1_watching(), 200.0, "Box, box.")
+    assert kind == media.COMMENTARY
+    watch, _ = media.heard(watch, 300.0, "Yeah.")  # over END_S since the last long line
+    assert watch.on
 
 
 def test_big_moments_get_a_move_and_now_and_then_a_few_words():
@@ -115,6 +135,7 @@ def test_odds_and_betting_never_reach_the_kernel():
     bet = "The bookmakers have him at two to one now, odds shortening by the lap here."
     kept = media.context(watching([*COMMENTARY, bet]))["heard"]
     assert not any("odds" in line or "bookmaker" in line for line in kept)
+    assert media.heard(watching(), 50.0, bet)[1] == media.COMMENTARY  # nor as the person's turn
 
 
 def test_a_long_merged_broadcast_stays_the_tvs_even_with_a_worried_word_in_it():
@@ -124,11 +145,6 @@ def test_a_long_merged_broadcast_stays_the_tvs_even_with_a_worried_word_in_it():
             "into the path of the leader, which the stewards will look at after the race tonight.")
     assert media.heard(watching(), 50.0, long)[1] == media.COMMENTARY
     assert media.heard(watching(), 50.0, "I feel unsafe, something's wrong.")[1] == media.PERSON
-
-
-def f1_watching():
-    lap = "Lap thirty of fifty seven here at the Grand Prix, and the pit wall is busy."
-    return watching([*COMMENTARY, lap])
 
 
 def test_short_commentary_in_the_races_own_words_is_the_tvs():

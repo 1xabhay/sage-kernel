@@ -4,13 +4,18 @@ The kernel is sage-kernel's own (``SAGE_KERNEL_DIR``, default the monorepo
 root, as ``apps/reachy_sim`` finds it), started by its conformance suite on
 a free loopback port with a throwaway state directory, thinking with that
 suite's fake Ollama, whose answers each test scripts. The voice is the app's
-real ``Session``, ``SageProcessor``, Kokoro TTS service with its clause
-aggregator, output transport and ``BotSpeech``. Faked: the transcripts (sent as
-frames), Kokoro's HTTP server (captioned speech, 0.1 s a word), and the robot
-(its speaker and moves).
+real ``Session``, ``SageProcessor``, TTS client (``KokoroTTSService``, named for
+the Kokoro-FastAPI wire shape it speaks) with its clause aggregator, output
+transport and ``BotSpeech``. Faked: the transcripts (sent as frames), the TTS
+server (Pocket's captioned speech as services/tts/app.py streams it, 0.1 s a
+word), and the robot (its speaker and moves).
 
-Each scenario checks both sides of the wire: what the voice gave Kokoro or the
+Each scenario checks both sides of the wire: what the voice gave the TTS or the
 speaker played, and the kernel's journal (or the prompt it built from it).
+
+A spoken line of four words or fewer that is no question gets a move and no
+words from the kernel (sage/policy.py ``quiet_move``; the voice sends no
+confidence), so the scenarios speak in longer lines; one pins that rule itself.
 """
 
 import asyncio
@@ -45,7 +50,8 @@ pytestmark = pytest.mark.integration
 
 APP = Path(__file__).resolve().parents[2]
 KERNEL_DIR = Path(os.environ.get("SAGE_KERNEL_DIR", APP.parents[3]))
-WORD_S = 0.1  # how long the fake Kokoro takes to say each word
+WORD_S = 0.1  # how long the fake TTS takes to say each word
+FRAME_S = 0.08  # Pocket's frame: the live server sends one line for each
 
 
 def _conformance():
@@ -144,20 +150,26 @@ class Rig:
 
 
 def _captioned(fake):
-    """Answer as Kokoro-FastAPI's captioned speech: one NDJSON line, every word WORD_S long."""
+    """Answer as the live TTS streams captioned speech (services/tts/app.py).
+
+    One NDJSON line per audio frame, the words on the first line and none after. Every word is
+    WORD_S long.
+    """
     text = fake.requests[-1]["body"]["input"]
     said = text.split()
-    audio = (np.ones(int(RATE * WORD_S * len(said)), dtype=np.int16) * 1000).tobytes()
+    audio = np.ones(int(RATE * WORD_S * len(said)), dtype=np.int16) * 1000
     stamps = [{"word": w, "start_time": i * WORD_S, "end_time": (i + 1) * WORD_S}
               for i, w in enumerate(said)]
-    line = {"audio": base64.b64encode(audio).decode(), "audio_format": "audio/pcm",
-            "timestamps": stamps}
-    return 200, json.dumps(line).encode() + b"\n"
+    size = int(RATE * FRAME_S)
+    lines = [{"audio": base64.b64encode(audio[at:at + size].tobytes()).decode(),
+              "audio_format": "audio/pcm", "timestamps": [] if at else stamps}
+             for at in range(0, len(audio), size)]
+    return 200, "".join(json.dumps(line) + "\n" for line in lines).encode()
 
 
 @pytest.fixture
 def rig(request, http_server):
-    """Start the kernel and the fake Kokoro, with the voice to run between them.
+    """Start the kernel and the fake TTS, with the voice to run between them.
 
     ``@pytest.mark.kernel_env(NAME="value")`` sets kernel settings beyond the suite's defaults.
     """
@@ -241,17 +253,17 @@ def test_a_new_transcript_mid_reply_interrupts_it_cleanly(rig):
     old = ("One two three four five six seven eight. Nine ten eleven twelve. "
            "Thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty.")
     new = "Sure. Here is a new answer. And a second sentence too."
-    rig.replies = {"Count for me.": (old, {}), "Actually, something else.": (new, {})}
+    first, second = "Please count to twenty for me.", "Actually, tell me something else instead."
+    rig.replies = {first: (old, {}), second: (new, {})}
     rig.provider.midway.clear()  # the first sentence streams, the rest is still being written
 
     def release():
         wait_for(lambda: len(rig.journal("submitted")) == 2)
         rig.provider.midway.set()
 
-    down = rig.run([heard("Count for me."), SleepFrame(0.6), heard("Actually, something else."),
-                    SleepFrame(3.5)], during=release)
-    first, _ = rig.journal("submitted")
-    played = interrupted(rig, first, sequence=False)
+    down = rig.run([heard(first), SleepFrame(0.6), heard(second), SleepFrame(3.5)], during=release)
+    counting, _ = rig.journal("submitted")
+    played = interrupted(rig, counting, sequence=False)
     assert 0 < len(played) < 8 and played == old.split()[:len(played)]
     assert spoken(down) == played + new.split()  # nothing doubled, nothing stale, nothing dropped
     assert [r["text"] for r in rig.journal("reply")] == [new]
@@ -322,8 +334,9 @@ def test_a_reply_cut_at_the_cap_streams_only_what_is_journaled(rig):
             "one was. The third sentence goes on and on and on until it runs well past the cap "
             "that the kernel sets.")
     assert len(long) > 160
-    rig.replies = {"Talk a lot.": (long[:160], {})}  # the decoder stops at the cap, mid-word
-    down = rig.run([heard("Talk a lot."), SleepFrame(4.0)])
+    asked = "Talk for a long while about your day."
+    rig.replies = {asked: (long[:160], {})}  # the decoder stops at the cap, mid-word
+    down = rig.run([heard(asked), SleepFrame(4.0)])
     (reply,) = rig.journal("reply")
     assert len(reply["text"]) <= 160 and long.startswith(reply["text"])
     streamed = " ".join(rig.tts_inputs()).split()
@@ -339,3 +352,16 @@ def test_an_emote_result_carries_how_long_the_move_took(rig):
     assert result["status"] == "done"
     assert 250 <= (result.get("duration_ms") or 0) <= 2000  # the move takes 0.3 s
     assert spoken(down) == ["Yay!"]
+
+
+def test_a_short_statement_heard_without_confidence_gets_a_move_and_no_words(rig):
+    # Always on, no wake word: a few words that are no question may be the room's talk, not said
+    # to Sage. The kernel answers with a look and asks the model nothing (policy.quiet_move).
+    down = rig.run([heard("Only the kettle."), SleepFrame(2.0)])
+    assert rig.robot.moves == ["attentive1"]
+    assert rig.provider.requests == []
+    assert rig.tts_inputs() == [] and spoken(down) == []
+    assert [r["text"] for r in rig.journal("reply") if r["text"]] == []
+    (emote,) = rig.journal("emote")
+    (result,) = [r for r in rig.journal("result") if r.get("sequence") == emote["sequence"]]
+    assert result["status"] == "done"

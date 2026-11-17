@@ -18,7 +18,8 @@ PATTERNS = pet.compile_patterns({
     "bot_off": r"pipecat\.\S+:_bot_stopped_speaking:\d+ - Bot stopped speaking$",
     "turn": VOICE + r"sage:" + latency.START.pattern,
     "initiated": VOICE + r"sage:initiated$",
-    "say": r"pipecat\.services\.\S+:_push_tts_frames:\d+ - \S+ Generating TTS \[(?P<text>.*)\]$",
+    # No function name: Pipecat renamed it once (1.15) and the scorecard counted nothing Sage said.
+    "say": r"pipecat\.services\.\S+:\w+:\d+ - \S+ Generating TTS \[(?P<text>.*)\]$",
     "overheard": VOICE + r"sage:overheard: quiet$",
     "unsure": VOICE + r"sage:unsure: (tilted|quiet)$",
     "emote": VOICE + r"(sage:(emote|gesture): |executor:recorded (emotion|dance): )",

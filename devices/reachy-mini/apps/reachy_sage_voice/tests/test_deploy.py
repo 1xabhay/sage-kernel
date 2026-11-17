@@ -349,5 +349,5 @@ def test_with_no_git_checkout_the_tests_that_need_one_skip_and_the_rest_pass():
         cwd=APP, env={**os.environ, "GIT_CEILING_DIRECTORIES": top}, capture_output=True,
         text=True, timeout=240)
     assert done.returncode == 0, done.stdout[-3000:]
-    # The nine here and the three that list tracked files; off macOS (CI), the ENV_FILE default one too.
+    # The nine here and the three that list tracked files; off macOS (CI), the ENV_FILE one too.
     assert f"{12 + (sys.platform != 'darwin')} skipped" in done.stdout

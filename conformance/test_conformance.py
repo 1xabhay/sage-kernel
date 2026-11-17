@@ -36,6 +36,13 @@ EMOTE = {"name": "emote", "description": "Show a feeling with the body, just bef
          "inputSchema": {"type": "object", "properties": {"name": {"enum": ["cheerful1", "sad1"]}},
                          "required": ["name"]},
          "max_s": 3, "interruptible": True}
+# This repo's kernel with its reply timeout (30 s, pinned on a fake clock in tests/test_policy.py) set to 1 s, so
+# the one test that waits it out takes 2 s, not 32. The kernel's code is unchanged; another kernel
+# (SAGE_KERNEL_CMD) is run as it is and waited for in full.
+REPLY_TIMEOUT_S = 30.0 if "SAGE_KERNEL_CMD" in os.environ else 1.0
+QUICK_TIMEOUT = COMMAND if "SAGE_KERNEL_CMD" in os.environ else [
+    sys.executable, "-c", (f"import runpy, sage.policy\nsage.policy.REPLY_TIMEOUT_S = {REPLY_TIMEOUT_S}\n"
+                           "runpy.run_module('sage', run_name='__main__')")]
 ACT = {"kind": "acted", "act_id": "a-17", "origin": "reflex", "what": "body_plan",
        "input": {"steps": [{"skill": "search_face"}]}, "status": "failed", "reason": "not_found",
        "said": "I looked everywhere, Mika."}
@@ -59,6 +66,8 @@ def answer(messages) -> tuple[str, dict]:
     said = " ".join(words(m) for m in messages if m.get("role") != "system")
     if "color?" in question and "blue" in said:
         return "Your favorite color is blue.", {}
+    if "My name is Juno" in question:
+        return "Hi Juno!", {"remember": "Their name is Juno."}
     if "Feel happy" in question:
         return "Yay!", {"emote": {"name": "cheerful1"}}
     if "Sigh" in question:
@@ -74,15 +83,18 @@ class Provider:
     """Ollama's native `/api/chat`: `format`-constrained JSON, reply first, streamed as NDJSON.
 
     `open` holds every answer back; `midway` holds back the second half of the
-    reply (and all of a non-streamed answer); `silent` makes the model choose
-    silence, `{"reply": ""}`.
+    reply (and all of a non-streamed answer); `ending` holds back the chunk that
+    ends a streamed answer; `silent` makes the model choose
+    silence, `{"reply": ""}`; `down` makes it answer 500, as an Ollama that cannot
+    serve does.
     """
 
     def __init__(self):
-        self.requests, self.open, self.midway = [], threading.Event(), threading.Event()
+        self.requests, self.open, self.midway, self.ending = [], *(threading.Event() for _ in range(3))
         self.open.set()
         self.midway.set()
-        self.silent = False
+        self.ending.set()
+        self.silent = self.down = False
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -97,6 +109,9 @@ class Provider:
                     self.line("{", True)
                     return
                 provider.requests.append(request)
+                if provider.down:
+                    self.send_error(500)
+                    return
                 provider.open.wait(10)
                 reply, actions = ("", {}) if provider.silent else answer(request["messages"])
                 content = json.dumps({"reply": reply, **actions})  # reply first, as `format` asks
@@ -109,6 +124,7 @@ class Provider:
                         self.line(content[:cut], False)
                         provider.midway.wait(10)
                         self.line(content[cut:], False)
+                        provider.ending.wait(10)
                         self.line("", True)
                     else:
                         provider.midway.wait(10)
@@ -135,8 +151,8 @@ class Provider:
 
 
 class KernelProcess:
-    def __init__(self, state, provider, fresh_s="10", **env):
-        self.device_port = free_port()
+    def __init__(self, state, provider, fresh_s="10", command=COMMAND, **env):
+        self.device_port, self.command = free_port(), command
         self.env = {**os.environ, "SAGE_STATE_DIR": state, "SAGE_DEVICE_BIND": "127.0.0.1",
                     "SAGE_DEVICE_PORT": str(self.device_port),
                     "SAGE_DEVICES": ",".join(f"{name}={token}" for name, token in TOKENS.items()),
@@ -154,7 +170,7 @@ class KernelProcess:
 
     def start(self):
         try:
-            self.process = subprocess.Popen(COMMAND, cwd=ROOT, env=self.env,
+            self.process = subprocess.Popen(self.command, cwd=ROOT, env=self.env,
                                             stdout=subprocess.DEVNULL, stderr=self.log)
         except OSError as error:
             raise RuntimeError(f"No kernel to test: cannot run {COMMAND} ({error}). "
@@ -235,8 +251,8 @@ class Conformance(unittest.TestCase):
         self.addCleanup(state.cleanup)
         self.state = state.name
 
-    def kernel(self, fresh_s="10", **env):
-        kernel = KernelProcess(self.state, self.provider, fresh_s, **env).start()
+    def kernel(self, fresh_s="10", command=COMMAND, **env):
+        kernel = KernelProcess(self.state, self.provider, fresh_s, command, **env).start()
         self.addCleanup(kernel.stop)
         return kernel
 
@@ -290,6 +306,13 @@ class Conformance(unittest.TestCase):
                 return piece, body["sequence"]
             time.sleep(0.05)
         self.fail(f"no reply_delta for {turn_id} while the model was still writing")
+
+    def model_asked(self, count):
+        """Wait until the model has been asked `count` times: the turn is with the model, not guessed by a sleep."""
+        deadline = time.monotonic() + 10
+        while len(self.provider.requests) < count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(self.provider.requests), count)
 
     def told(self, *needles):
         """Whether the model's latest request has a message saying all of these (lowercase)."""
@@ -368,8 +391,9 @@ class Conformance(unittest.TestCase):
             self.assertEqual(self.submit(kernel, turn_id, text)[0], 200)
             self.reply_for(kernel, turn_id)
         self.assertEqual(self.submit(kernel, "r1", "Hi")[0], 200)
-        time.sleep(0.3)
-        self.assertEqual(len(self.provider.requests), 2)
+        self.assertEqual(self.submit(kernel, "r3", "Hey")[0], 200)  # not busy: the retry started no turn
+        self.reply_for(kernel, "r3")
+        self.assertEqual(len(self.provider.requests), 3)
 
     def test_busy_is_coded_and_the_same_turn_id_is_admitted_once_free(self):
         kernel = self.kernel()
@@ -461,23 +485,7 @@ class Conformance(unittest.TestCase):
                 self.assertIs(self.reply_for(kernel, turn_id)["stale"], stale)
                 kernel.stop()
 
-    def test_a_turn_cut_off_by_a_crash_is_acknowledged_only_by_its_own_device(self):
-        kernel = self.kernel()
-        self.provider.open.clear()
-        self.submit(kernel, "r1", "Remember this")
-        time.sleep(0.3)
-        kernel.kill()
-        kernel.start()
-        self.provider.open.set()
-        self.assertRefused(self.submit(kernel, "r2", "Hello again"), 409, "unknown_pending")
-        self.assertRefused(self.event(kernel, {"kind": "acknowledged", "turn_id": "r1"}, TOKENS["mock"]),
-                           409, "forbidden")
-        self.assertEqual(self.event(kernel, {"kind": "acknowledged", "turn_id": "r1"})[0], 200)
-        self.assertEqual(self.submit(kernel, "r2", "Hello again")[0], 200)
-        self.reply_for(kernel, "r2")
-        self.assertEqual(len(self.provider.requests), 2)  # the cut-off turn was never replayed
-
-    def test_a_fact_told_by_one_device_is_recalled_by_another_after_a_crash(self):
+    def test_what_was_said_to_one_body_is_recalled_on_another_after_a_crash(self):
         kernel = self.kernel()
         self.submit(kernel, "m1", "My favorite color is blue.", token=TOKENS["mock"])
         self.reply_for(kernel, "m1", token=TOKENS["mock"])
@@ -536,13 +544,18 @@ class Conformance(unittest.TestCase):
         self.assertIn(json.dumps(EMOTE["inputSchema"], sort_keys=True)[1:-1],
                       json.dumps(formats[0]["properties"]["emote"], sort_keys=True))
 
-    def test_a_declared_tool_call_reaches_the_device_with_its_reply(self):
+    def test_a_declared_tool_call_reaches_the_device_with_its_reply_and_its_failure_reaches_the_model(self):
         kernel = self.kernel()
         self.hello(kernel, [EMOTE])
         self.submit(kernel, "r1", "Feel happy")
         emote, reply = self.effect_for(kernel, "r1", "emote"), self.reply_for(kernel, "r1")
         self.assertEqual((emote["input"], reply["text"]), ({"name": "cheerful1"}, "Yay!"))
         self.assertNotEqual(emote["sequence"], reply["sequence"])  # each effect has its own
+        self.assertEqual(self.result(kernel, reply["sequence"], "done")[0], 200)
+        self.assertEqual(self.result(kernel, emote["sequence"], "failed", reason="motor_hot")[0], 200)
+        self.submit(kernel, "r2", "Hi")
+        self.reply_for(kernel, "r2")
+        self.assertTrue(self.told("could not do emote", "motor_hot"), "the body's reason did not reach the model")
 
     def test_a_tool_the_device_did_not_declare_is_never_delivered(self):
         kernel = self.kernel()
@@ -621,13 +634,12 @@ class Conformance(unittest.TestCase):
         self.assertTrue(self.told("emote", "timeout"), "the timeout did not reach the model as a tool error")
 
     def test_a_reply_with_no_result_times_out_so_its_device_stops_acting(self):
-        kernel = self.kernel()
+        kernel = self.kernel(command=QUICK_TIMEOUT)
         self.submit(kernel, "r1", "Hi")
         self.reply_for(kernel, "r1")  # never reported
-        time.sleep(30 + 2)
+        time.sleep(REPLY_TIMEOUT_S + 1)  # the kernel's own clock: nothing on the wire says the deadline passed
         since = self.effects(kernel)["sequence"]
         self.assertEqual(self.event(kernel, {"kind": "stop"}, TOKENS["mock"])[0], 200)
-        time.sleep(0.5)
         self.assertNotIn("stop", [e["kind"] for e in self.effects(kernel, since)["effects"]])
 
     def test_a_stale_reply_left_unspoken_is_failed_as_stale(self):
@@ -639,17 +651,9 @@ class Conformance(unittest.TestCase):
         self.assertEqual(self.result(kernel, reply["sequence"], "failed", reason="stale")[0], 200)
         since = self.effects(kernel)["sequence"]
         self.event(kernel, {"kind": "stop"}, TOKENS["mock"])
-        time.sleep(0.5)
         self.assertNotIn("stop", [e["kind"] for e in self.effects(kernel, since)["effects"]])  # no longer acting
 
     # v1: Stop reaches the device that is acting ----------------------------
-
-    def test_stop_is_accepted_while_the_device_is_rate_limited(self):
-        kernel = self.kernel()
-        statuses = [self.event(kernel, {"kind": "connected"})[0] for _ in range(200)]
-        self.assertIn(429, statuses)
-        self.assertEqual(self.event(kernel, {"kind": "connected"})[0], 429)  # still limited
-        self.assertEqual(self.event(kernel, {"kind": "stop"})[0], 200)
 
     def test_stop_reaches_only_the_device_that_is_acting(self):
         kernel = self.kernel()
@@ -680,15 +684,6 @@ class Conformance(unittest.TestCase):
         self.assertEqual(self.event(kernel, {"kind": "stop"}, TOKENS["mock"])[0], 200)
         self.effect_for(kernel, None, "stop", since, within=2)
         self.provider.midway.set()
-
-    def test_a_stop_for_another_turn_is_a_stale_no_op(self):
-        kernel = self.kernel()
-        self.provider.open.clear()
-        self.submit(kernel, "r1", "Hi")
-        time.sleep(0.2)
-        self.assertRefused(self.event(kernel, {"kind": "stop", "turn_id": "r0"}, TOKENS["mock"]), 409, "stale")
-        self.provider.open.set()
-        self.assertIn("Hi", self.reply_for(kernel, "r1")["text"])  # r1 was not stopped
 
     # v1: streamed replies --------------------------------------------------
 
@@ -723,6 +718,34 @@ class Conformance(unittest.TestCase):
         context = " ".join(words(m) for m in self.provider.requests[-1]["messages"])
         self.assertIn("One two", context)
         self.assertNotIn("three", context)
+
+    def test_a_poll_with_an_offset_gets_only_the_reply_text_after_it(self):
+        kernel = self.kernel()
+        self.provider.midway.clear()
+        self.provider.ending.clear()
+        self.submit(kernel, "r1", "Count to six")
+        piece, since = self.first_delta(kernel, "r1")
+        played = len(piece["text"])
+        path = f"/v1/effects?since={since}&offset={played}"
+        self.assertEqual(kernel.device("GET", path)[1]["effects"], [])  # nothing past what it already played
+        self.provider.midway.set()  # the rest is written, the answer not yet ended
+        status, body = kernel.device("GET", path + "&wait=10")
+        self.assertEqual((status, [e["kind"] for e in body["effects"]]), (200, ["reply_delta"]), body)
+        rest = body["effects"][0]
+        self.assertEqual((rest["turn_id"], rest["offset"]), ("r1", played))
+        self.assertEqual(piece["text"] + rest["text"], "One two three four five six.")  # no gap, nothing twice
+        self.provider.ending.set()
+        self.assertEqual(self.reply_for(kernel, "r1")["text"], "One two three four five six.")
+
+    def test_a_model_failure_ends_the_turn_as_failed_and_the_next_line_is_answered(self):
+        kernel = self.kernel()
+        self.provider.down = True
+        self.assertEqual(self.submit(kernel, "r1", "Hi")[0], 200)
+        body = self.finished(kernel, "r1")
+        self.assertEqual((body["turn"]["run_status"], body["effects"]), ("failed", []))
+        self.provider.down = False
+        self.assertEqual(self.submit(kernel, "r2", "Hello")[0], 200)
+        self.assertIn("Hello", self.reply_for(kernel, "r2")["text"])
 
     def test_only_the_final_reply_is_journaled(self):
         kernel = self.kernel()
@@ -777,7 +800,7 @@ class Conformance(unittest.TestCase):
 
     # v1: limits and coded errors ---------------------------------------------
 
-    def test_an_event_flood_is_refused_for_that_device_only(self):
+    def test_an_event_flood_is_refused_for_that_device_only_and_its_stop_still_gets_through(self):
         kernel = self.kernel()
         responses = [self.event(kernel, {"kind": "connected"}) for _ in range(200)]
         refused = [r for r in responses if r[0] != 200]
@@ -786,23 +809,115 @@ class Conformance(unittest.TestCase):
             self.assertRefused(response, 429, "rate_limited")
         self.assertGreater(refused[0][1]["retry_after"], 0)
         self.assertEqual(self.event(kernel, {"kind": "connected"}, TOKENS["mock"])[0], 200)
+        self.assertEqual(self.event(kernel, {"kind": "stop"})[0], 200)  # a body can always be stopped
 
     def test_every_refusal_is_coded_and_says_what_to_do_next(self):
         kernel = self.kernel()
         refusals = {
             "not json": kernel.device("POST", "/v1/events", raw=b"{not json"),
-            "too large": self.submit(kernel, "r1", "x" * 9000),
+            "not an object": kernel.device("POST", "/v1/events", raw=b"[1]"),
+            "an empty body": kernel.device("POST", "/v1/events", raw=b""),
+            "a body over 131072 bytes": kernel.device("POST", "/v1/events", raw=json.dumps(
+                {"kind": "notes", "topic": "t", "passages": ["x" * 600] * 64, "pad": " " * 92000}).encode()),
             "text too long": self.submit(kernel, "r1", "x" * 4001),
+            "hello with an unknown field": kernel.device("POST", "/v1/hello", {"protocols": [1], "manifest": {},
+                                                                              "name": "reachy"}),
+            "protocols not a list": kernel.device("POST", "/v1/hello", {"protocols": 1, "manifest": {}}),
             "unknown kind": self.event(kernel, {"kind": "dance"}),
             "no token": kernel.device("GET", "/v1/effects?since=0", token=None),
             "no route": kernel.device("GET", "/v2/effects"),
             "bad since": kernel.device("GET", "/v1/effects?since=soon"),
+            "since below zero": kernel.device("GET", "/v1/effects?since=-1"),
+            "an endless wait": kernel.device("GET", "/v1/effects?since=0&wait=nan"),
         }
         for case, (status, body) in refusals.items():
             with self.subTest(case):
                 self.assertGreaterEqual(status, 400)
                 self.assertIn((body or {}).get("code"), CODES, body)
                 self.assertTrue(body.get("message"), body)
+        self.assertEqual(self.provider.requests, [])  # nothing refused ever reached the model
+
+    def test_a_journal_that_cannot_be_written_is_a_coded_storage_error_and_the_same_request_then_succeeds(self):
+        if os.geteuid() == 0:
+            self.skipTest("root writes a read-only file")
+        kernel = self.kernel()
+        self.hello(kernel)
+
+        def writable(mode):  # the journal and whatever SQLite keeps beside it
+            for file in Path(self.state).iterdir():
+                file.chmod(mode)
+        writable(0o400)
+        self.addCleanup(writable, 0o600)
+        status, body = self.submit(kernel, "r1", "Hi")
+        self.assertEqual((status, body["code"]), (500, "storage"), body)
+        self.assertIn("Retry", body["message"])
+        writable(0o600)
+        self.assertEqual(self.submit(kernel, "r1", "Hi")[0], 200)
+        self.assertIn("Hi", self.reply_for(kernel, "r1")["text"])
+
+    def test_a_misconfigured_kernel_exits_and_says_why_in_one_line(self):
+        if "SAGE_KERNEL_CMD" in os.environ:
+            self.skipTest("how another kernel is configured is its own")
+        for case, env in {"no devices": {"SAGE_DEVICES": ""}, "a short token": {"SAGE_DEVICES": "reachy=short"},
+                          "an unknown zone": {"SAGE_TZ": "Mars/Olympus"},
+                          "a model that is not on this machine": {"SAGE_MODEL_URL": "http://example.com"},
+                          "no model name": {"SAGE_MODEL": ""},
+                          "a search service that is not on this machine": {"SAGE_SEARCH_URL": "http://example.com"},
+                          "a port that is no number": {"SAGE_DEVICE_PORT": "soon"},
+                          "every web origin": {"SAGE_ORIGINS": "*"},
+                          "a web origin with a path": {"SAGE_ORIGINS": "https://notebook.example/page"}}.items():
+            with self.subTest(case):
+                env = {**KernelProcess(self.state, self.provider).env, "SAGE_TZ": "UTC", **env}
+                done = subprocess.run(COMMAND, cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+                                      check=False)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertRegex(done.stderr, r"\Asage: .+\n\Z")
+        self.assertEqual(list(Path(self.state).iterdir()), [])  # refused before it touched its state
+
+    # a browser body: one named web origin (CORS), off unless the owner names it ----
+
+    def web(self, kernel, method, origin, path="/v1/hello", **headers):
+        """One request as a browser page makes it: (status, the answer's CORS headers)."""
+        if "SAGE_KERNEL_CMD" in os.environ:
+            self.skipTest("how another kernel is configured is its own")
+        body = json.dumps({"protocols": [1], "manifest": {"senses": [], "tools": []}}).encode() if method == "POST" else None
+        sent = {**({"Origin": origin} if origin else {}), **headers,
+                **({"Authorization": f"Bearer {TOKENS['phone']}", "Content-Type": "application/json"} if body else {})}
+        request = urllib.request.Request(f"http://127.0.0.1:{kernel.device_port}{path}", body, sent, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                status, got = response.status, response.headers
+        except urllib.error.HTTPError as error:
+            with error:
+                status, got = error.code, error.headers
+        return status, {name: value for name, value in got.items() if name.startswith(("Access-Control-", "Vary"))}
+
+    def test_the_one_web_origin_the_owner_named_is_answered_and_told_so(self):
+        page = "https://notebook.example"
+        kernel = self.kernel(SAGE_ORIGINS=f"{page}, http://127.0.0.1:5177")  # the page, and one for a test
+        self.assertEqual(self.web(kernel, "POST", "http://127.0.0.1:5177"), (200, {
+            "Access-Control-Allow-Origin": "http://127.0.0.1:5177", "Vary": "Origin"}))
+        asking = {"Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type"}
+        self.assertEqual(self.web(kernel, "OPTIONS", page, **asking), (204, {
+            "Access-Control-Allow-Origin": page, "Access-Control-Allow-Methods": "GET, POST",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Max-Age": "600",
+            "Vary": "Origin"}))
+        self.assertEqual(self.web(kernel, "POST", page), (200, {"Access-Control-Allow-Origin": page, "Vary": "Origin"}))
+        self.assertEqual(self.web(kernel, "POST", None), (200, {}))  # a body that is no page is unchanged
+
+    def test_any_other_web_origin_is_refused_and_given_no_permission(self):
+        kernel = self.kernel(SAGE_ORIGINS="https://notebook.example")
+        for origin in ("https://elsewhere.example", "http://notebook.example", "https://notebook.example.evil.example",
+                       "null"):
+            with self.subTest(origin):
+                self.assertEqual(self.web(kernel, "OPTIONS", origin, **{"Access-Control-Request-Method": "POST"}), (403, {}))
+                self.assertEqual(self.web(kernel, "POST", origin), (403, {}))
+
+    def test_with_no_web_origin_named_no_page_is_answered(self):
+        kernel = self.kernel()
+        self.assertEqual(self.web(kernel, "OPTIONS", "https://notebook.example"), (403, {}))
+        self.assertEqual(self.web(kernel, "POST", "https://notebook.example"), (403, {}))
+        self.assertEqual(self.web(kernel, "POST", None), (200, {}))
 
     # notes (draft, §10) ---------------------------------------------------------
 
@@ -898,13 +1013,8 @@ class Conformance(unittest.TestCase):
             found = self.proactive(kernel, 0.2, token)
         return found
 
-    def test_the_first_seen_after_a_start_is_an_arrival_and_greets(self):
+    def test_a_seen_below_half_confidence_has_no_effect_and_the_first_that_counts_after_a_start_greets(self):
         kernel = self.kernel(SAGE_GREET_ON_START="1")  # absence threshold 3600 s: only "first since start" can greet
-        self.assertEqual(self.presence(kernel, "seen")[0], 200)
-        self.assertEqual(len(self.greetings_within(kernel, 5)), 1)
-
-    def test_a_seen_below_half_confidence_has_no_effect(self):
-        kernel = self.kernel(SAGE_GREET_ON_START="1")
         self.assertEqual(self.presence(kernel, "seen", confidence=0.4)[0], 200)
         self.assertEqual(self.proactive(kernel, 2), [])
         self.assertEqual(self.provider.requests, [])
@@ -1018,9 +1128,10 @@ class Conformance(unittest.TestCase):
             self.assertEqual(self.result(kernel, seen["happy"]["sequence"], "interrupted", text="Ya")[0], 200)
 
         def reachy_starts_a_turn_the_model_never_finishes():
+            asked = len(self.provider.requests)
             self.provider.open.clear()
             self.submit(kernel, "r2", "Count")
-            time.sleep(0.3)
+            self.model_asked(asked + 1)
 
         def reachy_acknowledges_it():
             self.provider.open.set()
@@ -1225,11 +1336,11 @@ class Conformance(unittest.TestCase):
         self.assertIn("Hi", self.reply_for(kernel, "r1")["text"])
         self.assertNotIn("p1", [e["turn_id"] for e in self.journaled(kernel)])  # each reply to its own body
 
-    def test_a_turn_cut_off_by_a_crash_blocks_only_its_own_device(self):
+    def test_a_turn_cut_off_by_a_crash_blocks_only_its_own_device_until_it_acknowledges(self):
         kernel = self.kernel()
         self.provider.open.clear()
         self.submit(kernel, "r1", "Remember this")
-        time.sleep(0.3)
+        self.model_asked(1)
         kernel.kill()
         kernel.start()
         self.provider.open.set()
@@ -1241,12 +1352,13 @@ class Conformance(unittest.TestCase):
         self.assertEqual(self.event(kernel, {"kind": "acknowledged", "turn_id": "r1"})[0], 200)
         self.assertEqual(self.submit(kernel, "r2", "Hello again")[0], 200)
         self.reply_for(kernel, "r2")
+        self.assertEqual(len(self.provider.requests), 3)  # r1, p1, r2: the cut-off turn was never replayed
 
     def test_a_body_stuck_unknown_never_holds_another_body_s_greeting(self):
         kernel = self.kernel(SAGE_GREET_ON_START="1")
         self.provider.open.clear()
         self.submit(kernel, "r1", "Remember this")
-        time.sleep(0.3)
+        self.model_asked(1)
         kernel.kill()
         kernel.start()
         self.provider.open.set()
@@ -1255,15 +1367,17 @@ class Conformance(unittest.TestCase):
         self.assertEqual(len(self.greetings_within(kernel, 5, TOKENS["phone"])), 1, "reachy's unknown held the phone")
         self.assertRefused(self.submit(kernel, "r2", "Hello again"), 409, "unknown_pending")  # still its own
 
-    def test_a_stop_naming_a_turn_stops_only_the_sender_s_own(self):
+    def test_a_stop_naming_a_turn_stops_only_the_sender_s_own_and_any_other_is_a_stale_no_op(self):
         kernel = self.kernel()
         self.submit(kernel, "r1", "Hi")
         self.reply_for(kernel, "r1")  # reachy holds a reply with no result: it is acting
         reachy_since = self.effects(kernel)["sequence"]
         self.provider.open.clear()
         self.submit(kernel, "p1", "Hello", TOKENS["phone"], input=TYPED)
-        time.sleep(0.2)
-        self.assertRefused(self.event(kernel, {"kind": "stop", "turn_id": "r1"}, TOKENS["phone"]), 409, "stale")
+        self.model_asked(2)
+        for other in ("r1", "p0"):  # another body's turn, and one that never was
+            self.assertRefused(self.event(kernel, {"kind": "stop", "turn_id": other}, TOKENS["phone"]), 409, "stale")
+        self.assertEqual(self.effects(kernel, token=TOKENS["phone"])["turn"]["run_status"], "active")  # not stopped
         self.assertEqual(self.event(kernel, {"kind": "stop", "turn_id": "p1"}, TOKENS["phone"])[0], 200)
         self.provider.open.set()
         time.sleep(0.5)
@@ -1272,7 +1386,7 @@ class Conformance(unittest.TestCase):
         self.assertEqual(self.event(kernel, {"kind": "stop"}, TOKENS["phone"])[0], 200)  # bare: every body
         self.effect_for(kernel, None, "stop", reachy_since, within=2)
 
-    def test_a_fact_told_to_one_body_is_known_to_another_while_its_turn_runs(self):
+    def test_what_was_said_to_one_body_is_known_to_another_while_a_third_s_turn_runs(self):
         kernel = self.kernel()
         self.submit(kernel, "p1", "My favorite color is blue.", TOKENS["phone"], input=TYPED)
         self.reply_for(kernel, "p1", token=TOKENS["phone"])
@@ -1283,6 +1397,16 @@ class Conformance(unittest.TestCase):
         self.assertEqual(self.reply_for(kernel, "r1")["text"], "Your favorite color is blue.")
         self.reply_for(kernel, "m1", token=TOKENS["mock"])
 
+    def test_a_remembered_fact_is_in_every_body_s_system_message_after_a_crash(self):
+        kernel = self.kernel()
+        self.submit(kernel, "r1", "My name is Juno.")
+        self.assertEqual(self.reply_for(kernel, "r1")["text"], "Hi Juno!")
+        self.assertEqual([e["kind"] for e in self.journaled(kernel)], ["reply"])  # remember is the kernel's own
+        kernel.kill()
+        kernel.start()
+        self.submit(kernel, "p1", "Hello", TOKENS["phone"], input=TYPED)
+        self.reply_for(kernel, "p1", token=TOKENS["phone"])
+        self.assertTrue(self.provider.requests[-1]["messages"][0]["content"].endswith("- Their name is Juno."))
 
     def test_a_body_s_acts_are_told_in_its_own_next_exchange_after_another_body_s(self):
         kernel = self.kernel()

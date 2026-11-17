@@ -203,13 +203,14 @@ def live(mini, declared: Mapping, env: Mapping[str, str], run: Callable | None,
         daemon_doa,
         daemon_face,
     )
-    from reachy_sage_voice.perception.face import Face, face_percept, restamped
+    from reachy_sage_voice.perception.face import REARM_S, Face, face_percept, rearmer, restamped
     from reachy_sage_voice.robot import Reconnecting
 
     host = env.get(HOST) or "127.0.0.1"  # run by the daemon (app()), the app is on the robot
     api = f"http://{host}:{DAEMON_PORT}/api"
     # The SDK's command websocket never reconnects by itself, nor shows a detector refusal.
-    mini = Reconnecting(mini, detector=daemon_detector(f"{api}/media/tracking/enable"))
+    detector = daemon_detector(f"{api}/media/tracking/enable")
+    mini = Reconnecting(mini, detector=detector)
     mini.enable_motors()  # a requirement: if it fails, nothing else can move
     try:
         mini.wake_up()
@@ -247,6 +248,14 @@ def live(mini, declared: Mapping, env: Mapping[str, str], run: Callable | None,
         if mini.tracking is not None:  # the tracker reads the camera the reset restarted:
             await asyncio.to_thread(track, mini.tracking)  # the weight last asked for, not 1.0
 
+    def restart_detector() -> None:  # live 11-10: the same weight is a no-op; off, on revives it
+        detector(0.0)
+        track(mini.tracking)
+
+    def rearm() -> None:  # a camera restart can leave the detector dead: restart it, off-thread
+        logger.warning("face detector stale for %.0f s - restarting it", REARM_S)
+        threading.Thread(target=restart_detector, daemon=True).start()
+    stale = rearmer(rearm)
     restamp = restamped(time.monotonic)  # one stamp stream: the HTTP and the SDK readings
     told = {"detail": None, "at": -math.inf}
 
@@ -255,6 +264,7 @@ def live(mini, declared: Mapping, env: Mapping[str, str], run: Callable | None,
         face = face_percept(restamp(reading), time.monotonic(), on and not mini.refused)
         detail = ("detector off" if not on else "refused" if mini.refused
                   else "ok" if face.fresh else "stale")
+        stale(detail == "stale")
         now = time.monotonic()
         if detail != told["detail"] or now - told["at"] >= health.BEAT_S:  # not every tick
             told.update(detail=detail, at=now)

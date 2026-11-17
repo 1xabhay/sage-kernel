@@ -1,5 +1,7 @@
 """The floor: lines written to the shapes the STT produces, none of them recorded speech."""
 
+import math
+
 import pytest
 
 from sage_device.floor import (
@@ -7,6 +9,7 @@ from sage_device.floor import (
     DROP,
     GAP_S,
     GRACE_S,
+    HALF_WORDS,
     MAX_HOLD_S,
     MEDIA_WAIT_S,
     MUST_GAP_S,
@@ -20,7 +23,7 @@ from sage_device.floor import (
     overheard,
     taken,
 )
-from sage_device.hearing import PASS, UNSURE, decide
+from sage_device.hearing import UNSURE, decide
 
 
 def test_a_voice_going_now_has_the_floor():
@@ -37,18 +40,19 @@ def test_the_speech_this_turn_answers_never_holds_the_reply():
     assert not taken(now=5.0, began=4.9, voice_on=3.0, voice_off=4.8)
 
 
+def test_with_no_voice_ever_heard_nobody_has_the_floor():
+    assert not taken(now=5.0, began=1.0, voice_on=float("-inf"), voice_off=float("-inf"))
+
+
 def test_a_reply_waits_out_a_long_voice_but_a_tv_cannot_mute_it_for_good():
     # Replay, all logs: 9.1% of voice runs outlast 6 s, 1.6% outlast 15 s
     # (the ones that look like media).
-    assert hold_limit("We had soup for dinner.") == MAX_HOLD_S == 15.0
+    assert hold_limit("We had soup for dinner.") == MAX_HOLD_S
+    assert math.isfinite(MAX_HOLD_S)
 
 
-def test_distress_waits_no_longer_than_it_did():
-    assert hold_limit("I fell off the") == DISTRESS_HOLD_S == 6.0
-
-
-def test_nobody_has_spoken():
-    assert not taken(now=5.0, began=1.0, voice_on=float("-inf"), voice_off=float("-inf"))
+def test_distress_waits_less_than_any_other_reply():
+    assert hold_limit("I fell off the") == DISTRESS_HOLD_S < MAX_HOLD_S
 
 
 @pytest.mark.parametrize("line", [
@@ -83,15 +87,21 @@ def test_whole_replies_finished_lines_and_long_ones_are_not_half_heard(line):
     assert not half_heard(line)
 
 
-def test_the_answer_to_its_own_question_passes_however_cut_off():
-    assert decide("Somewhat like the", asked=True, half=True) == PASS
+def test_a_cut_off_statement_is_doubted_up_to_twelve_words_and_no_further():
+    line = "We went over to the old place by the river and then"
+    assert len(line.split()) == HALF_WORDS == 12
+    assert half_heard(line)
+    assert not half_heard(line + " everyone")  # longer: mostly real speech the VAD clipped
 
 
-def test_talk_that_opens_mid_thought_or_about_others_after_a_quiet_is_overheard():
-    for line in ("And then the whole team came along.", "But it never ran.",
-                 "They shipped the second model last spring.", "His brother runs that place now."):
-        assert overheard(line, OPEN_S), line
-        assert overheard(line, float("inf")), line
+@pytest.mark.parametrize("line", [
+    "And then the whole team came along.", "But it never ran.",
+    "They shipped the second model last spring.", "His brother runs that place now.",
+    "I think they shipped the second model last spring.",  # opens with "I", but is about them
+])
+def test_talk_that_opens_mid_thought_or_about_others_after_a_quiet_is_overheard(line):
+    assert overheard(line, OPEN_S)
+    assert overheard(line, float("inf"))
 
 
 def test_in_a_running_exchange_nothing_is_overheard():

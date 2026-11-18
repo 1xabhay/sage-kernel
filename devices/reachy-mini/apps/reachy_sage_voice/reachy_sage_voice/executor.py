@@ -372,6 +372,10 @@ def head_yaw(head) -> float:
     return math.degrees(math.atan2(head[1][0], head[0][0]))
 
 
+#: The keys ``alive.listening`` offsets: the ones a reflex has to see come to rest (``_landed``).
+_REFLEX_KEYS = ("pitch", "left", "right")
+
+
 def within_limits(target: dict) -> dict:
     """Return goto_target/set_target arguments with head and body inside ``limits.py``.
 
@@ -476,6 +480,8 @@ class Executor:
         self._brake: Hold | None = None  # where it brakes to before yielding (``_yields``)
         self._idling: Hold | None = None  # the Hold idle took the body with: not a move's
         self._dwell: Hold | None = None  # a search view's Hold, breathing under it
+        self._reflexed: dict = {}  # the listening reflex's offset in the last tick
+        self._landing = False  # that offset changed: its keys are still on their way to rest
         self._failed: Exception | None = None  # why it last failed: a Goto waiting fails with it
         self.link_lost: Callable[[str], None] = lambda reason: logger.error("%s", reason)
         self.on_link: Callable[[bool, int], None] = lambda up, stalls: None
@@ -751,6 +757,7 @@ class Executor:
         def tick(t: float) -> dict:
             self._ticked, self._sent = t, step(t)
             self._state = step.state
+            self._landed(self._reflex_pose(t))
             if self._still and isinstance(self._primary, Hold) and arbiter.settled(self._state):
                 self._primary = None  # stopped: once the freeze is reached nothing moves
             return self._sent
@@ -787,13 +794,28 @@ class Executor:
             self._written = ticked
             runner.SENDING.reset(sending)
 
+    def _landed(self, reflex: dict) -> None:
+        """Follow the reflex to rest: from a tick that changed its offset to its keys on their goal.
+
+        On it within ``arbiter.SETTLE_POS``: after a stall the slew takes more ticks to get there.
+        """
+        changed, self._reflexed = reflex != self._reflexed, reflex
+        state = self._state
+        self._landing = changed or (self._landing and any(
+            abs(state.sent[k] - state.goal.get(k, state.sent[k])) > arbiter.SETTLE_POS
+            for k in _REFLEX_KEYS if k in state.sent))
+
     def _moving(self) -> bool:
         """Whether the primary is a move's: the runner's whatever else wants the body.
 
         Not idle's Hold, nor a search view's while the person speaks (hold: breathing stops).
+        A reflex is a move until what was sent is where it rests: by the clock alone, a send
+        that stalled past its end would yield mid-nod, the offset left on the robot.
         """
         p = self._primary
-        return alive.listening_moves(*self._listening(self.clock())) or (
+        now = self.clock()
+        return (alive.listening_moves(*self._listening(now)) or self._landing
+                or self._reflexed != self._reflex_pose(now)) or (
             p is not None and p is not self._idling
             and not (p is self._dwell and self._held.is_set()))
 

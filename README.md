@@ -29,6 +29,9 @@ identity, memory, the journal and authorization, and never gets a shell of its o
 - **Protocol:** [docs/PROTOCOL.md](docs/PROTOCOL.md), device protocol v1 (**draft**).
 - **Conformance:** [conformance/](conformance/), a black-box HTTP suite any kernel must pass unchanged.
 - **Core:** [sage/](sage/), Python 3.12 standard library only.
+- **Character:** [sage/character.json](sage/character.json), the pet's name, its persona, the lines it says,
+  and the word lists and patterns its language is read with. `SAGE_CHARACTER` names another file: another
+  pet, or another language, is a file, not a fork.
 - **Design:** [docs/BLUEPRINT.md](docs/BLUEPRINT.md), [docs/DECISIONS.md](docs/DECISIONS.md),
   [docs/ROADMAP.md](docs/ROADMAP.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 

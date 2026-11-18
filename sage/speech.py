@@ -8,21 +8,20 @@ import json
 import re
 import unicodedata
 
+from sage import character
+
 START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 STAGE = re.compile(r"\*[^*]*\*")
-# The kernel's own notes to the model, should it ever copy one: never spoken.
-ANNOTATION = re.compile(r"[(\[][^()\[\]]*\b(interrupted|body could not|json fields|you just said|this body cannot|stay sage|they need words|you are not alive)\b"
+# The kernel's own notes to the model, should it ever copy one: never spoken. The character file lists a phrase of each.
+ANNOTATION = re.compile(r"[(\[][^()\[\]]*\b(" + "|".join(map(re.escape, character.CHARACTER["never_said"])) + r")\b"
                         r"[^()\[\]]*[)\]]", re.IGNORECASE)
 EMOJI_PARTS = {0x200D, 0xFE0F, 0x20E3}
 # Talk of being interrupted, the kernel's barge-in note paraphrased ("I was interrupted", live run 5b).
-INTERRUPTION = re.compile(r"\b(?:i|i'm|i've|we)\b[^.!?]{0,20}\b(?:interrupt|cut off)|\binterrupt\w*\s+(?:me|us)\b"
-                          r"|\bcut(?:ting)? (?:me|us) off\b")
+INTERRUPTION = re.compile(character.CHARACTER["patterns"]["interruption"])
 # Openings held while streaming, until they could no longer become talk of being interrupted.
 # ponytail: a fixed list, so a sentence opening otherwise ("Oh, you interrupted") can stream its start.
-OPENINGS = ("i was interrupted", "i got interrupted", "i ve been interrupted", "i was cut off", "i got cut off",
-            "sorry i was interrupted", "you interrupted me", "you cut me off", "you keep interrupting me",
-            "you keep cutting me off")
+OPENINGS = tuple(character.CHARACTER["words"]["interrupted_openings"])
 
 
 def partial_reply(raw: str) -> tuple[str, bool]:

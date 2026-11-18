@@ -1908,6 +1908,66 @@ def test_a_small_nod_goes_and_comes_all_the_way_back(quick, arbitrated, monkeypa
     assert pitches[-1] == pytest.approx(0.0, abs=0.01)
 
 
+def test_a_nod_lands_even_when_a_send_stalls_past_its_end(quick, arbitrated, monkeypatch):
+    """A tick that stalls past the nod's end still sends it home before the runner yields.
+
+    Else it yields mid-nod, and idle's next hold reads the robot there: the offset stays.
+    """
+    monkeypatch.setattr(alive_motion, "NOD_S", 0.3)
+    monkeypatch.setenv("SAGE_VOICE_IDLE_SCALE", "0")  # no breath under it: home is pitch 0
+    mini = FakeMini()
+    real, stalled = mini.set_target, []
+
+    def stall(*args, **kwargs):
+        real(*args, **kwargs)
+        if not stalled and kwargs.get("head") is not None and euler(kwargs["head"])[1] > 2.0:
+            stalled.append(True)
+            time.sleep(alive_motion.NOD_S)  # the next tick is past the nod and its landing
+    mini.set_target = stall
+
+    def pitches():
+        return [euler(c[2])[1] for c in mini.named("set_target")]
+
+    async def main():
+        executor = alive(mini, idle=False)
+        executor.nod()
+        await until(lambda: stalled)
+        # home, or (the bug) stuck mid-nod: the runner yielded, nothing more is sent
+        await until(lambda: abs(pitches()[-1]) < 0.01 or not executor._moving(), 3.0)
+        await asyncio.sleep(0.05)
+    asyncio.run(main())
+    assert pitches()[-1] == pytest.approx(0.0, abs=0.01)
+
+
+def test_the_antennas_finish_their_lift_even_when_a_send_stalls_past_its_end(quick, arbitrated,
+                                                                             monkeypatch):
+    """The same stall mid-lift: the antennas still reach the top before the runner yields."""
+    monkeypatch.setattr(alive_motion, "PERK_RISE_S", 0.3)
+    monkeypatch.setenv("SAGE_VOICE_IDLE_SCALE", "0")
+    mini = FakeMini()
+    real, stalled = mini.set_target, []
+
+    def stall(*args, **kwargs):
+        real(*args, **kwargs)
+        if not stalled and math.degrees(kwargs["antennas"][0]) > 0.4 * alive_motion.PERK_DEG:
+            stalled.append(True)
+            time.sleep(alive_motion.PERK_RISE_S)  # the next tick is past the lift and its landing
+    mini.set_target = stall
+
+    def lifted():
+        return math.degrees(antennas_sent(mini)[-1][0])
+
+    async def main():
+        executor = alive(mini, idle=False)
+        executor.perk()
+        await until(lambda: stalled)
+        await until(lambda: abs(lifted() - alive_motion.PERK_DEG) < 0.01 or not executor._moving(),
+                    3.0)
+        await asyncio.sleep(0.05)
+    asyncio.run(main())
+    assert lifted() == pytest.approx(alive_motion.PERK_DEG, abs=0.01)
+
+
 def test_no_listening_reflex_while_speaking_dancing_searching_stopped_or_cooling(quick, arbitrated):
     mini = FakeMini()
 

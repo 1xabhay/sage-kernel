@@ -11,6 +11,15 @@ and every protocol change is listed under **Protocol**.
 
 ### Added
 
+- The pet's character is a file: its name and the near-misses of it, the persona, the examples, the notes
+  to the model and the fixed spoken lines moved from `sage/policy.py` to `sage/character.json`.
+  `SAGE_CHARACTER` names another file, read once at start; one missing a key, or with a key of the wrong
+  kind, stops the start and names the file and the key. No prompt change with the default file.
+- The language rules are in that file too: the patterns for distress, a question, the time and date, a
+  request for quiet or a repeat, a web search, a claim of a sense or of being alive, and the word lists
+  (common replies, requests, backchannels, stopwords, month and day names). Each pattern is a list of
+  alternatives; one that is no regular expression, or that is empty, stops the start. The default file's
+  rules are the ones the code held.
 - Sage never claims to be sentient: a reply that says, in the first person, that it is alive,
   conscious or has feelings is held back from streaming, retried once with a note, and then that
   sentence is replaced by "I'm not alive, and I don't have feelings like you do." (behaviour row B34).

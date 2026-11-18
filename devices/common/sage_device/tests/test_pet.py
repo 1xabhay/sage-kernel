@@ -3,8 +3,9 @@
 Reachy's own patterns, on the lines its processor really writes, are in the app's tests/test_pet.py.
 """
 
-import ast
+import importlib
 import re
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -287,12 +288,8 @@ NAMES = ("COMMON", "TO_SAGE", "NEAR_SAGE", "REQUESTS", "HANGING")
 
 def test_misheard_is_the_kernels():
     """The meter holds a copy (a device imports no kernel code): kernel changes must reach it."""
-    policy = Path(__file__).resolve().parents[4] / "sage" / "policy.py"
-    picked = [node for node in ast.parse(policy.read_text()).body
-              if getattr(node, "name", None) in ("misheard", "said_to_sage")
-              or (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") in NAMES)]
-    kernel = {"re": re, "SURE": 1.0}
-    exec(compile(ast.Module(picked, []), str(policy), "exec"), kernel)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))  # its words are in a file it loads
+    kernel = vars(importlib.import_module("sage.policy"))
     copies = [pet._COMMON, pet._TO_SAGE, pet._NEAR_SAGE, pet._REQUESTS, pet._HANGING]
     assert [kernel[name] for name in NAMES] == copies
     for line in ("I'm sad.", "I'm just gonna.", "Sing a song.", "Only the kettle.", "", "Hello.",

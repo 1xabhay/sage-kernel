@@ -25,6 +25,8 @@ services:
       SAGE_NUDGES_PER_HOUR: ${SAGE_NUDGES_PER_HOUR:-3}
       SAGE_TZ: ${SAGE_TZ:-}
       SAGE_PLACE: ${SAGE_PLACE:-}
+      # Another pet: a file like sage/character.json, e.g. /data/character.json; empty: Sage (docs/DEPLOYING.md).
+      SAGE_CHARACTER: ${SAGE_CHARACTER:-}
       SAGE_ENGAGED_S: ${SAGE_ENGAGED_S:-60}
       SAGE_QUIET_S: ${SAGE_QUIET_S:-1800}
       # The web, through the voice's research service (its POST /search); empty: never searched.

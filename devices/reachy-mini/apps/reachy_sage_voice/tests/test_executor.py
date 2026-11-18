@@ -17,7 +17,7 @@ from fake_mini import FakeMini, head_yaw
 from reachy_mini.utils import create_head_pose
 from scipy.spatial.transform import Rotation
 
-from reachy_sage_voice import dance
+from reachy_sage_voice import dance, meter
 from reachy_sage_voice import executor as executors
 from reachy_sage_voice.behaviour.search import Search
 from reachy_sage_voice.executor import (
@@ -1543,9 +1543,78 @@ def test_no_glance_unless_the_daemon_heard_speech_there(quick, caplog, speech_de
                for m in (r.getMessage() for r in caplog.records))
 
 
-def test_a_glance_is_relative_to_where_the_body_faces(quick):
+HEARD = "reachy_sage_voice.executor:"  # as the pet meter sees a log line: logger, then message
+
+
+def heard_lines(caplog):
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("heard: ")]
+
+
+def test_every_speech_onset_logs_what_was_heard_glance_or_not(quick, caplog):
+    mini = FakeMini()
+    mini.head = create_head_pose(yaw=15, degrees=True)  # the head 15 degrees left of the body
+
+    async def main():
+        executor = alive(mini, doa=voice_at(math.radians(72)))
+        executor.face = lambda: Face(True, True, 0.12, 0.0)
+        executor.attend()
+        await asyncio.sleep(0.1)
+        executor.attend()  # within the cooldown: no glance, still a line
+        await asyncio.sleep(0.1)
+    with caplog.at_level(logging.INFO, logger="reachy_sage_voice.executor"):
+        asyncio.run(main())
+    first, second = heard_lines(caplog)
+    assert first == ("heard: DoA 72 deg (speech_detected=True), head +15 deg from the body, "
+                     "voice +33 deg from the body, face seen at x=+0.12")
+    assert second.startswith("heard: DoA 72 deg (speech_detected=True), head ")
+    assert sum(r.getMessage().startswith("glance: DoA") for r in caplog.records) == 1
+    assert len(cue_moves(mini)) == 1  # the glance, as before
+    assert meter.PATTERNS["heard"].match(HEARD + first).groupdict() == {
+        "doa": "72", "speech": "True", "head": "+15", "voice": "+33", "x": "+0.12"}
+
+
+def test_what_was_heard_says_no_face_and_that_the_direction_is_not_this_voice(caplog):
+    async def main():
+        executor = alive(FakeMini(), doa=voice_at(math.radians(120), False), tracking=True)
+        executor.face = lambda: Face(False, True, None, 0.0)
+        executor.attend()
+        await asyncio.sleep(0.1)
+    with caplog.at_level(logging.INFO, logger="reachy_sage_voice.executor"):
+        asyncio.run(main())
+    assert heard_lines(caplog) == ["heard: DoA 120 deg (speech_detected=False), head +0 deg from "
+                                   "the body, voice -30 deg from the body, face not seen"]
+    assert meter.PATTERNS["heard"].match(HEARD + heard_lines(caplog)[0])["x"] is None
+
+
+def test_what_was_heard_is_logged_with_dashes_when_no_read_works(caplog):
+    class Deaf(FakeMini):
+        def get_current_head_pose(self):
+            raise ConnectionError("no robot")
+
+        def get_tracked_face(self, wait=True, timeout=5.0):
+            raise ConnectionError("no robot")
+
+    def no_doa():
+        raise OSError("no daemon")
+
+    async def main():
+        executor = make(Deaf(), doa=no_doa)  # idle off: no glance to fail
+        executor.attend()
+        await asyncio.sleep(0.1)
+        assert executor._down_since is None  # a failed read for the log is not a link drop
+    with caplog.at_level(logging.INFO, logger="reachy_sage_voice.executor"):
+        asyncio.run(main())
+    (line,) = heard_lines(caplog)
+    assert line == ("heard: DoA - deg (speech_detected=None), head - deg from the body, "
+                    "voice - deg from the body, face -")
+    assert meter.PATTERNS["heard"].match(HEARD + line).groupdict() == {
+        "doa": "-", "speech": "None", "head": "-", "voice": "-", "x": None}
+
+
+def test_a_glance_is_relative_to_where_the_head_points_with_the_body_turned(quick):
     mini = FakeMini()
     mini.yaw = math.radians(90)
+    mini.head = create_head_pose(yaw=90, degrees=True)  # the head with the body
 
     async def main():
         alive(mini, doa=voice_at(math.radians(60))).attend()
@@ -1837,6 +1906,66 @@ def test_a_small_nod_goes_and_comes_all_the_way_back(quick, arbitrated, monkeypa
     pitches = nodded()
     assert 0.5 * alive_motion.NOD_DEG < max(pitches) <= alive_motion.NOD_DEG + 0.01
     assert pitches[-1] == pytest.approx(0.0, abs=0.01)
+
+
+def test_a_nod_lands_even_when_a_send_stalls_past_its_end(quick, arbitrated, monkeypatch):
+    """A tick that stalls past the nod's end still sends it home before the runner yields.
+
+    Else it yields mid-nod, and idle's next hold reads the robot there: the offset stays.
+    """
+    monkeypatch.setattr(alive_motion, "NOD_S", 0.3)
+    monkeypatch.setenv("SAGE_VOICE_IDLE_SCALE", "0")  # no breath under it: home is pitch 0
+    mini = FakeMini()
+    real, stalled = mini.set_target, []
+
+    def stall(*args, **kwargs):
+        real(*args, **kwargs)
+        if not stalled and kwargs.get("head") is not None and euler(kwargs["head"])[1] > 2.0:
+            stalled.append(True)
+            time.sleep(alive_motion.NOD_S)  # the next tick is past the nod and its landing
+    mini.set_target = stall
+
+    def pitches():
+        return [euler(c[2])[1] for c in mini.named("set_target")]
+
+    async def main():
+        executor = alive(mini, idle=False)
+        executor.nod()
+        await until(lambda: stalled)
+        # home, or (the bug) stuck mid-nod: the runner yielded, nothing more is sent
+        await until(lambda: abs(pitches()[-1]) < 0.01 or not executor._moving(), 3.0)
+        await asyncio.sleep(0.05)
+    asyncio.run(main())
+    assert pitches()[-1] == pytest.approx(0.0, abs=0.01)
+
+
+def test_the_antennas_finish_their_lift_even_when_a_send_stalls_past_its_end(quick, arbitrated,
+                                                                             monkeypatch):
+    """The same stall mid-lift: the antennas still reach the top before the runner yields."""
+    monkeypatch.setattr(alive_motion, "PERK_RISE_S", 0.3)
+    monkeypatch.setenv("SAGE_VOICE_IDLE_SCALE", "0")
+    mini = FakeMini()
+    real, stalled = mini.set_target, []
+
+    def stall(*args, **kwargs):
+        real(*args, **kwargs)
+        if not stalled and math.degrees(kwargs["antennas"][0]) > 0.4 * alive_motion.PERK_DEG:
+            stalled.append(True)
+            time.sleep(alive_motion.PERK_RISE_S)  # the next tick is past the lift and its landing
+    mini.set_target = stall
+
+    def lifted():
+        return math.degrees(antennas_sent(mini)[-1][0])
+
+    async def main():
+        executor = alive(mini, idle=False)
+        executor.perk()
+        await until(lambda: stalled)
+        await until(lambda: abs(lifted() - alive_motion.PERK_DEG) < 0.01 or not executor._moving(),
+                    3.0)
+        await asyncio.sleep(0.05)
+    asyncio.run(main())
+    assert lifted() == pytest.approx(alive_motion.PERK_DEG, abs=0.01)
 
 
 def test_no_listening_reflex_while_speaking_dancing_searching_stopped_or_cooling(quick, arbitrated):

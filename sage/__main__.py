@@ -6,10 +6,13 @@ import threading
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sage import disposition
-from sage.adapters import http, model, search
-from sage.journal import Journal
-from sage.kernel import Kernel
+try:  # the character file is read as the kernel is imported: a bad one stops the start here, in one line
+    from sage import disposition
+    from sage.adapters import http, model, search
+    from sage.journal import Journal
+    from sage.kernel import Kernel
+except ValueError as error:
+    sys.exit(f"sage: {error}")
 
 
 def main() -> None:

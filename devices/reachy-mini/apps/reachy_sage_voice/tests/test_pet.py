@@ -53,6 +53,24 @@ def test_pipecats_own_lines_and_reachys_are_both_read():
     assert got["speech_p50"] == f"{(2300 + latency.LEAD_MS) / 1000:g} s (1)"
 
 
+def test_the_motion_links_down_and_back_lines_give_the_seconds_it_was_down():
+    """The lines executor.py's _link_down and _link_up write, and robot.py's _reconnect."""
+    lines = [
+        "2026-11-05 15:00:00,000 100.000 - INFO:__main__:session: build abc1234 config 0123456789ab",
+        "2026-11-05 15:10:00.000 | DEBUG    | pipecat.services.whisper.base_stt:run_stt:287 - Transcription: [Was the motion link down (again)?]",
+        "2026-11-05 15:20:00,000 1300.000 - WARNING:reachy_sage_voice.executor:motion link down (Lost connection with the server): commands refused, idle motion paused (stall 1)",
+        "2026-11-05 15:20:00,100 1300.100 - WARNING:reachy_sage_voice.robot:robot connection lost - reconnecting",
+        "2026-11-05 15:20:05,100 1305.100 - WARNING:reachy_sage_voice.robot:robot connection lost - reconnecting",
+        "2026-11-05 15:20:05,400 1305.400 - INFO:reachy_sage_voice.robot:robot reconnected",
+        "2026-11-05 15:20:12,500 1312.500 - INFO:reachy_sage_voice.executor:motion link back after 12.5 s (1 stalls so far)",
+        "2026-11-05 15:30:00,000 1900.000 - INFO:reachy_sage_voice.executor:thinking cue fired",
+    ]
+    got = table(lines)
+    assert got["link_drops"] == "2"
+    assert got["link_drops_per_hour"] == "4/h"  # 2 in half an hour
+    assert got["link_down_s"] == "12.5 s (1)"
+
+
 def test_a_turn_that_only_moves_logs_its_emote_and_empty_reply_and_no_speech(caplog, stamped):  # noqa: F811
     caplog.set_level(logging.INFO, logger="reachy_sage_voice.sage")
     _, stream = stamped("reachy_sage_voice.sage")

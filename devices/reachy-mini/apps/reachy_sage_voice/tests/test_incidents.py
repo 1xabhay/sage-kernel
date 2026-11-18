@@ -63,13 +63,11 @@ def test_a_stale_face_detector_is_turned_off_then_on_not_sent_the_same_weight_ag
     assert weights == [executors.WATCH_WEIGHT, 0.0, executors.WATCH_WEIGHT]
 
 
-@pytest.mark.xfail(strict=True, reason="executor._glance aims at body yaw + (90 - DoA) and never "
-                   "reads the head's yaw; the mic array's frame is to be confirmed on the robot")
 def test_a_glance_toward_a_voice_starts_from_where_the_head_already_points(quick):  # noqa: F811
-    """2026-11-10 (docs review, open): the glance at a voice ignores where the head is.
+    """2026-11-10 (docs review): the glance at a voice ignored where the head was.
 
-    The microphones turn with the head, so a voice 20 degrees left of a head already turned 20
-    degrees is 40 degrees from the body; the glance goes to 20 and looks away from the voice.
+    The microphones are at the top of the head and turn with it, so a voice 20 degrees left of a
+    head already turned 20 degrees is 40 degrees from the body; the glance went to 20.
     """
     mini = FakeMini()
     mini.head = create_head_pose(yaw=20, degrees=True)

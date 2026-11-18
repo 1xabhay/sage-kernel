@@ -260,7 +260,7 @@ class Kernel:
                     or policy.may_claim(said, senses)):
                 # Certain only on whole words: a last word still streaming may grow ("see" into "seem").
                 sure = said if closed else said.rpartition(" ")[0]
-                if cut and not self._streamed(source) and (policy.opens_like(recent, sure)
+                if cut and not self._streamed(source) and (policy.opens_like(recent, sure) or policy.claims_life(sure)
                                                            or policy.false_senses(sure, senses)):
                     raise Guarded(turn_id)
                 return
@@ -343,6 +343,10 @@ class Kernel:
                 self._reject(source, turn_id, prompt, output, "claims a sense this body lacks: " + ", ".join(claimed))
                 prompt = policy.retry_prompt(prompt, policy.sense_note(claimed))
                 output = self._ask(source, turn_id, prompt, declared, (), cut=False)  # no guard after it
+            if policy.claims_life(self._said(output, declared)) and not self._streamed(source):  # likewise
+                self._reject(source, turn_id, prompt, output, "claims to be alive or to have feelings")
+                prompt = policy.retry_prompt(prompt, policy.ALIVE_NOTE)
+                output = self._ask(source, turn_id, prompt, declared, (), cut=False)
             if (not self._said(output, declared) and policy.needs_words(line, policy.lane(self.state, source).input)  # retried once, then `decided` speaks
                     and not self._streamed(source)):
                 self._reject(source, turn_id, prompt, output, "silent on a line that needs words")

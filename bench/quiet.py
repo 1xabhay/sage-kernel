@@ -6,7 +6,8 @@ One transcript a line, as one conversation, on a throwaway journal. Exits 1 if a
     python bench/quiet.py <lines.txt> --model <name> [--url http://127.0.0.1:11434] [--limit N]
 
 A .jsonl of {"text", "to_sage"} (a labelled evening, kept out of git) is heard as speech, as the robot sends it,
-and scores how often Sage spoke to a line no one said to it.
+and scores how often Sage spoke to a line no one said to it: more than MAX_NOISE of them fails. Only words
+count: a move or nothing at all to such a line is never a miss, and no line said to Sage is held to this.
 """
 
 import argparse
@@ -26,6 +27,7 @@ from sage.journal import Journal  # noqa: E402
 from sage.kernel import Kernel  # noqa: E402
 
 MAX_QUESTIONS, MIN_MOVES, MAX_SILENT, MAX_FIRST_PIECE_MS = 0.10, 0.40, 0, 100  # (owner, 2026-11-05)
+MAX_NOISE = 0.10  # words to lines no one said to Sage: a first value, to tune on a labelled evening
 
 
 def p95(values) -> int:
@@ -52,9 +54,12 @@ def score(turns: list[dict]) -> dict:
 
 def failures(before: dict, after: dict) -> list[str]:
     """The thresholds `after` misses; `before` is the old prompt on the same lines, the same day."""
+    spoke = after["spoke_to_noise"] / max(1, after["noise"])  # no labelled lines, nothing to miss
     checks = ((after["question_ending"] <= MAX_QUESTIONS, f"question-ending {after['question_ending']:.0%} > {MAX_QUESTIONS:.0%}"),
               (after["movement_only"] >= MIN_MOVES, f"movement-only {after['movement_only']:.0%} < {MIN_MOVES:.0%}"),
               (after["silent_on_must_speak"] <= MAX_SILENT, f"{after['silent_on_must_speak']} silent on a question or distress"),
+              (spoke <= MAX_NOISE,
+               f"spoke to {after['spoke_to_noise']} of {after['noise']} lines not said to it, {spoke:.0%} > {MAX_NOISE:.0%}"),
               (after["first_piece_p95_ms"] - before["first_piece_p95_ms"] <= MAX_FIRST_PIECE_MS,
                f"first piece p95 {after['first_piece_p95_ms']} ms against {before['first_piece_p95_ms']} ms"))
     return [why for ok, why in checks if not ok]

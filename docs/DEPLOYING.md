@@ -18,6 +18,11 @@ Rollback today is the same from the previous good commit. The journal is untouch
   up without `--build`, a mounts check, kernel and robot status, the SHA logged.
 - Rollback: deploy the previous SHA's image, no rebuild (coming: plan C4).
 
+Another pet or another language: copy `sage/character.json`, change it, put it in the `kernel-data` volume, set
+`SAGE_CHARACTER=/data/character.json` in `.env`, then `make up`. The file is read once, at start. It must hold
+every key the default holds, and each pattern must be a regular expression; a missing or wrong one stops the
+start, and `docker logs` names the file and the key. Unset, the kernel is Sage, and its prompts are byte for byte what they were.
+
 ## The whole of Sage, on and off
 
 On the owner's Mac, where the kernel, the voice's services, the TTS and the voice were each

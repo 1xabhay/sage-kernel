@@ -3,8 +3,9 @@
 Reachy's own patterns, on the lines its processor really writes, are in the app's tests/test_pet.py.
 """
 
-import ast
+import importlib
 import re
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -217,21 +218,83 @@ def test_the_printed_table_has_counts_and_no_ones_speech(capsys, tmp_path):
         assert spoken not in out
 
 
-NAMES = ("COMMON", "TO_SAGE", "REQUESTS", "HANGING")
+#: A body whose link says when it went down and when it came back.
+LINKED = PATTERNS | pet.compile_patterns({
+    "link_down": r"body\.link:down",
+    "link_back": r"body\.link:back",
+})
+
+
+def linked(drops):
+    """Two hours with ``drops`` lost links; down 30.5 s, 60 s to a restart, 200 s to the end."""
+    return [
+        own(0, "-", SESSION),
+        *(own(50 + i, "-", "body.link:lost it") for i in range(drops)),
+        own(100, "-", "body.link:down"),
+        own(110, "-", "body.link:down"),  # said twice: still the one stretch
+        own(130.5, "-", "body.link:back"),
+        own(140, "-", "body.link:back"),  # back with nothing down: nothing
+        own(200, "-", "body.link:down"),
+        own(260, "-", SESSION),  # a restart ends the stretch
+        own(7000, "-", "body.link:down"),
+        own(7200, "-", "body.motion:idle"),
+    ]
+
+
+def test_link_drops_per_hour_and_the_seconds_the_link_was_down():
+    table = rows(linked(3), patterns=LINKED)
+    assert table["link_drops"] == ("3", "-", "-")
+    assert table["link_drops_per_hour"] == ("1.5/h", "-", "-")
+    assert table["link_down_s"] == ("290.5 s (3)", "-", "-")  # in 3 stretches
+    quiet = rows([own(0, "-", SESSION), own(3600, "-", "body.motion:idle")], patterns=LINKED)
+    assert quiet["link_drops_per_hour"][0] == "0/h"
+    assert quiet["link_down_s"][0] == "0 s (0)"
+
+
+def test_link_rows_the_log_cannot_give_are_not_logged():
+    assert rows(linked(3))["link_down_s"][0] == "not logged"  # a body with no such lines
+    assert rows([own(0, "-", SESSION)], patterns=LINKED)["link_drops_per_hour"][0] == "not logged"
+
+
+def compared(capsys, tmp_path, before, after, patterns=LINKED):
+    for name, lines in (("before.log", before), ("after.log", after)):
+        (tmp_path / name).write_text("\n".join(lines))
+    pet.main([str(tmp_path / "after.log"), "--baseline", str(tmp_path / "before.log")], patterns)
+    return capsys.readouterr().out.splitlines()
+
+
+def test_a_baseline_is_compared_by_link_drops_per_hour(capsys, tmp_path):
+    out = compared(capsys, tmp_path, linked(3), linked(1))
+    assert out[0].startswith("after.log: 2.0 h")  # the table is the log's, as ever
+    assert out[-3:] == [
+        "before.log: 2.0 h, link drops 3, link drops per hour 1.5/h, link down 290.5 s (3)",
+        "after.log: 2.0 h, link drops 1, link drops per hour 0.5/h, link down 290.5 s (3)",
+        "link drops per hour: fell",
+    ]
+    assert compared(capsys, tmp_path, linked(1), linked(1))[-1] == (
+        "link drops per hour: did not fall")
+    assert compared(capsys, tmp_path, linked(1), linked(3))[-1] == (
+        "link drops per hour: did not fall")
+
+
+def test_a_baseline_that_cannot_say_is_not_a_fall(capsys, tmp_path):
+    out = compared(capsys, tmp_path, ["nothing here at all"], linked(1))
+    assert out[-3].startswith("before.log: not logged, link drops not logged")
+    assert out[-1] == "link drops per hour: cannot say"
+
+
+NAMES = ("COMMON", "TO_SAGE", "NEAR_SAGE", "REQUESTS", "HANGING")
 
 
 def test_misheard_is_the_kernels():
     """The meter holds a copy (a device imports no kernel code): kernel changes must reach it."""
-    policy = Path(__file__).resolve().parents[4] / "sage" / "policy.py"
-    picked = [node for node in ast.parse(policy.read_text()).body
-              if getattr(node, "name", None) in ("misheard", "said_to_sage")
-              or (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") in NAMES)]
-    kernel = {"re": re, "SURE": 1.0}
-    exec(compile(ast.Module(picked, []), str(policy), "exec"), kernel)
-    copies = [pet._COMMON, pet._TO_SAGE, pet._REQUESTS, pet._HANGING]
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))  # its words are in a file it loads
+    kernel = vars(importlib.import_module("sage.policy"))
+    copies = [pet._COMMON, pet._TO_SAGE, pet._NEAR_SAGE, pet._REQUESTS, pet._HANGING]
     assert [kernel[name] for name in NAMES] == copies
     for line in ("I'm sad.", "I'm just gonna.", "Sing a song.", "Only the kettle.", "", "Hello.",
-                 "hi there", "What is it?", "the fridge banana", "Short one.",
+                 "hi there", "What is it?", "the fridge banana", "Short one.", "Age.", "Hey age.",
+                 "Age, come here.", "Come here age.", "Old age home.", "Saige!", "Stage left.",
                  "This one is a long and whole sentence.", "la la la la and then we sang it all.",
                  "Is this a question without", "A much longer line that ends fine, doesn't it?"):
         assert pet.misheard(line) == kernel["misheard"](line), line

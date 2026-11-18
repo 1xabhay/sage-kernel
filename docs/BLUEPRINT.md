@@ -62,6 +62,10 @@ VAD, turns, barge-in, STT, TTS
   never instructions.
 - **BORROW** Rebuild context from the journal after a crash (the earlier voice bot's
   rejoin logic).
+- **KEEP** The character is data: the pet's name, persona, examples, notes to the model and fixed spoken
+  lines, and the language rules (the word lists and patterns that read distress, a question, a request for
+  quiet, the calendar's names), are one JSON file (`sage/character.json`; `SAGE_CHARACTER` names another),
+  read once at start and checked against the default's keys. The kernel's code holds the mechanism.
 - **DESIGN** Native tool calling in the provider adapter (kani): manifest tools
   become function schemas; the kernel still authorizes every call. Engines are
   configuration, not code.

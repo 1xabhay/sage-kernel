@@ -143,8 +143,9 @@ IDLE_LIMITS = (15.0, 10.0, 35.0, 0.015, 40.0, 40.0, 15.0)
 #: An idle action every so often (seconds, drawn uniformly): name -> seconds it lasts.
 IDLE_ACTION_EVERY_S = (4.0, 10.0)
 IDLE_ACTIONS = {"look_around": 4.0, "curious_tilt": 2.5, "antenna_twitch": 0.8}
-# The glance toward a voice at its onset: head yaw = 90 - DoA degrees (community formula),
-# relative to the body, within the head's reach of it.
+# The glance toward a voice at its onset. The microphones are in the head and turn with it, so
+# the voice is 90 - DoA degrees (community formula) from where the head points, not from the
+# body. The glance goes there, within the head's reach of the body.
 GLANCE_MAX_YAW = 55.0  # degrees either side of the body
 GLANCE_PITCH = -5.0  # degrees, a little up, toward a face
 GLANCE_COOLDOWN_S = 1.75  # after any move, for a thought too: its motor noise is not the next voice
@@ -371,6 +372,10 @@ def head_yaw(head) -> float:
     return math.degrees(math.atan2(head[1][0], head[0][0]))
 
 
+#: The keys ``alive.listening`` offsets: the ones a reflex has to see come to rest (``_landed``).
+_REFLEX_KEYS = ("pitch", "left", "right")
+
+
 def within_limits(target: dict) -> dict:
     """Return goto_target/set_target arguments with head and body inside ``limits.py``.
 
@@ -443,6 +448,8 @@ class Executor:
         self._held_at, self._held_s = 0.0, 0.0
         self.idle, self.cues = idle, cues
         self._cue: asyncio.Task | None = None  # a glance or a thought
+        self._hearing: set[asyncio.Task] = set()  # the "heard:" log lines being read (attend)
+        self._doa_read = asyncio.Lock()  # one read at a time: speech_detected is the last read's
         self._away = None  # the head pose a thought glanced away from
         self._moved_at = -math.inf  # when the head last moved, for the glance's cooldown
         self._still = False  # stopped: no breathing or cue until spoken to or given a plan
@@ -473,6 +480,8 @@ class Executor:
         self._brake: Hold | None = None  # where it brakes to before yielding (``_yields``)
         self._idling: Hold | None = None  # the Hold idle took the body with: not a move's
         self._dwell: Hold | None = None  # a search view's Hold, breathing under it
+        self._reflexed: dict = {}  # the listening reflex's offset in the last tick
+        self._landing = False  # that offset changed: its keys are still on their way to rest
         self._failed: Exception | None = None  # why it last failed: a Goto waiting fails with it
         self.link_lost: Callable[[str], None] = lambda reason: logger.error("%s", reason)
         self.on_link: Callable[[bool, int], None] = lambda up, stalls: None
@@ -603,6 +612,9 @@ class Executor:
     def attend(self) -> None:
         """Someone started speaking: glance toward their voice (``idle``), then hold still."""
         self._start_cue(self._glance(), "glance", "new speech")
+        heard = asyncio.ensure_future(self._log_heard())  # started after the glance
+        self._hearing.add(heard)  # its own task: the next cue cancels a glance, not this line
+        heard.add_done_callback(self._hearing.discard)
 
     def think(self) -> None:
         """Glance away, thinking: words went to the kernel. Never waits: the reply is on its way."""
@@ -745,6 +757,7 @@ class Executor:
         def tick(t: float) -> dict:
             self._ticked, self._sent = t, step(t)
             self._state = step.state
+            self._landed(self._reflex_pose(t))
             if self._still and isinstance(self._primary, Hold) and arbiter.settled(self._state):
                 self._primary = None  # stopped: once the freeze is reached nothing moves
             return self._sent
@@ -781,13 +794,28 @@ class Executor:
             self._written = ticked
             runner.SENDING.reset(sending)
 
+    def _landed(self, reflex: dict) -> None:
+        """Follow the reflex to rest: from a tick that changed its offset to its keys on their goal.
+
+        On it within ``arbiter.SETTLE_POS``: after a stall the slew takes more ticks to get there.
+        """
+        changed, self._reflexed = reflex != self._reflexed, reflex
+        state = self._state
+        self._landing = changed or (self._landing and any(
+            abs(state.sent[k] - state.goal.get(k, state.sent[k])) > arbiter.SETTLE_POS
+            for k in _REFLEX_KEYS if k in state.sent))
+
     def _moving(self) -> bool:
         """Whether the primary is a move's: the runner's whatever else wants the body.
 
         Not idle's Hold, nor a search view's while the person speaks (hold: breathing stops).
+        A reflex is a move until what was sent is where it rests: by the clock alone, a send
+        that stalled past its end would yield mid-nod, the offset left on the robot.
         """
         p = self._primary
-        return alive.listening_moves(*self._listening(self.clock())) or (
+        now = self.clock()
+        return (alive.listening_moves(*self._listening(now)) or self._landing
+                or self._reflexed != self._reflex_pose(now)) or (
             p is not None and p is not self._idling
             and not (p is self._dwell and self._held.is_set()))
 
@@ -940,12 +968,43 @@ class Executor:
             logger.info("glance skipped: %s", why)
             await self._come_back()
             return
-        toward = max(-GLANCE_MAX_YAW, min(GLANCE_MAX_YAW, 90 - math.degrees(angle)))
-        logger.info("glance: DoA %.0f deg (speech_detected=%s) -> head yaw %+.0f deg from the body",
-                    math.degrees(angle), heard, toward)
         body = math.degrees(await self._yaw())
+        head = head_yaw(await self._call("get_current_head_pose"))
+        toward = max(-GLANCE_MAX_YAW, min(GLANCE_MAX_YAW, head - body + 90 - math.degrees(angle)))
+        logger.info("glance: DoA %.0f deg (speech_detected=%s), head %+.0f deg from the body -> "
+                    "head yaw %+.0f deg from the body",
+                    math.degrees(angle), heard, head - body, toward)
         self._away = None  # facing the voice beats coming back from a thought
         await self._cue_move(create_head_pose(yaw=body + toward, pitch=GLANCE_PITCH))
+
+    async def _log_heard(self) -> None:
+        """Log where this voice and a face are, once per speech onset, glance or not.
+
+        For Sage's own judgment of when to engage (roadmap 0.4), never a gate: nothing reads it
+        here, and a failed read is a "-". Degrees, left positive, from the body; the face's x is
+        its place in the image, -1 to 1.
+        """
+        head = angle = face = None
+        with contextlib.suppress(Exception):  # before the glance moves the head
+            pose = await self._peek("get_current_head_pose")
+            joints, _ = await self._peek("get_current_joint_positions")
+            head = head_yaw(pose) - math.degrees(joints[0])
+        if self.doa is not None:
+            angle = await self._doa()
+        speech = getattr(self.doa, "speech_detected", None)
+        with contextlib.suppress(Exception):
+            face = await self._see(self._peek)
+        if angle is not None:
+            angle = math.degrees(angle)
+        voice = None if head is None or angle is None else head + 90 - angle  # as the glance's
+
+        def deg(value: float | None, spec: str = "+.0f") -> str:
+            return "-" if value is None else format(value, spec)
+        seen = ("-" if face is None or not face.fresh else "not seen" if not face.detected
+                else f"seen at x={deg(face.bearing, '+.2f')}")
+        logger.info("heard: DoA %s deg (speech_detected=%s), head %s deg from the body, "
+                    "voice %s deg from the body, face %s",
+                    deg(angle, ".0f"), speech, deg(head), deg(voice), seen)
 
     def _glance_why_not(self) -> str | None:
         if not self.idle:
@@ -1031,8 +1090,7 @@ class Executor:
     async def _look(self, step: Step) -> str:
         pose = LOOKS.get(step.arg, {})
         if step.arg == "me":
-            angle = await self._doa()
-            yaw = 0.0 if angle is None else math.degrees(math.pi / 2 - angle)
+            yaw = await self._voice() or 0.0
             pose = {"yaw": max(-ME_YAW, min(ME_YAW, yaw))}
         await self._goto(head=create_head_pose(**pose), body_yaw=None)
         return f"looked {step.arg}"
@@ -1196,7 +1254,10 @@ class Executor:
     async def _voice(self) -> float | None:
         """Return the voice's world yaw in degrees, left positive, or None."""
         angle = await self._doa()
-        return None if angle is None else math.degrees(await self._yaw()) + 90 - math.degrees(angle)
+        if angle is None:
+            return None
+        # From where the head points: the microphones turn with it.
+        return head_yaw(await self._call("get_current_head_pose")) + 90 - math.degrees(angle)
 
     async def _view(self, yaw: float, elevation: float) -> bool:
         """Move to a view; True if a face is seen on the way.
@@ -1356,11 +1417,12 @@ class Executor:
     # --- robot ----------------------------------------------------------------
 
     async def _doa(self) -> float | None:
-        try:
-            return await asyncio.to_thread(self.doa)  # an HTTP read: off the event loop
-        except Exception as error:
-            logger.warning("no direction of arrival: %s", error)
-            return None
+        async with self._doa_read:
+            try:
+                return await asyncio.to_thread(self.doa)  # an HTTP read: off the event loop
+            except Exception as error:
+                logger.warning("no direction of arrival: %s", error)
+                return None
 
     async def _sweep_to(self, here: float, target: float, deadline: float | None = None) -> bool:
         """Turn the body in segments, the head with it; with a ``deadline``, watch for a face.
@@ -1458,14 +1520,23 @@ class Executor:
 
     async def _face(self) -> bool:
         """Whether a fresh face is seen: a stale or detector-off reading never counts (F1)."""
+        return (await self._see(self._call)).detected
+
+    async def _see(self, call: Callable[..., Awaitable]) -> Face:
+        """Return the face percept now, the SDK's reading read with ``call``."""
         face: Face | None = None
         if self.face is not None:
             face = await asyncio.to_thread(self.face)  # an HTTP read: off the event loop
         if face is None:
-            reading = await self._call("get_tracked_face", wait=False)
+            reading = await call("get_tracked_face", wait=False)
             on = bool(self._tracking) and not getattr(self.mini, "refused", False)
             face = face_percept(reading, time.monotonic(), on)
-        return face.detected
+        return face
+
+    async def _peek(self, name: str, **kwargs):
+        """Read the robot for a log line: not ``_call``, where a failure marks the link down."""
+        return await asyncio.get_running_loop().run_in_executor(
+            self._robot, functools.partial(getattr(self.mini, name), **kwargs))
 
     async def _reflex(self, name: str, **kwargs) -> None:
         """Make a robot call an emote can do without: a failure is logged, the emote goes on."""

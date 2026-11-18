@@ -82,6 +82,17 @@ def test_a_body_that_moves_declares_its_parts_and_body_plan():
     assert declared["tools"][-1] == BODY_PLAN
 
 
+def test_a_body_with_sight_declares_vision_and_says_what_it_sees_and_what_it_does_not():
+    """Else the kernel tells the model it cannot see, beside what the camera saw."""
+    off, on = manifest(MOVES, body=True), manifest(MOVES, body=True, sight=True)
+    assert off["senses"] == ["speech"] and on["senses"] == ["speech", "vision"]
+    body = on["body"]
+    assert len(body) <= 300 and "cannot see" not in body  # protocol §2
+    assert "when asked" in body and "never who" in body  # words on ask; people only "a person"
+    assert {**on, "senses": off["senses"], "body": off["body"]} == off  # nothing else differs
+    assert manifest(MOVES, sight=True)["senses"] == ["speech", "vision"]
+
+
 def test_body_and_body_plan_cost_under_450_tokens_of_the_kernels_3600():
     """The kernel's budget test counts chars/4; a tool reads `name: description Input: schema`.
 

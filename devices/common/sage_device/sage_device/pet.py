@@ -22,6 +22,8 @@ The log line contract, by kind:
     reply_empty   the model chose to say nothing; stamped
     reaction      a move answering the person began (nod, cue, glance, emote); stamped
     link_drop     the link to the body was lost
+    link_down     the link went down: the start of a stretch that link_back, the next session
+    link_back     line or the log's last line ends. Both declared, the seconds down are known
     kernel_down   the kernel did not answer
     voice_silent  a clause or reply went unspoken
     sudden_move   the body made a sudden move
@@ -33,6 +35,8 @@ The log line contract, by kind:
 
 A kind neither seen nor promised reads "not logged", never 0. Nothing anyone said reaches the
 table.
+
+``--baseline <an earlier log>`` adds each log's link rows and whether link drops per hour fell.
 
 Barge-ins are counted, with no target: an implicit signal is not a reward (a third have no usable
 speech, a third come in the first second: echo and turn-end error as much as interest).
@@ -107,6 +111,8 @@ METRICS = {
     "clamped": Metric("Clamped targets", high=0),
     "still_max": Metric("Longest still, awake", " s", high=5),
     "link_drops": Metric("Link drops"),
+    "link_drops_per_hour": Metric("Link drops per hour", "/h"),
+    "link_down_s": Metric("Link down", " s"),
     "kernel_unreachable": Metric("Kernel unreachable"),
     "voice_silent": Metric("Silent-voice events"),
     "arrived": Metric("Arrivals"),
@@ -153,6 +159,7 @@ class _Session:
     over_voice: int = 0  # starts of audio with a voice going, not watching
     over_voice_watching: list[bool] = field(default_factory=list)  # each start while watching
     gates: list[tuple[int, float, int, float]] = field(default_factory=list)  # each minute's
+    downs: list[float] = field(default_factory=list)  # seconds of each stretch the link was down
 
 
 def compile_patterns(patterns: dict[str, str]) -> dict[str, re.Pattern]:
@@ -173,11 +180,14 @@ def misheard(line: str) -> bool:
 
 
 def _said_to_sage(said: list[str]) -> bool:
-    return said[-1] not in _HANGING and (bool(_TO_SAGE & set(said)) or said[0] in _REQUESTS)
+    return said[-1] not in _HANGING and (
+        bool(_TO_SAGE & set(said)) or said[0] in _REQUESTS
+        or bool(_NEAR_SAGE & {said[0], said[-1]}))
 
 
 _TO_SAGE = {"sage", "i", "i'm", "i've", "i'll", "i'd", "me", "my", "you", "your", "you're", "we",
             "us", "our", "let's"}
+_NEAR_SAGE = frozenset({"age", "saige", "sayge", "sarge"})  # "Sage", heard a little wrong
 _REQUESTS = {"sing", "tell", "dance", "count", "show", "play", "wake", "search", "find"}
 _HANGING = {"gonna", "to", "the", "a", "an", "and", "but", "or", "so", "just", "of", "because",
             "if", "that", "was", "is", "i", "i'm", "my", "your", "you're"}
@@ -207,7 +217,7 @@ def _scan(lines: list[str], patterns: dict[str, re.Pattern]) -> _Session:
     s = _Session()
     by_id: dict[str, _Turn] = {}
     # The turn in hand, a transcript with no turn yet, a barge-in with no STT, the audio's start.
-    current = awaiting = barge = bot_on = None
+    current = awaiting = barge = bot_on = down = None
     voice = watching = False
     for line in lines:
         parts = _split(line)
@@ -221,6 +231,11 @@ def _scan(lines: list[str], patterns: dict[str, re.Pattern]) -> _Session:
             continue
         s.seen[kind] += 1
         here = by_id.get(turn_id, current)
+        if kind == "link_down":
+            down = t if down is None else down
+        elif kind in ("link_back", "session") and down is not None:
+            s.downs.append(t - down)
+            down = None
         if kind == "session":
             s.build, s.config = m["build"], m["config"]
         elif kind == "turn":
@@ -272,6 +287,8 @@ def _scan(lines: list[str], patterns: dict[str, re.Pattern]) -> _Session:
             s.reactions.append(t)
         elif kind == "motion_gates":
             s.gates.append((int(m["ticks"]), float(m["hz"]), int(m["clamped"]), float(m["still"])))
+    if down is not None:  # still down at the log's last line
+        s.downs.append(s.ended - down)
     return s
 
 
@@ -342,6 +359,10 @@ def _values(lines: list[str], s: _Session, patterns: dict, name: str | None) -> 
         "clamped": (sum(g[2] for g in s.gates), "") if s.gates else None,
         "still_max": (max(g[3] for g in s.gates), "") if s.gates else None,
         "link_drops": count("link_drop"),
+        "link_drops_per_hour": known("link_drop") and hours and (
+            round(s.seen["link_drop"] / hours, 2), ""),
+        "link_down_s": known("link_down", "link_back") and (
+            round(sum(s.downs), 1), f" ({len(s.downs)})"),
         "kernel_unreachable": count("kernel_down"),
         "voice_silent": count("voice_silent"),
         "arrived": (s.seen["arrived"], "") if s.seen["arrived"] else None,
@@ -353,10 +374,7 @@ def _values(lines: list[str], s: _Session, patterns: dict, name: str | None) -> 
     }
 
 
-def report(lines, patterns: dict[str, re.Pattern], name: str | None = None) -> dict[str, Row]:
-    """Each metric's row for the session these log lines hold, keyed as in ``METRICS``."""
-    lines = list(lines)
-    values = _values(lines, _scan(lines, patterns), patterns, name)
+def _rows(values: dict) -> dict[str, Row]:
     rows = {}
     for key, metric in METRICS.items():
         got = values[key]
@@ -368,18 +386,44 @@ def report(lines, patterns: dict[str, re.Pattern], name: str | None = None) -> d
     return rows
 
 
+def report(lines, patterns: dict[str, re.Pattern], name: str | None = None) -> dict[str, Row]:
+    """Each metric's row for the session these log lines hold, keyed as in ``METRICS``."""
+    lines = list(lines)
+    return _rows(_values(lines, _scan(lines, patterns), patterns, name))
+
+
+def _read(log: Path, patterns: dict, name: str | None) -> tuple[_Session, dict, str]:
+    """Read a log into its session, its values, and its hours as the header shows them."""
+    lines = log.read_text(errors="replace").splitlines()
+    s = _scan(lines, patterns)
+    hours = f"{(s.ended - s.begun) / 3600:.1f} h" if s.begun else NOT_LOGGED
+    return s, _values(lines, s, patterns, name), hours
+
+
 def main(argv: list[str], patterns: dict[str, re.Pattern]) -> None:
     """Print the table for the bot log named in ``argv``. Reads it only."""
     parser = argparse.ArgumentParser(description="The owner's table for a session.")
     parser.add_argument("log", type=Path)
     parser.add_argument("--name", help="the owner's name, written|spoken; not printed")
+    parser.add_argument("--baseline", type=Path, help="an earlier log, to compare the link with")
     args = parser.parse_args(argv)
-    lines = args.log.read_text(errors="replace").splitlines()
-    s = _scan(lines, patterns)
-    hours = f"{(s.ended - s.begun) / 3600:.1f} h" if s.begun else NOT_LOGGED
+    s, values, hours = _read(args.log, patterns, args.name)
     print(f"{args.log.name}: {hours}, build {s.build or NOT_LOGGED}, "
           f"config {s.config or NOT_LOGGED}, "
           f"transcripts {len(s.heard)}, turns {len(s.turns)}")
     print(f"{'Metric':36}{'Value':18}{'Target':10}Result")
-    for row in report(lines, patterns, args.name).values():
+    for row in _rows(values).values():
         print(f"{row.label:36}{row.value:18}{row.target:10}{row.result}")
+    if args.baseline:
+        rates = []
+        for log in (args.baseline, args.log):
+            _, values, hours = _read(log, patterns, None)
+            rows = _rows(values)
+            print(f"{log.name}: {hours}, " + ", ".join(
+                f"{rows[key].label.lower()} {rows[key].value}"
+                for key in ("link_drops", "link_drops_per_hour", "link_down_s")))
+            rates.append(values["link_drops_per_hour"])
+        before, after = rates
+        fell = "cannot say" if not (before and after) else (
+            "fell" if after[0] < before[0] else "did not fall")
+        print(f"link drops per hour: {fell}")

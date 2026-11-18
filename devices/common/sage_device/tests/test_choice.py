@@ -1,10 +1,11 @@
 """Whether a heard line gets words or a move alone: decided here with no body or kernel in sight."""
 
 import ast
+import importlib
 import inspect
 import math
 import random
-import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -172,11 +173,8 @@ def test_questions_and_distress_need_words_in_any_case_and_with_a_curly_apostrop
 
 def test_the_distress_and_question_patterns_are_the_kernels():
     """The device holds copies, importing no kernel code: what the kernel adds must stop a move."""
-    policy = Path(__file__).resolve().parents[4] / "sage" / "policy.py"
-    picked = [node for node in ast.parse(policy.read_text()).body if isinstance(node, ast.Assign)
-              and getattr(node.targets[0], "id", "") in ("DISTRESS", "QUESTION")]
-    kernel = {"re": re}
-    exec(compile(ast.Module(picked, []), str(policy), "exec"), kernel)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))  # its words are in a file it loads
+    kernel = vars(importlib.import_module("sage.policy"))
     assert choice._KERNEL_DISTRESS.pattern == kernel["DISTRESS"].pattern
     assert choice._KERNEL_QUESTION.pattern == kernel["QUESTION"].pattern
 

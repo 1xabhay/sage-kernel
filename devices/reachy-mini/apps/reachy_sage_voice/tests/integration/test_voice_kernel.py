@@ -234,6 +234,16 @@ STORY = ("Once upon a time there was a robot. It lived on a desk and watched the
          "Every day it learned a new word.")
 
 
+@pytest.fixture
+def storyteller(monkeypatch):
+    """Raise the body's cap to fit the whole STORY.
+
+    The kernel cuts a reply to the body's max_chars; at the voice's own cap the story is one
+    sentence, over before anything can interrupt it.
+    """
+    monkeypatch.setattr("reachy_sage_voice.manifest.MAX_CHARS", len(STORY))
+
+
 def interrupted(rig, reply, sequence=True):
     """Return the words the voice reported heard of ``reply`` (by sequence, or by turn)."""
     key = ("sequence", reply["sequence"]) if sequence else ("turn_id", reply["turn_id"])
@@ -272,7 +282,7 @@ def test_a_new_transcript_mid_reply_interrupts_it_cleanly(rig):
     assert " ".join(rig.tts_inputs()).split() == old.split()[:8] + new.split()
 
 
-def test_barge_in_after_the_reply_is_journaled_keeps_what_was_heard(rig):
+def test_barge_in_after_the_reply_is_journaled_keeps_what_was_heard(rig, storyteller):
     rig.replies = {"Tell me a story.": (STORY, {})}
     down = rig.run([heard("Tell me a story."), SleepFrame(1.2), InterruptionFrame(),
                     SleepFrame(0.5), heard("What happened next?"), SleepFrame(1.5)])
@@ -284,7 +294,7 @@ def test_barge_in_after_the_reply_is_journaled_keeps_what_was_heard(rig):
     remembers(rig, played, unheard=STORY.split()[len(played):])
 
 
-def test_stop_from_another_device_silences_the_voice(rig):
+def test_stop_from_another_device_silences_the_voice(rig, storyteller):
     rig.replies = {"Tell me a story.": (STORY, {})}
 
     def stop():

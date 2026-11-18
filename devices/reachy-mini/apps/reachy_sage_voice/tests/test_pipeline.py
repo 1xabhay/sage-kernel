@@ -789,3 +789,46 @@ def test_the_voice_is_busy_from_queued_text_until_the_speaker_stops():
     asyncio.run(run_test(BotSpeech(InterruptionTracker(), playback), frames_to_send=[
         BotStartedSpeakingFrame(), BotStoppedSpeakingFrame(), SleepFrame(0.05)]))
     assert not playback.busy
+
+
+def test_sight_looks_through_the_robot_camera_with_the_local_vision_model(monkeypatch):
+    asked = []
+    def describe(jpeg, question, url, model):
+        asked.append((jpeg, question, url, model))
+        return "A desk."
+    monkeypatch.setattr(voice_pipeline.vision, "describe", describe)
+
+    class Camera:
+        def get_frame_jpeg(self):
+            return b"jpeg"
+    see = voice_pipeline.sight(Camera(), {"SAGE_VOICE_VISION_MODEL": "eyes"})
+    assert asyncio.run(see("What is this?")) == "A desk."
+    assert asked == [(b"jpeg", "What is this?", "http://127.0.0.1:11434", "eyes")]
+    # Off unless a model is named: a second model beside the kernel's evicts it on this Mac.
+    assert voice_pipeline.sight(Camera(), {}) is None
+    assert voice_pipeline.sight(object(), {"SAGE_VOICE_VISION_MODEL": "eyes"}) is None  # no camera
+
+
+def test_with_no_vision_model_named_nothing_of_sight_exists_whatever_else_is_set(monkeypatch):
+    """Off is today's pet: nothing to look with, no frame taken, the same body declared."""
+    def never(*args, **kwargs):
+        raise AssertionError("looked with sight off")
+    monkeypatch.setattr(voice_pipeline.vision, "describe", never)
+
+    class Camera(FakeMedia):
+        get_frame_jpeg = never
+    plain = voice_pipeline.kernel_session(ENV, MOVES, executor=object()).manifest
+    for off in ({}, {"SAGE_VOICE_VISION_MODEL": ""},
+                {"SAGE_VOICE_SCENE_S": "5", "SAGE_VOICE_VISION_URL": "http://127.0.0.1:11434"}):
+        env = {**ENV, **off}
+        sage = next(p for p in build(Camera(), no_emote, MOVES, env).processors
+                    if isinstance(p, SageProcessor))
+        assert sage._see is None  # what the processor does without it: test_sage_processor
+        assert voice_pipeline.kernel_session(env, MOVES, executor=object()).manifest == plain
+    assert plain["senses"] == ["speech"] and "cannot see" in plain["body"]
+
+
+def test_a_named_vision_model_is_declared_to_the_kernel_as_sight():
+    seeing = voice_pipeline.kernel_session({**ENV, "SAGE_VOICE_VISION_MODEL": "eyes"}, MOVES,
+                                           executor=object()).manifest
+    assert seeing["senses"] == ["speech", "vision"] and "cannot see" not in seeing["body"]

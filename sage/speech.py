@@ -8,21 +8,20 @@ import json
 import re
 import unicodedata
 
+from sage import character
+
 START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 STAGE = re.compile(r"\*[^*]*\*")
-# The kernel's own notes to the model, should it ever copy one: never spoken.
-ANNOTATION = re.compile(r"[(\[][^()\[\]]*\b(interrupted|body could not|json fields|you just said|this body cannot|stay sage|they need words)\b"
+# The kernel's own notes to the model, should it ever copy one: never spoken. The character file lists a phrase of each.
+ANNOTATION = re.compile(r"[(\[][^()\[\]]*\b(" + "|".join(map(re.escape, character.CHARACTER["never_said"])) + r")\b"
                         r"[^()\[\]]*[)\]]", re.IGNORECASE)
 EMOJI_PARTS = {0x200D, 0xFE0F, 0x20E3}
 # Talk of being interrupted, the kernel's barge-in note paraphrased ("I was interrupted", live run 5b).
-INTERRUPTION = re.compile(r"\b(?:i|i'm|i've|we)\b[^.!?]{0,20}\b(?:interrupt|cut off)|\binterrupt\w*\s+(?:me|us)\b"
-                          r"|\bcut(?:ting)? (?:me|us) off\b")
+INTERRUPTION = re.compile(character.CHARACTER["patterns"]["interruption"])
 # Openings held while streaming, until they could no longer become talk of being interrupted.
 # ponytail: a fixed list, so a sentence opening otherwise ("Oh, you interrupted") can stream its start.
-OPENINGS = ("i was interrupted", "i got interrupted", "i ve been interrupted", "i was cut off", "i got cut off",
-            "sorry i was interrupted", "you interrupted me", "you cut me off", "you keep interrupting me",
-            "you keep cutting me off")
+OPENINGS = tuple(character.CHARACTER["words"]["interrupted_openings"])
 
 
 def partial_reply(raw: str) -> tuple[str, bool]:
@@ -71,11 +70,11 @@ def parse_output(raw: str) -> tuple[str, tuple[tuple[str, object], ...], str]:
 
 def whole_sentences(reply: str, limit: int) -> str:
     """A reply the decoder cut at `limit` characters, back to its last whole sentence (or word): never mid-word."""
-    if len(reply) < limit or reply.rstrip()[-1:] in tuple(".!?\"'"):
+    if len(reply) < limit or len(reply) == limit and reply.rstrip()[-1:] in tuple(".!?\"'"):
         return reply
-    reply = reply[:limit]
-    end = max(reply.rfind(mark) for mark in ".!?")
-    return reply[:end + 1] if end >= 0 else reply[:reply.rfind(" ")].rstrip()
+    head = reply[:limit]  # longer than `limit`: no decoder cut it (another model server, or a line of the kernel's own)
+    end = max(head.rfind(mark) for mark in ".!?")
+    return head[:end + 1] if end >= 0 else reply[:max(reply.rfind(" ", 0, limit + 1), 0)].rstrip()
 
 
 def near_cap(reply: str, limit: int) -> str:
@@ -84,7 +83,7 @@ def near_cap(reply: str, limit: int) -> str:
     never run ahead of that. The first sentence is safe: with no sentence end, the cut falls at a space."""
     partial = re.split(r"(?<=[.!?])\s+", reply[:limit])[-1]
     start = len(reply[:limit]) - len(partial)
-    return reply[:start] if partial and start > 0 else reply  # its gap marks the sentence ended
+    return reply[:start] if partial and start > 0 else reply[:limit]  # its gap marks the sentence ended
 
 
 def _emoji(char: str) -> bool:

@@ -74,7 +74,7 @@ environment, so put its settings in `~/.config/reachy_mini/sage_voice/.env`
 (see "Settings"), and the daemon connects to the robot, so `REACHY_MINI_HOST`
 is not needed. Installing it from the dashboard does not work yet, so the Space
 is not tagged `reachy_mini_python_app` and the dashboard does not offer it: see
-"Known limits". Running on the Pi is not a goal for 0.1.0.
+"Known limits". Running on the Pi is not a goal yet.
 
 ## Deploy
 
@@ -171,6 +171,9 @@ missing one stops the app with its name.
 | `SAGE_VOICE_MIC_CHANNEL` | `mean` | `mean`, `0` or `1` of the mic array's stereo |
 | `SAGE_VOICE_PRESENCE` | `0` | `1`: follow a face from the start, and report seen/lost from it |
 | `SAGE_VOICE_WATCH` | `1` | Presence without following: the face detector runs at a weight that never moves the head, and seen/lost (left after 2 min unseen) go to the kernel for greetings and nudges. `0`: detector off |
+| `SAGE_VOICE_VISION_MODEL` | none (no sight) | The local vision model (Ollama) that turns a camera frame into a sentence when asked "What do you see?", "What am I holding?": only the words go to the kernel, the frame is never kept, and people are only "a person". Named, the body declares the `vision` sense and describes what it sees. Off by default: on a 16 GB Mac a second model beside the kernel's evicts it (measured 2026-11-08) |
+| `SAGE_VOICE_VISION_URL` | `http://127.0.0.1:11434` | Its Ollama |
+| `SAGE_VOICE_SCENE_S` | `0` | Every this many seconds, while quiet, a changed scene is told to the kernel, so replies can refer to it; `0`: only when asked |
 | `SAGE_VOICE_IDLE` | `1` | `0`: no idle motion and no glance toward your voice when you start speaking |
 | `SAGE_VOICE_IDLE_SCALE` | `1` | Multiplies every idle amplitude (head about 12° yaw, 6° pitch, 4° roll, body sway 8°, antennas), within fixed limits: `0.5` calmer, `1.5` livelier, `0` still |
 | `SAGE_VOICE_MOTION_SPEED` | `1` | With the motion arbiter (the default; `SAGE_VOICE_ARBITER=0` rolls back to the old path): how fast moves go (looks, turns, glances, home; at `1` the body turns at most 45°/s, the head 90°/s), from `0.25` to `2`: `0.5` slower and softer, `2` twice as fast |

@@ -197,6 +197,16 @@ def _plan(words: str) -> Plan | None:
     return None if isinstance(plan, str) else plan
 
 
+_SEE = re.compile(r"\b(?:what (?:do|can) you see|what(?:'s| is) (?:this|that|in front of you)\b"
+                  r"|look at (?:this|that|what)\b|what am i (?:holding|wearing|doing)\b"
+                  r"|(?:do|can) you see\b|what colou?r (?:is|are)\b)")
+
+
+def asks_to_see(text: str) -> bool:
+    """Whether ``text`` asks what the body sees ("What am I holding?"): it looks before the turn."""
+    return bool(_SEE.search(text.lower()))
+
+
 # --- the router ------------------------------------------------------------------
 
 

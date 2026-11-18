@@ -45,6 +45,9 @@ is green; the first scorecard row is on record.
 
 - A 24 hour baseline of the robot link, then the robot software upgrade, judged
   by the same numbers after.
+  `make -C devices/reachy-mini/apps/reachy_sage_voice pet LOG=<after> BASELINE=<before>`
+  prints both logs' link drops, drops per hour and seconds down, and whether
+  drops per hour fell.
 - Voice direction is read in the right frame (today it ignores head turn).
 - Speech confidence reaches the kernel.
 - Direction, face bearing and confidence are logged per line. They inform Sage's

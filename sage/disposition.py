@@ -9,6 +9,8 @@ available: otherwise, including when nobody is there.
 import re
 from dataclasses import dataclass, replace
 
+from sage import character
+
 GREET_AFTER_S = 5 * 60  # an absence at least this long makes the next sighting an arrival worth a greeting
 ENGAGED_S = 60.0
 RESTLESS_S = 10 * 60
@@ -16,7 +18,7 @@ NUDGE_BUDGET = 3  # per hour
 NUDGE_COOLDOWN_S = 15 * 60
 QUIET_S = 30 * 60
 # ponytail: a lexical rule until the System 1 classifier replaces it.
-QUIET = re.compile(r"\b(be quiet|quiet,? please|shh+|shush|hush|stop talking|leave me alone|not now)\b")
+QUIET = re.compile(character.CHARACTER["patterns"]["quiet"])
 
 
 @dataclass(frozen=True)

@@ -2022,6 +2022,20 @@ def test_the_reflex_logs_when_its_first_target_went_out(quick, arbitrated, caplo
     assert any("reflex listening: first target" in r.getMessage() for r in caplog.records)
 
 
+def test_a_lift_the_runner_wakes_late_to_still_goes_all_the_way_up(quick, arbitrated):
+    mini = FakeMini()
+    up = math.radians(alive_motion.PERK_DEG)
+
+    async def main():
+        executor = alive(mini, idle=False)
+        executor.perk()
+        executor._perk_at -= 1.0  # the runner wakes a second late: risen by the clock, nothing sent
+        await until(lambda: antennas_sent(mini)
+                    and antennas_sent(mini)[-1] == pytest.approx([up, -up], abs=0.02), 3.0)
+    asyncio.run(main())
+    assert min(left for left, _ in antennas_sent(mini)) >= -0.02  # never dips the other way
+
+
 def test_a_move_starts_from_under_the_reflex_so_nothing_is_baked_in(quick, arbitrated, monkeypatch):
     monkeypatch.setattr(alive_motion, "PERK_RISE_S", 0.01)
     monkeypatch.setattr(alive_motion, "PERK_FALL_S", 0.01)
@@ -2029,15 +2043,21 @@ def test_a_move_starts_from_under_the_reflex_so_nothing_is_baked_in(quick, arbit
 
     async def main():
         executor = alive(mini, idle=False)
+        rest = pytest.approx([0.0, 0.0], abs=0.02)
         executor.perk()
-        await asyncio.sleep(0.08)
-        _, _, antennas = await executor._pose()
-        assert antennas == pytest.approx([0.0, 0.0], abs=0.02)
+        await asyncio.sleep(0.08)  # the lift is up; under load what was sent still trails it
+        under = []
+
+        async def settled():
+            while under[-1:] != [rest]:
+                under.append((await executor._pose())[2])
+                await asyncio.sleep(0.01)
+        await asyncio.wait_for(settled(), 10.0)
         await executor._cue_move(mini.head)
         executor.unperk()
         await asyncio.sleep(0.08)
+        await until(lambda: antennas_sent(mini)[-1] == rest)
     asyncio.run(main())
-    assert antennas_sent(mini)[-1] == pytest.approx([0.0, 0.0], abs=0.02)
 
 
 def test_the_thought_holds_until_the_reply_with_no_second_move(quick, monkeypatch):

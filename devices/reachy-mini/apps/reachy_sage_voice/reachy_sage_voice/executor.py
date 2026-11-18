@@ -928,11 +928,16 @@ class Executor:
         """Return the head pose, body yaw and antennas where the body is now, under the reflex.
 
         The reflex is an offset the runner adds: a move ending on what it read would keep it.
+        The offset as the runner last sent it, not as the clock has it now: a runner that wakes
+        late to a lift has sent none of it, and taking it off left the antennas that much short.
         ponytail: a stop's Hold is the sent target, reflex and all, until the next move.
+        ponytail: a tick whose send failed (link down) still counts as sent; read after the link
+        returns, the pose is off by that offset until the next reflex. Track it in ``_send``
+        if seen.
         """
         head = np.array(await self._call("get_current_head_pose"), dtype=float)
         joints, antennas = await self._call("get_current_joint_positions")
-        if off := self._reflex_pose(self.clock()):
+        if off := self._reflexed:
             head = head @ create_head_pose(pitch=-off.get("pitch", 0.0))
             antennas = [antennas[0] - math.radians(off.get("left", 0.0)),
                         antennas[1] - math.radians(off.get("right", 0.0))]

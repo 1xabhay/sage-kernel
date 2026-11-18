@@ -12,6 +12,7 @@ from reachy_sage_voice.grammar import (
     Gesture,
     KernelTurn,
     Song,
+    asks_to_see,
     plan_for,
     route,
 )
@@ -402,3 +403,17 @@ def test_commands_still_win_over_a_gesture():
 def test_no_gesture_unless_the_body_is_free():
     assert route("Hi Sage.", Context()) == KernelTurn("Hi Sage.")
     assert route("Thank you.", Context(gesture=True, listening=True)) == Drop("listening to a song")
+
+
+@pytest.mark.parametrize("text", ["What do you see?", "What can you see?", "Sage, what do you see?",
+                                  "Look at this.", "What am I holding?", "What's this?",
+                                  "What is this?", "Do you see my cup?", "Can you see me?",
+                                  "What color is my shirt?"])
+def test_asking_what_it_sees_is_a_sight_question(text):
+    assert asks_to_see(text)
+
+
+@pytest.mark.parametrize("text", ["I see.", "See you later.", "What is the time?", "Look left.",
+                                  "What do you think?", "I'm holding up okay.", "This is great."])
+def test_other_lines_are_not(text):
+    assert not asks_to_see(text)

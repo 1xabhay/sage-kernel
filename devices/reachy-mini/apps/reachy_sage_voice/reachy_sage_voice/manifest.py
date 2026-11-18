@@ -90,18 +90,24 @@ def describe_move(name: str, move) -> str:
 
 #: The body as the model is told it (protocol §2, at most 300 characters): every part, and that the
 #: camera only finds and follows faces, so the model never claims to see.
-BODY = ("A Reachy Mini: a head that turns and tilts on a rotating body, two antennas, a speaker, "
-        "microphones, and a camera only for finding and following faces; "
-        "you cannot see through it.")
+_PARTS = ("A Reachy Mini: a head that turns and tilts on a rotating body, two antennas, a speaker, "
+          "microphones, and a camera ")
+BODY = _PARTS + "only for finding and following faces; you cannot see through it."
+#: With sight (a vision model is named, ``pipeline.sight``): what it sees, when, and what never.
+SEEING = (_PARTS + "that finds and follows faces. You see through it only in words: you are told "
+          "what it shows when asked what you see, or when the scene changes. "
+          "A person is only a person, never who.")
 
 
-def manifest(moves: Mapping, song: bool = False, body: bool = False) -> dict:
+def manifest(moves: Mapping, song: bool = False, body: bool = False,
+             sight: bool = False) -> dict:
     """Describe what this body can do, as MCP-shaped tools. Replies are not a tool in v1.
 
     The tools are emote, then voice_style and vocal (``voice.py``), then
     listen_to_song when ``song`` (a research service is configured, ``song.py``),
     then body_plan (``skills.py``) when ``body`` (the executor moves the body), with
-    the body's description.
+    the body's description. ``sight``: the camera's frames reach the model as words
+    (``sage_device.vision``), so the body declares the sense and describes it.
 
     ``moves`` maps each declared name to its recorded move (``.duration``,
     ``.description``). ``max_s`` is the longest of them, rounded up, plus 1 s,
@@ -110,7 +116,7 @@ def manifest(moves: Mapping, song: bool = False, body: bool = False) -> dict:
     """
     names = list(moves)
     meanings = "\n".join(f"{name}: {describe_move(name, moves[name])}" for name in names)
-    declared = {"senses": ["speech"], "tools": [{
+    declared = {"senses": ["speech", *(["vision"] if sight else [])], "tools": [{
         "name": "emote",
         "description": "Show a feeling with the body, alone or just before speaking.",
         "inputSchema": {"type": "object",
@@ -123,6 +129,6 @@ def manifest(moves: Mapping, song: bool = False, body: bool = False) -> dict:
         "moves": {role: {"emote": {"name": name}} for role, name in MOVES.items() if name in names},
         "output": {"medium": "speech", "max_chars": MAX_CHARS}}
     if body:
-        declared["body"] = BODY
+        declared["body"] = SEEING if sight else BODY
     return declared
 

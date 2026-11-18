@@ -880,3 +880,69 @@ def test_a_misheard_name_being_forgotten_reaches_the_kernel_as_it_remembers_it()
     processor._names = names.parse("Mika:Mee-kah:Micah|Mica")
     run(processor, [heard("Forget Micah, my name is Micah."), SleepFrame(0.1)])
     assert session.started[0][1] == "Forget Micah, my name is Mika."
+
+
+# --- sight: "what do you see" looks first, and the kernel hears what was seen ------------------
+
+
+def seeing(session, scenes, features=("acted", "saw"), **kwargs):
+    """Make a processor whose camera answers ``scenes`` in turn; return it and what it was asked."""
+    session.features = frozenset(features)
+    asked = []
+
+    async def see(question):
+        asked.append(question)
+        return scenes.pop(0) if scenes else None
+    processor = make(session, emotes=[])
+    processor._see = see
+    return processor, asked
+
+
+def saw(text):
+    return {"kind": "acted", "origin": "camera", "what": "saw", "status": "done", "input": text}
+
+
+def test_a_sight_question_looks_first_and_the_kernel_hears_what_was_seen_before_the_line():
+    session = FakeSession([{"effects": [reply(5, "A red mug!")]}])
+    processor, asked = seeing(session, ["A person holding a red mug."])
+    run(processor, [heard("What am I holding?"), SleepFrame(0.1)])
+    assert asked == ["What am I holding?"]
+    assert acts(session) == [saw("A person holding a red mug.")]
+    assert session.started[0][1] == "What am I holding?"
+
+
+def test_nothing_seen_or_a_kernel_without_sight_still_gets_the_line_and_no_act():
+    for scenes, features in (([None], ("acted", "saw")), (["A desk."], ("acted",))):
+        session = FakeSession([{"effects": [reply(5, "Hmm.")]}])
+        processor, _ = seeing(session, scenes, features)
+        run(processor, [heard("What do you see?"), SleepFrame(0.1)])
+        assert session.acts == [] and session.started[0][1] == "What do you see?"
+
+
+def test_an_ordinary_line_never_looks():
+    session = FakeSession([{"effects": [reply(5, "Nice.")]}])
+    processor, asked = seeing(session, ["A desk."])
+    run(processor, [heard("I had a good day."), SleepFrame(0.1)])
+    assert asked == [] and session.acts == []
+
+
+def test_a_quiet_body_notes_a_changed_scene_now_and_then_never_the_same_one_twice():
+    session = FakeSession()
+    scenes = ["A person at a desk.", "A person at the desk.", "An empty room."]
+    processor, asked = seeing(session, scenes)
+    processor._scene_s = 0.02
+    run(processor, [SleepFrame(0.2)])
+    assert asked[:3] == [None, None, None]
+    assert acts(session) == [saw("A person at a desk."), saw("An empty room.")]
+
+
+def test_without_sight_a_sight_question_is_a_line_like_any_other():
+    """The processor as made when no vision model is named: the turn, and nothing before it."""
+    session = FakeSession([{"effects": [reply(5, "I cannot see yet.")]}])
+    session.features = frozenset(("acted", "saw"))
+    processor = make(session, emotes=[])
+    processor._scene_s = 0.02  # set, and still no scene watch: there is nothing to look with
+    down, _ = run(processor, [heard("What do you see?"), SleepFrame(0.1)])
+    assert processor._see is None and processor._watching is None
+    assert session.acts == [] and [line for _, line, _ in session.started] == ["What do you see?"]
+    assert spoken(down) == ["I cannot see yet."]

@@ -39,7 +39,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.base_text_aggregator import AggregationType
-from sage_device import media, reflex
+from sage_device import media, reflex, vision
 from sage_device.choice import must_speak, speak_or_move
 from sage_device.floor import (
     CARRY_S,
@@ -59,7 +59,16 @@ from sage_device.names import correct
 
 from reachy_sage_voice import health
 from reachy_sage_voice.expressions import MOVES_LINE, REACTIONS
-from reachy_sage_voice.grammar import Command, Context, Drop, Gesture, Song, is_name, route
+from reachy_sage_voice.grammar import (
+    Command,
+    Context,
+    Drop,
+    Gesture,
+    Song,
+    asks_to_see,
+    is_name,
+    route,
+)
 from reachy_sage_voice.interruption import InterruptionTracker
 from reachy_sage_voice.manifest import EMOTIONS, NO_SOUND
 from reachy_sage_voice.plan import Plan, dump, parse
@@ -189,7 +198,8 @@ class SageProcessor(FrameProcessor):
     def __init__(self, session: Session, play_emote: Callable, playback: Playback,
                  now: Callable[[], float] = time.monotonic, play_sound: Callable | None = None,
                  engine: dict = ENGINES["kokoro"], song=None, names: tuple = (), executor=None,
-                 finish: frozenset = frozenset(), hold_s: float = 0.0, rng=None, **kwargs):
+                 finish: frozenset = frozenset(), hold_s: float = 0.0, rng=None, see=None,
+                 scene_s: float = 0.0, **kwargs):
         """Talk through ``session``; ``play_emote(name, sound)`` performs a move, muted or not.
 
         ``play_sound(move)`` plays a move's own sound for a vocal (None: no sounds),
@@ -202,6 +212,9 @@ class SageProcessor(FrameProcessor):
         ``hold_s``: a transcript that stops mid-sentence (``hearing.unfinished``) waits until
         this long after the end of speech for the rest of the turn (0: never).
         ``rng`` draws whether a statement gets a move alone (``sage_device.choice``; None: never).
+        ``see(question)`` returns what the camera shows now, in words (``sage_device.vision``;
+        None: no sight). A sight question ("What am I holding?") looks before its turn, and every
+        ``scene_s`` (0: never) a quiet body tells the kernel a changed scene.
         """
         super().__init__(**kwargs)
         self._session, self._play_emote, self._playback, self._now = (
@@ -216,7 +229,8 @@ class SageProcessor(FrameProcessor):
             owner = f"{names[0].written}, where" if names else "Where"
             executor.call_out = lambda: self._say_aside(f"{owner} are you?")
         self._gestured_at, self._last_clip = -math.inf, None
-        self._hold_s, self._rng = hold_s, rng
+        self._hold_s, self._rng, self._see, self._scene_s = hold_s, rng, see, scene_s
+        self._watching: asyncio.Task | None = None  # the scene, now and then: not the turn's
         self._moves_in_row = 0  # answers that were only moves, since it last spoke
         self._held: tuple[str, asyncio.Task] | None = None  # an unfinished fragment, waiting
         self._cut: tuple[str, float] | None = None  # a statement doubted as cut off, and when
@@ -238,6 +252,8 @@ class SageProcessor(FrameProcessor):
         TURN_ID.set(self._turn_id)  # frames arrive on more than one task: each gets the turn
         if isinstance(frame, StartFrame):
             self._task = self.create_task(self._await_kernel())
+            if self._see is not None and self._scene_s > 0:
+                self._watching = self.create_task(self._scene())
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._voice_on_at = self._now()
             if self._executor is None:
@@ -275,7 +291,7 @@ class SageProcessor(FrameProcessor):
     async def cleanup(self):
         """Stop talking to the kernel when the pipeline ends."""
         await super().cleanup()
-        for task in (self._task, self._listening, *self._plans, *self._finishing,
+        for task in (self._task, self._listening, self._watching, *self._plans, *self._finishing,
                      self._held and self._held[1]):
             if task:
                 await self.cancel_task(task)
@@ -350,8 +366,9 @@ class SageProcessor(FrameProcessor):
             # Its words are queued in the TTS: interrupt the voice, as barge-in does,
             # or they lead the next reply ("OhOh, a messy screen!").
             await self.push_frame(InterruptionFrame())
-        self._task = self.create_task(self._converse(self._begin("kernel"), heard, timing,
-                                                     self._speech_ended))
+        talk = self._converse(self._begin("kernel"), heard, timing, self._speech_ended)
+        looks = self._see is not None and asks_to_see(heard)
+        self._task = self.create_task(self._looked(heard, talk) if looks else talk)
         if self._executor is not None and not self._playback.speaking:
             self._executor.think()  # it heard words, and the reply is already on its way
 
@@ -387,6 +404,38 @@ class SageProcessor(FrameProcessor):
             self._plans.add(task)
             task.add_done_callback(self._plans.discard)
         return True
+
+    async def _looked(self, heard: str, talk) -> None:
+        """Look, then take the turn: the kernel hears what the camera saw just before."""
+        try:
+            began = self._now()
+            seen = await self._see(heard)
+            logger.info("saw %s in %s ms", f"{len(seen)} characters" if seen else "nothing",
+                        _ms(self._now() - began))
+            if seen:
+                await self._tell_seen(seen)
+        except BaseException:
+            talk.close()  # cancelled while looking: the turn never began
+            raise
+        await talk
+
+    async def _tell_seen(self, seen: str) -> None:
+        if "saw" in (getattr(self._session, "features", None) or ()):
+            await self._act("saw", "done", input=seen, origin="camera")
+
+    async def _scene(self) -> None:
+        """Now and then, while quiet, tell the kernel a changed scene (never the same twice)."""
+        told = None
+        while True:
+            await asyncio.sleep(self._scene_s)
+            busy = (self._turn and not self._turn.ended) or self._playback.speaking
+            if busy or self._since_exchange() < OPEN_S:
+                continue
+            seen = await self._see(None)
+            if seen and vision.changed(told, seen):
+                told = seen
+                logger.info("scene changed: %s characters", len(seen))
+                await self._tell_seen(seen)
 
     def _since_exchange(self) -> float:
         return self._now() - max(self._exchanged_at, self._spoke_at)

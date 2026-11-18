@@ -42,6 +42,11 @@ here can reach the internet unless someone configures it to.
                              listen_to_song (song.py); default off
     SAGE_VOICE_MIC_RECOVERY  1 (default): a quiet mic resets the robot's media
                              (media_reset.py) before the link counts as lost; 0 off
+    SAGE_VOICE_VISION_MODEL  the local vision model that turns a camera frame into words
+                             (sage_device.vision); default none: no sight
+    SAGE_VOICE_VISION_URL    its Ollama; default http://127.0.0.1:11434
+    SAGE_VOICE_SCENE_S       every this many seconds, while quiet, a changed scene is told to
+                             the kernel; default 0 (only when asked what it sees)
 """
 
 import asyncio
@@ -76,7 +81,7 @@ from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
-from sage_device import names
+from sage_device import names, vision
 from sage_device.kernel import KernelClient, KernelUnavailableError, Session
 
 from reachy_sage_voice import clause, health, turn_end
@@ -274,6 +279,25 @@ class TurnSTTService(MergeBacklog, OpenAISTTService):
         await super().process_audio_frame(frame, direction)
 
 
+def sight(media, env: Mapping[str, str]) -> Callable | None:
+    """Return ``see(question)``: the robot camera's frame now, in words from the local vision model.
+
+    None for a body with no camera or no SAGE_VOICE_VISION_MODEL. Off by default: measured
+    2026-11-08, a second Ollama model beside the kernel's evicts it on a 16 GB Mac, and the
+    kernel's turns wait 8 to 20 s while they swap. The frame is never kept.
+    """
+    grab = getattr(media, "get_frame_jpeg", None)
+    model = env.get("SAGE_VOICE_VISION_MODEL", "")
+    if grab is None or not model:
+        return None
+    url = env.get("SAGE_VOICE_VISION_URL", "http://127.0.0.1:11434")
+
+    async def see(question: str | None) -> str | None:
+        return await asyncio.to_thread(
+            lambda: vision.describe(grab(), question, url=url, model=model))
+    return see
+
+
 def build(media: ReachyMedia, play_emote: Callable, moves: Mapping,
           env: Mapping[str, str] = os.environ, play_sound: Callable | None = None,
           face: Callable[[], bool] | None = None, owner: OwnerCheck | None = None,
@@ -366,7 +390,8 @@ def build(media: ReachyMedia, play_emote: Callable, moves: Mapping,
                       executor=executor, finish=frozenset(
                           name for name, move in moves.items()
                           if getattr(move, "duration", math.inf) <= EMOTE_FINISH_S),
-                      hold_s=int(env.get("SAGE_VOICE_HOLD_MS", 1500)) / 1000, rng=random),
+                      hold_s=int(env.get("SAGE_VOICE_HOLD_MS", 1500)) / 1000, rng=random,
+                      see=sight(media, env), scene_s=float(env.get("SAGE_VOICE_SCENE_S", 0))),
         tts,
         ReachyOutputTransport(media, TransportParams(
             audio_out_enabled=True, audio_out_sample_rate=media.get_output_audio_samplerate())),
@@ -392,7 +417,8 @@ def kernel_session(env: Mapping[str, str], moves: Mapping, executor=None) -> Ses
                           env.get("SAGE_VOICE_KERNEL_TOKEN", ""))
     return Session(client,
                    manifest(moves, song=bool(env.get("SAGE_VOICE_RESEARCH_URL")),
-                            body=executor is not None))
+                            body=executor is not None,
+                            sight=bool(env.get("SAGE_VOICE_VISION_MODEL"))))
 
 
 async def report_presence(session, event: dict) -> None:

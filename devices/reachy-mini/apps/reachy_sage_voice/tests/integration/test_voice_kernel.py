@@ -236,8 +236,11 @@ STORY = ("Once upon a time there was a robot. It lived on a desk and watched the
 
 @pytest.fixture
 def storyteller(monkeypatch):
-    """A body that takes the whole STORY: the kernel cuts a reply to the body's max_chars, and at the
-    voice's own cap the story is one sentence, over before anything can interrupt it."""
+    """Raise the body's cap to fit the whole STORY.
+
+    The kernel cuts a reply to the body's max_chars; at the voice's own cap the story is one
+    sentence, over before anything can interrupt it.
+    """
     monkeypatch.setattr("reachy_sage_voice.manifest.MAX_CHARS", len(STORY))
 
 

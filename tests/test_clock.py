@@ -139,6 +139,19 @@ class QuietMoves(unittest.TestCase):
             with self.subTest(line):
                 self.assertEqual(policy.quiet_move(line, {"medium": "speech"}, (), self.TOOLS), "")
 
+    def test_the_pet_s_name_heard_a_little_wrong_still_goes_to_the_model(self):
+        """Owner, 11-17: called "Sage", the speech-to-text heard "age", and the call got a head tilt and no answer.
+        A near-miss hearing of the name counts as the name when it is the whole line or opens or closes it."""
+        for line in ("Age.", "Hey age.", "Age, come here.", "Come here age.", "Saige!", "Good night, Sarge.",
+                     "Sayge, look."):
+            with self.subTest(line):
+                self.assertEqual(policy.quiet_move(line, {"medium": "speech"}, (), self.TOOLS), "")
+
+    def test_a_near_miss_of_the_name_in_the_middle_or_another_word_like_it_still_gets_a_move(self):
+        for line in ("Old age home.", "Middle age spread.", "Stage left.", "Next page.", "Age of the."):
+            with self.subTest(line):
+                self.assertTrue(policy.quiet_move(line, {"medium": "speech"}, (), self.TOOLS))
+
     def test_a_short_line_said_to_no_one_or_left_hanging_still_gets_a_move(self):
         for line in ("Only the kettle.", "Come on.", "I'm just gonna.", "You and the.", "Nice day today."):
             with self.subTest(line):

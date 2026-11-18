@@ -1,7 +1,7 @@
 """Things that went wrong once, for the kernel and the repo's tooling, that no other test would catch again.
 
-Each test names the date and what was seen. One still open is a strict expected failure: when it
-is fixed its test turns red until the mark is taken off. The voice's are in
+Each test names the date and what was seen. None here is still open; one that is would be a strict
+expected failure, whose test turns red when it is fixed until the mark is taken off. The voice's are in
 devices/reachy-mini/apps/reachy_sage_voice/tests/test_incidents.py."""
 
 import os
@@ -54,10 +54,10 @@ class Open(unittest.TestCase):
         self.assertTrue(asked, done.stderr)
         self.assertEqual([call for call in asked if not call.startswith("--context colima ")], [], done.stderr)
 
-    @unittest.expectedFailure  # bench/quiet.py counts spoke_to_noise; failures() has no threshold for it
     def test_the_quiet_bench_fails_when_sage_speaks_to_a_quarter_of_the_lines_not_meant_for_it(self):
         """2026-11-05 and 11-09: Sage spoke to the TV and to talk not meant for it. Measured again on 11-10, the
-        live model still put words to 12 of 44 such lines, and the bench that counted them passed."""
+        live model still put words to 12 of 44 such lines, and the bench that counted them passed. It now fails
+        above quiet.MAX_NOISE of them; a move or nothing at all to such a line is never counted."""
         sys.path.insert(0, str(ROOT / "bench"))
         import quiet
 
@@ -67,6 +67,25 @@ class Open(unittest.TestCase):
         got = quiet.score(noise)
         self.assertEqual((got["spoke_to_noise"], got["noise"]), (12, 44))
         self.assertTrue(any("noise" in why or "not said to" in why for why in quiet.failures(got, got)))
+
+    def test_the_quiet_bench_passes_words_to_a_tenth_of_such_lines_and_never_counts_a_move_or_silence(self):
+        """The other side of the gate above: at the ceiling it passes, and what Sage does without words to a
+        line not meant for it, a move or nothing, is never a miss. Lines with no label are not held to it."""
+        sys.path.insert(0, str(ROOT / "bench"))
+        import quiet
+
+        def evening(spoken):
+            return [{"line": "The ferry leaves at nine, so they say.", "reply": "Nine it is." if n < spoken else "",
+                     "tools": [] if n % 2 else ["emote"], "first_ms": 5 if n < spoken else None, "to_sage": False}
+                    for n in range(40)]
+
+        def missed(turns):
+            got = quiet.score(turns)
+            return [why for why in quiet.failures(got, got) if "not said to" in why]
+        self.assertEqual(missed(evening(4)), [])  # 10%: at the ceiling
+        self.assertEqual(missed(evening(0)), [])  # moves and silence only
+        self.assertEqual(missed(evening(5)), ["spoke to 5 of 40 lines not said to it, 12% > 10%"])
+        self.assertEqual(missed([{"line": "I love rain.", "reply": "Me too.", "tools": [], "first_ms": 5}]), [])
 
 
 if __name__ == "__main__":

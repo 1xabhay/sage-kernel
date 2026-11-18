@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import turn_taking as tt
 from sage_device import latency
 
+from reachy_sage_voice.meter import HEARD
 from reachy_sage_voice.turn_end import SAMPLE_RATE, load_pcm16
 
 JOIN_S = 0.3  # a recording's name is its VAD stop; the log's stop line lands within this
@@ -58,6 +59,7 @@ _SAGE = [  # (kind, pattern on "<logger>:<message>") for the voice's own lines
     ("floor", re.compile(r"sage:floor: holding")),
     ("emote", re.compile(r"(?:sage:(?:emote|gesture)|executor:recorded \w+): (\S+)")),
     ("doa", re.compile(r"executor:glance(: | skipped: no direction of arrival)")),
+    ("heard", re.compile(HEARD)),  # groups: DoA, speech_detected, head, voice, face, its x
 ]
 
 
@@ -230,6 +232,8 @@ def _decide(rows: list[dict], evs) -> None:
         [(t, k, v) for t, k, v in evs if k in ("bot_started", "bot_stopped", "interruption")]
     )
     marks = sorted(r["at"] for r in rows if r.get("at") is not None)
+    heard = [(t, v) for t, k, v in evs if k == "heard"]
+    starts = sorted(r["start"] for r in rows if r["start"] is not None)
     for row in rows:
         text, at = row.get("text"), row.get("at")
         row.update(
@@ -251,8 +255,26 @@ def _decide(rows: list[dict], evs) -> None:
             emote=None,
             doa=None,
             face=None,
+            doa_deg=None,
+            speech_detected=None,
+            head_deg=None,
+            voice_deg=None,
+            face_x=None,
         )
         start, end = row["start"], row["end"]
+        # The onset's "heard:" line: the first from this segment's start to the next one's.
+        later = min([s for s in starts if start is not None and s > start] + [math.inf])
+        for t, (doa, speech, head, voice, face, x) in heard:
+            if start is not None and start - JOIN_S <= t < min(later - JOIN_S, start + STALE_S):
+                row.update(
+                    doa_deg=_num(doa),
+                    speech_detected={"True": True, "False": False}.get(speech),
+                    head_deg=_num(head),
+                    voice_deg=_num(voice),
+                    face=None if face == "-" else face != "not seen",
+                    face_x=_num(x or "-"),
+                )
+                break
         before = [p for p in played if p["start"] < end]
         row["sage_speaking"] = any(p["end"] > start for p in before) if start is not None else None
         ended = [p["end"] for p in before if p["end"] <= start] if start is not None else []

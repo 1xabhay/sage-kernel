@@ -11,6 +11,10 @@ and every protocol change is listed under **Protocol**.
 
 ### Added
 
+- Sage never claims to be sentient: a reply that says, in the first person, that it is alive,
+  conscious or has feelings is held back from streaming, retried once with a note, and then that
+  sentence is replaced by "I'm not alive, and I don't have feelings like you do." (behaviour row B34).
+  No prompt change.
 - **Protocol** (v1.4, additive): a browser body. `SAGE_ORIGINS` lists the web origins whose
   pages may call the kernel (CORS); unset, no page is answered, and any other origin gets 403.
   `"search": false` in a manifest keeps that body's lines from the web, and the `search` feature
@@ -46,11 +50,21 @@ and every protocol change is listed under **Protocol**.
 
 ### Fixed
 
+- The pet's name heard a little wrong ("age", "saige", "sayge", "sarge" for "Sage") as a short
+  line's first or last word counts as said to Sage and reaches the model; it got a head tilt and
+  no answer before. No prompt change.
+- A reply is never longer than the body's `max_chars`: one the model server did not cap (it ended
+  in a full stop past the cap), a claim the kernel put right, and the last-resort line for a
+  question or distress are cut back to a whole sentence, or else a whole word. The last resort was
+  cut mid-word before; what streams stops at the cap too.
 - `make backup` names the `colima` Docker context, so a default context that has fallen back to
   another daemon is never the one asked for the journal.
 - The push guard also scans commit messages for a private address, a MAC address or a home folder.
 - The voice's pet scorecard counts what Sage says again (its pattern named a Pipecat function that
   1.15 renamed).
+- `bench/quiet.py` fails when Sage puts words to more than 10% of the lines not said to it (a first
+  value, to tune on a labelled evening); it counted them and passed at 12 of 44. A move or nothing
+  to such a line is never a miss.
 
 ### Protocol
 

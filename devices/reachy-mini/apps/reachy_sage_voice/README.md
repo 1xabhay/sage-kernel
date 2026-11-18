@@ -74,7 +74,7 @@ environment, so put its settings in `~/.config/reachy_mini/sage_voice/.env`
 (see "Settings"), and the daemon connects to the robot, so `REACHY_MINI_HOST`
 is not needed. Installing it from the dashboard does not work yet, so the Space
 is not tagged `reachy_mini_python_app` and the dashboard does not offer it: see
-"Known limits". Running on the Pi is not a goal for 0.1.0.
+"Known limits". Running on the Pi is not a goal yet.
 
 ## Deploy
 

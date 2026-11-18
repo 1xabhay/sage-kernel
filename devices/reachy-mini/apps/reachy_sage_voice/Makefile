@@ -13,6 +13,15 @@ export SAGE_VOICE_BUILD ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 run:
 	$(if $(shell command -v caffeinate 2>/dev/null),caffeinate -i -s) uv run python -m reachy_sage_voice
 
+# A scripted showcase for filming (demo/scripted.py): the real robot, voice and kernel on a throwaway
+# journal, with a scripted model. Stops the live voice while it runs and starts it again on Ctrl-C.
+# demo-dry plays the body's part with no robot and checks both beats come.
+demo:
+	$(if $(shell command -v caffeinate 2>/dev/null),caffeinate -i -s) uv run python demo/scripted.py
+
+demo-dry:
+	uv run python demo/scripted.py dry
+
 # Up or down, and why: the robot's daemon, the kernel, STT, TTS, research and Ollama.
 # Exits nonzero if any is down. Stdlib only: plain python3, no app environment needed.
 status:
@@ -39,9 +48,9 @@ DEPLOY_ALLOW_XFAIL ?=
 # A folder for each start's recordings (SAGE_VOICE_RECORD_DIR); empty: none, it is the owner's speech.
 RECORDINGS ?=
 SPACE ?= sabhay22/reachy_sage_voice
-HF ?= uvx --from huggingface_hub==0.36.0 hf
+HF ?= uvx --from huggingface_hub==0.36.0 python
 export RECORDINGS SHA LABEL LOGS DEPLOY_LOG ENV_FILE PLIST DEPLOY_ROOT LAUNCH_PATH STARTED DEPLOY_WAIT_S DEPLOY_ALLOW_XFAIL SPACE HF
-.PHONY: deploy undeploy plist logs agents env release
+.PHONY: deploy undeploy plist logs agents env release demo demo-dry
 
 deploy undeploy:
 	sh deploy/deploy.sh $@
@@ -114,8 +123,10 @@ latency:
 # The owner's table for one session, against the targets (sage_device/pet.py); read only, counts only.
 # NAME, for the Uses name row, is written|spoken of ENV_FILE's first SAGE_VOICE_NAMES unless given.
 NAME ?= $(shell sed -n 's/^SAGE_VOICE_NAMES="*\([^:|,"]*\):\([^:|,"]*\).*/\1|\2/p' "$(ENV_FILE)" 2>/dev/null)
+# BASELINE, an earlier log, adds both logs' link rows and whether link drops per hour fell.
 pet:
-	@uv run python -m reachy_sage_voice.meter "$(LOG)" $(if $(NAME),--name "$(NAME)")
+	@uv run python -m reachy_sage_voice.meter "$(LOG)" $(if $(NAME),--name "$(NAME)") \
+		$(if $(BASELINE),--baseline "$(BASELINE)")
 
 # The noise trace (eval/noise.py): a record per heard segment from LOG and its sessions' recordings,
 # written next to them (git-ignored). noise-review labels the answered lines (y/n/k/s, p plays);

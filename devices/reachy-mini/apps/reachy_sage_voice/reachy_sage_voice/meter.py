@@ -1,5 +1,7 @@
 """What Reachy's log lines look like, for the pet meter: ``make pet LOG=<bot log>``.
 
+``make pet LOG=<after> BASELINE=<before>`` also says whether link drops per hour fell.
+
 The metrics, their targets and the log line contract are in sage_device/pet.py.
 """
 
@@ -8,7 +10,12 @@ import sys
 from sage_device import latency, pet
 
 VOICE = r"reachy_sage_voice\."
+#: What was heard at a speech onset (executor ``_log_heard``), "-" for unknown; eval/noise.py too.
+HEARD = (r"executor:heard: DoA (?P<doa>\S+) deg \(speech_detected=(?P<speech>\w+)\), "
+         r"head (?P<head>\S+) deg from the body, voice (?P<voice>\S+) deg from the body, "
+         r"face (seen at x=(?P<x>\S+)|not seen|-)$")
 PATTERNS = pet.compile_patterns({
+    "heard": VOICE + HEARD,
     "session": r"__main__:session: build (?P<build>\S+) config (?P<config>\S+)",
     "transcript": r"pipecat\.services\.\S+:run_stt:\d+ - Transcription: \[(?P<text>.*)\]$",
     "stt_empty": r"pipecat\.services\.\S+:run_stt:\d+ - Received empty transcription",
@@ -31,6 +38,8 @@ PATTERNS = pet.compile_patterns({
                      r"(?P<hz>[\d.]+) Hz, .*clamped (?P<clamped>\d+)(?: \([^)]*\))?, "
                      r".*still max (?P<still>[\d.]+) s$"),
     "link_drop": VOICE + r"robot:robot connection lost",
+    "link_down": VOICE + r"executor:motion link down \(",
+    "link_back": VOICE + r"executor:motion link back after ",
     "kernel_down": VOICE + r"sage:kernel unreachable",
     "voice_silent": (r"(pipecat\.services\.\S+:_record_context_audio_outcome:\d+ - .* no audio"
                      "|" + VOICE + r"tts:Kokoro keeps failing)"),

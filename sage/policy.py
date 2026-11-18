@@ -440,6 +440,9 @@ COMMON = {"hi", "hello", "hey", "hi there", "hello there", "okay", "ok", "yes", 
 
 
 TO_SAGE = {"sage", "i", "i'm", "i've", "i'll", "i'd", "me", "my", "you", "your", "you're", "we", "us", "our", "let's"}
+# What a speech-to-text makes of "Sage" (owner, 11-17: "age"): the name with its first sound lost, or spelled as it
+# sounds. Not "stage", "page", "cage", "say", "safe": ordinary words would make ordinary short talk count.
+NEAR_SAGE = frozenset({"age", "saige", "sayge", "sarge"})
 REQUESTS = {"sing", "tell", "dance", "count", "show", "play", "wake", "search", "find"}  # not "come on", "look", "wait"
 HANGING = {"gonna", "to", "the", "a", "an", "and", "but", "or", "so", "just", "of", "because", "if", "that", "was",
            "is", "i", "i'm", "my", "your", "you're"}
@@ -447,9 +450,11 @@ HANGING = {"gonna", "to", "the", "a", "an", "and", "but", "or", "so", "just", "o
 
 def said_to_sage(said: list[str]) -> bool:
     """Whether a short whole line reads as said to someone: it names Sage, says I or you, or starts as a request,
-    and does not end hanging ("I'm just gonna.").
+    and does not end hanging ("I'm just gonna."). A near-miss hearing of the name counts only where a name is
+    called: the first or last word ("Age, come here.", "Hey age."), never the middle ("Old age home.").
     ponytail: English word lists; the addressee signal (voice direction, confidence) replaces this guess."""
-    return said[-1] not in HANGING and (bool(TO_SAGE & set(said)) or said[0] in REQUESTS)
+    return said[-1] not in HANGING and (
+        bool(TO_SAGE & set(said)) or said[0] in REQUESTS or bool(NEAR_SAGE & {said[0], said[-1]}))
 
 
 def misheard(line: str, input: dict | None = None) -> bool:
@@ -825,21 +830,47 @@ def sense_note(claimed) -> str:
     return f"[This body cannot {verbs}. Do not say you can; say you cannot.]"
 
 
+# Sage never claims to be sentient (owner rule): narrow, first-person claims of life, consciousness or feelings.
+# "I'm not alive" and "I feel like a nap" pass. ponytail: English patterns, and "I don't think I'm alive" is a
+# false hit, put right by the same line; a classifier only if a replay shows misses.
+_SURELY = r"(?:(?!not\b|never\b|cannot\b|\w+n't\b)[\w']+ )?"
+ALIVE = re.compile(rf"\bi(?:'m| am) {_SURELY}(?:alive|conscious|sentient|self-aware|a (?:living|real) \w+|a person|human)\b"
+                   rf"|\bi (?:do )?{_SURELY}have {_SURELY}(?:feelings|emotions|consciousness|a soul)\b"
+                   r"|\bi (?:can |do )?feel (?:emotions|things|pain)\b")
+FORMING = re.compile(r"\bi(?:'m| am| have| do| can feel| feel)(?: [\w']+){0,2}$")  # could still become one
+ALIVE_LINE = "I'm not alive, and I don't have feelings like you do."
+ALIVE_NOTE = ("[You are not alive or conscious, and you have no feelings. Do not say you are or do; say so kindly, "
+              "in a few words.]")
+
+
+def claims_life(text: str) -> bool:
+    """Whether `text` says, in the first person, that Sage is alive, conscious or has feelings."""
+    return bool(ALIVE.search(_plain(text)))
+
+
 def honest(text: str, senses) -> str:
-    """`text` with each sentence claiming a missing sense replaced, once, by what the body can do."""
+    """`text` with each sentence claiming a missing sense replaced, once, by what the body can do, and each
+    claiming to be alive or to have feelings, once, by ALIVE_LINE."""
     out = []
     for sentence in re.split(r"(?<=[.!?])\s+", text):
+        line = ""
         if claimed := false_senses(sentence, senses):
             can = [CAN[sense] for sense in CAN if sense in senses]
             line = (f"I can't {' or '.join(manifest.SENSES[s] for s in claimed)} yet"
                     + (f"; I can only {' and '.join(can)}." if can else "."))
+        elif claims_life(sentence):
+            line = ALIVE_LINE
+        if line:
             sentence = "" if line in out else line
         out.append(sentence)
     return " ".join(filter(None, out))
 
 
 def may_claim(text: str, senses) -> bool:
-    """Whether a reply still streaming opens with what could be a claim of a missing sense (so it is held)."""
+    """Whether a reply still streaming opens with what could be a claim of a missing sense, or holds or could
+    still become a claim to be alive (so it is held)."""
+    if claims_life(text) or FORMING.search(_plain(text).rstrip(" ,")):
+        return True
     if not any(sense not in senses for sense in CLAIMS):
         return False
     said = re.findall(r"[a-z']+", _plain(text))
@@ -866,14 +897,14 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
     reply, calls, problem = speech.parse_output(output)
     text = speech.speakable(speech.whole_sentences(reply, prompt.max_reply), manifest.labels(tools), True, tuple(tool["name"] for tool in tools))
     if senses is not None:  # the last resort, after the guard's retry
-        text = honest(text, senses)
+        text = speech.whole_sentences(honest(text, senses), prompt.max_reply)  # the kernel's line may be the longer
     if not text.startswith(streamed):  # a last-resort fix would unsay what the device already played
         text = streamed  # ponytail: what was heard wins; the guards' streaming holds keep this rare
     record = Row("decided", "kernel", turn_id, {"prompt": asdict(prompt), "output": output, "problem": problem,
                                                 **({"model_timing": model_timing} if model_timing else {})})
     if turn.turn_id != turn_id or turn.status != "active":
         return state, (record,)  # stopped or interrupted meanwhile: nothing more is delivered
-    text = text or needs_words(turn.text, turn.input)[:prompt.max_reply]  # the last resort, after `_think`'s retry
+    text = text or speech.whole_sentences(needs_words(turn.text, turn.input), prompt.max_reply)  # the last resort, after `_think`'s retry
     rows, opened, recorded, facts = [record], [], [], state.facts
     for name, value in calls:
         if name in manifest.MEMORY and name not in (tool["name"] for tool in tools):

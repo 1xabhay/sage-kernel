@@ -172,3 +172,25 @@ def test_a_log_with_no_recordings_still_traces_its_transcripts():
         "speak",
         None,
     )
+
+
+def test_a_record_carries_what_was_heard_at_its_onset_direction_head_and_face(tmp_path):
+    rec, log, _ = session(tmp_path)
+    log += [  # one line per speech onset, a moment after each segment's start (0.5 s and 7 s)
+        sage(
+            T + 0.62,
+            "executor:heard: DoA 72 deg (speech_detected=True), head +15 deg from the body, "
+            "voice +33 deg from the body, face seen at x=+0.12",
+        ),
+        sage(
+            T + 7.10,
+            "executor:heard: DoA - deg (speech_detected=None), head -4 deg from the body, "
+            "voice - deg from the body, face not seen",
+        ),
+    ]
+    one, two, three = noise.records(log, [rec], audio=False)
+    keys = ("doa_deg", "speech_detected", "head_deg", "voice_deg", "face", "face_x")
+    assert [one[k] for k in keys] == [72.0, True, 15.0, 33.0, True, 0.12]
+    assert [two[k] for k in keys] == [None, None, -4.0, None, False, None]
+    assert [three[k] for k in keys] == [None] * 6  # no onset line (Sage was speaking): unknown
+    assert one["conf_mean"] == 0.95  # next to the confidence it already keeps

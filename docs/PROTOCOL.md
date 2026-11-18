@@ -161,6 +161,9 @@ reply: `"output": {"medium": "text", "max_chars": 500}`. `medium` is
 characters, from 1 to 4000 (default 160). Without `output` a body is speech
 with 160 characters, as before; a malformed `output` is `invalid`. `max_chars` caps
 the reply in the answer format and where it is cut back to whole sentences.
+No `reply` effect is longer, whoever wrote it (the model, or a line of the
+kernel's own): a longer one is cut back to its last whole sentence within
+`max_chars`, or with none to its last whole word, never mid-word.
 For `text` the model is told it is chatting by text: no spoken-reply rule, no
 robot or "in front of you" wording, and no line is ever framed "(may be
 misheard)", whatever its `submitted.input`.

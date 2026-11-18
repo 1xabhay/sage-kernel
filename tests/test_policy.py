@@ -616,6 +616,31 @@ class Senses(unittest.TestCase):
                 self.assertFalse(policy.may_claim(free, self.HEARING))
         self.assertFalse(policy.may_claim("I ", ("speech", "vision", "touch")))
 
+    def test_a_claim_to_be_alive_or_to_have_feelings_is_replaced_and_ordinary_talk_is_not(self):
+        everything = ("speech", "vision", "touch")
+        for claim in ("Yes, I'm alive!", "I am truly conscious.", "I’m sentient, you know.", "I do have feelings.",
+                      "I have real feelings, just like you.", "I am a living being.", "I can feel emotions."):
+            with self.subTest(claim=claim):
+                self.assertTrue(policy.claims_life(claim))
+                self.assertEqual(policy.honest(claim, everything), policy.ALIVE_LINE)
+        for fine in (policy.ALIVE_LINE, "I'm not alive, no.", "I don't have feelings.", "I'm Sage!", "I feel like a nap.",
+                     "Me too. The sound on the window is the best part.", "I'm happy to hear that.",
+                     "You're alive and well, I hope?", "I have a camera."):
+            with self.subTest(fine=fine):
+                self.assertFalse(policy.claims_life(fine))
+                self.assertEqual(policy.honest(fine, everything), fine)
+        self.assertEqual(policy.honest("Good question. I'm alive. I have feelings too. Anyway!", everything),
+                         f"Good question. {policy.ALIVE_LINE} Anyway!")  # two claims, put right once
+
+    def test_streaming_holds_what_could_still_become_a_claim_to_be_alive(self):
+        everything = ("speech", "vision", "touch")
+        for held in ("Well, I think I am ", "I'm really ", "Yes, I do have ", "Well, I think I am alive and "):
+            with self.subTest(held=held):
+                self.assertTrue(policy.may_claim(held, everything))
+        for free in ("Hello ", "I'm so glad you asked ", "I think ", "Well, I think I am not that kind "):
+            with self.subTest(free=free):
+                self.assertFalse(policy.may_claim(free, everything))
+
     def test_the_last_resort_is_applied_when_the_answer_is_decided(self):
         state = asked("What do you see?")
         prompt = policy.compile_prompt(state, "reachy", MANIFEST)
@@ -668,6 +693,17 @@ class Misheard(unittest.TestCase):
                      "I think a softer voice would suit you.", "I didn't praise you. Honestly, you are worse than ever."):
             with self.subTest(line=line):
                 self.assertFalse(policy.misheard(line))
+
+    def test_a_near_miss_hearing_of_the_name_is_said_to_sage_only_as_the_whole_line_or_at_either_end(self):
+        """Owner, 11-17: "Sage" was heard as "age". The model is shown the line as heard, unmarked."""
+        for line in ("Age.", "Hey age.", "Age, come here.", "Come here age.", "Saige.", "Sayge.", "Sarge."):
+            with self.subTest(line=line):
+                self.assertFalse(policy.misheard(line))
+                self.assertEqual(policy.compile_prompt(asked(line), "reachy", MANIFEST).context[-1]["content"],
+                                 line + policy.reminder(MANIFEST))
+        for line in ("Old age home.", "The stone age was.", "Stage.", "Page.", "Cage.", "Age"):  # no end mark
+            with self.subTest(line=line):
+                self.assertTrue(policy.misheard(line))
 
     def test_a_maybe_misheard_line_is_framed_as_information_the_same_on_every_turn(self):
         state = asked("Ornitholog")

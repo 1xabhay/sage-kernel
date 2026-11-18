@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from sage import manifest, policy
+from sage import manifest, policy, speech
 from sage.policy import Companion
 
 HERE = Path(__file__).parent
@@ -129,6 +129,29 @@ class Output(unittest.TestCase):
                 state = policy.decided(state, "p1", prompt, json.dumps({"reply": cut}), (), 1, 1.0)[0]
                 self.assertGreater(len(state.exchanges[-1].reply), cap - 45)
                 self.assertLessEqual(len(state.exchanges[-1].reply), cap)
+
+    def test_no_reply_is_longer_than_max_chars_or_cut_mid_word_whoever_wrote_it(self):
+        """The answer format caps a reply only where the model server enforces `maxLength`; the kernel's own
+        lines (a claim put right, the last resort for a question or distress) were never capped whole."""
+        def said(cap, line, output, senses=("speech",)):
+            declared = manifest.check_manifest({"senses": list(senses), "tools": [],
+                                                "output": {"medium": "speech", "max_chars": cap}})
+            state = policy.submit(Companion(), "body", "t1", line, {}, False)[0]
+            prompt = policy.compile_prompt(state, "body", declared)
+            state = policy.decided(state, "t1", prompt, json.dumps({"reply": output}), (), 1, 1.0, senses=senses)[0]
+            self.assertLessEqual(len(state.exchanges[-1].reply), cap)
+            return state.exchanges[-1].reply
+        long = "I counted raindrops on the window. Then I hummed the tune from the radio. Then I had a nap."
+        self.assertEqual(said(60, "What did you do?", long), "I counted raindrops on the window.")  # ends whole, over the cap
+        self.assertEqual(said(60, "What did you do?", long.replace(".", ",")),
+                         "I counted raindrops on the window, Then I hummed the tune")  # one sentence: at a word
+        self.assertEqual(said(30, "What do you see?", "I can see you."), "I can't see yet; I can only")
+        self.assertEqual(said(30, "Help me", ""), "I'm here with you.")
+        self.assertEqual(said(12, "Where is it?", ""), "Hmm, I don't")
+        self.assertEqual(said(60, "Why?", "Supercalifragilisticexpialidocious" * 2), policy.QUESTION_LINE)  # no boundary
+        for end in range(len(long) + 1):  # what streams never runs past the cap either
+            with self.subTest(end=end):
+                self.assertLessEqual(len(speech.near_cap(long[:end], 60)), 60)
 
 
 class TextMedium(unittest.TestCase):

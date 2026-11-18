@@ -53,4 +53,8 @@ if [ -n "${DRY_RUN:-}" ]; then
 	echo "DRY_RUN: would upload these $(echo "$files" | wc -l | tr -d ' ') files to $SPACE as \"$tag $sha\""
 	exit 0
 fi
-$HF upload "$SPACE" "$dir" . --repo-type space --delete '*' --commit-message "$tag $sha"
+# upload_folder, not `hf upload`: that one first asks to create the Space, which Hugging Face refuses
+# (402) for an account without PRO even when the Space exists.
+$HF -c 'import sys; from huggingface_hub import upload_folder
+upload_folder(repo_id=sys.argv[1], folder_path=sys.argv[2], repo_type="space", delete_patterns="*", commit_message=sys.argv[3])' \
+	"$SPACE" "$dir" "$tag $sha"

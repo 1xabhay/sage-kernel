@@ -757,6 +757,15 @@ def test_a_turn_the_kernel_starts_itself_is_spoken_and_reported():
     assert session.started == []
 
 
+def test_a_stop_naming_a_turn_the_kernel_started_begins_no_turn(caplog):
+    """The body's own stop of a greeting spoken over comes back naming it: not a new greeting."""
+    session = FakeSession([{"effects": [{"sequence": 8, "kind": "stop", "turn_id": "kernel-1",
+                                         "stale": False}]}], idle=True)
+    with caplog.at_level(logging.INFO, logger="reachy_sage_voice.sage"):
+        run(make(session), [SleepFrame(0.1)])
+    assert "initiated" not in [r.getMessage() for r in caplog.records]
+
+
 def test_after_an_interruption_the_body_still_listens_for_the_kernel():
     kernel_turn = {"sequence": 7, "kind": "reply", "turn_id": "kernel-1", "text": "Hello again!",
                    "stale": False}

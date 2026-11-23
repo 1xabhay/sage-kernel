@@ -192,6 +192,14 @@ class _Turn:
     speech: SpeechStream = field(default_factory=lambda: SpeechStream((*TOOLS, *EMOTIONS)))
 
 
+def _stops(effect: dict, turn: _Turn) -> bool:
+    """Whether a kernel effect stops this turn: a bare stop, or one naming it.
+
+    One naming another turn answers the body's own stop of a turn this one replaced.
+    """
+    return effect["kind"] == "stop" and effect.get("turn_id") in (None, turn.turn_id)
+
+
 class SageProcessor(FrameProcessor):
     """Final transcripts to the kernel; its reply, emotes and results back out."""
 
@@ -560,7 +568,8 @@ class SageProcessor(FrameProcessor):
                 await asyncio.sleep(POLL_S)
                 continue
             turn_id = next((e["turn_id"] for e in body["effects"]
-                            if (e.get("turn_id") or "").startswith(KERNEL_TURN)), None)
+                            if (e.get("turn_id") or "").startswith(KERNEL_TURN)
+                            and e["kind"] != "stop"), None)  # a stop names a turn that is over
             if turn_id is not None:
                 TURN_ID.set(turn_id)
                 self._turn_id = turn_id
@@ -589,7 +598,7 @@ class SageProcessor(FrameProcessor):
             tools = []
             for effect in body["effects"]:
                 kind = effect["kind"]
-                if kind == "stop":
+                if _stops(effect, turn):
                     await self._stop_body()
                     return
                 if effect.get("turn_id") != turn.turn_id:
@@ -628,7 +637,7 @@ class SageProcessor(FrameProcessor):
                 break
         if turn.streamed:
             await self.push_frame(LLMFullResponseEndFrame())
-            if not await self._played(offset):
+            if not await self._played(turn, offset):
                 return
         if turn.reply_seq is not None and not turn.reported:
             turn.reported = True
@@ -706,7 +715,7 @@ class SageProcessor(FrameProcessor):
         if await self._before_speaking():
             await self.push_frame(TTSSpeakFrame(line))
 
-    async def _played(self, offset: int) -> bool:
+    async def _played(self, turn: _Turn, offset: int) -> bool:
         """Wait for the audio to finish, still listening for a stop. False if stopped."""
         done = asyncio.ensure_future(self._audio_done.wait())
         try:
@@ -716,7 +725,7 @@ class SageProcessor(FrameProcessor):
                 if not poll.done():
                     poll.cancel()  # its effects stay in the journal for the next poll
                     break
-                if any(e["kind"] == "stop" for e in poll.result()["effects"]):
+                if any(_stops(e, turn) for e in poll.result()["effects"]):
                     await self._stop_body()
                     return False
             return True

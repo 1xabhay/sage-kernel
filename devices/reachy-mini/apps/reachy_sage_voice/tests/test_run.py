@@ -267,6 +267,16 @@ def test_the_executor_counts_a_face_only_while_the_detector_runs(monkeypatch):
     assert ran["executor"].face().detected
 
 
+def test_a_session_after_a_lost_link_shows_the_motion_link_up_again(monkeypatch):
+    """Live 2026-11-19: the link dropped, the app reconnected and moved, and status said down."""
+    from reachy_sage_voice import health
+
+    monkeypatch.setattr(health, "TABLE", {})
+    health.report("voice.motion", False, "the SDK refuses commands, 2 stalls")
+    start(ENV)
+    assert health.TABLE["voice.motion"].ok
+
+
 def test_face_health_is_down_when_the_detector_refused(monkeypatch):
     from reachy_sage_voice import executor as executors
     from reachy_sage_voice import health

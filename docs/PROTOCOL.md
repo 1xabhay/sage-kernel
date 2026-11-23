@@ -441,7 +441,8 @@ before that exchange are unchanged.
 **Acting.** A device is acting while it holds a delivered tool or reply
 effect with no result, a streaming reply included. A bare Stop, from any device, delivers one `stop`
 effect to each acting device, at the next step of its long poll; a Stop naming a turn, only to its
-sender (§3). A device that has
+sender (§3). The effect carries that turn's `turn_id`, and a bare Stop's is null: a device that has
+begun another turn since ignores a stop naming the one it replaced. A device that has
 reported every result receives no stop. A `stop` effect needs no result. Who
 is acting is derived from the journal alone, so it survives a restart.
 

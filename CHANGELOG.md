@@ -59,6 +59,9 @@ and every protocol change is listed under **Protocol**.
 
 ### Fixed
 
+- **Protocol:** the `stop` effect delivered for a Stop naming a turn carries that turn's `turn_id` (a
+  bare Stop's stays null). The Reachy voice body ignores a stop naming a turn it has since replaced:
+  the kernel's answer to the body's own stop of "Okay, Sage." no longer ends the question that followed.
 - The pet's name heard a little wrong ("age", "saige", "sayge", "sarge" for "Sage") as a short
   line's first or last word counts as said to Sage and reaches the model; it got a head tilt and
   no answer before. No prompt change.

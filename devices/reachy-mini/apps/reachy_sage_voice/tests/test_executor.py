@@ -1578,7 +1578,7 @@ def test_what_was_heard_says_no_face_and_that_the_direction_is_not_this_voice(ca
         executor = alive(FakeMini(), doa=voice_at(math.radians(120), False), tracking=True)
         executor.face = lambda: Face(False, True, None, 0.0)
         executor.attend()
-        await asyncio.sleep(0.1)
+        await until(lambda: heard_lines(caplog))  # not a fixed sleep: a loaded suite is slower
     with caplog.at_level(logging.INFO, logger="reachy_sage_voice.executor"):
         asyncio.run(main())
     assert heard_lines(caplog) == ["heard: DoA 120 deg (speech_detected=False), head +0 deg from "
@@ -1966,6 +1966,27 @@ def test_the_antennas_finish_their_lift_even_when_a_send_stalls_past_its_end(qui
         await asyncio.sleep(0.05)
     asyncio.run(main())
     assert lifted() == pytest.approx(alive_motion.PERK_DEG, abs=0.01)
+
+
+def test_a_reflex_logs_how_far_it_went_and_what_it_left_on_the_robot(quick, arbitrated,
+                                                                     monkeypatch, caplog):
+    """One line when the runner yields: the offset's and the sent target's peak, and both then."""
+    monkeypatch.setattr(alive_motion, "PERK_RISE_S", 0.05)
+    monkeypatch.setenv("SAGE_VOICE_IDLE_SCALE", "0")  # no breath under it: sent is the offset
+    mini = FakeMini()
+
+    def said():
+        return [r.getMessage() for r in caplog.records if r.getMessage().startswith("reflex: ")]
+
+    async def main():
+        executor = alive(mini, idle=False)
+        executor.perk()
+        await until(said)
+    with caplog.at_level(logging.INFO, logger="reachy_sage_voice.executor"):
+        asyncio.run(main())
+    up = f"pitch +0.0 left {alive_motion.PERK_DEG:+.1f} right {-alive_motion.PERK_DEG:+.1f}"
+    assert said()[0] == (f"reflex: peak offset {up}, sent {up}; "
+                         f"at the yield offset {up}, sent {up} (deg)")
 
 
 def test_no_listening_reflex_while_speaking_dancing_searching_stopped_or_cooling(quick, arbitrated):

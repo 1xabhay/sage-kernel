@@ -482,6 +482,7 @@ class Executor:
         self._dwell: Hold | None = None  # a search view's Hold, breathing under it
         self._reflexed: dict = {}  # the listening reflex's offset in the last tick
         self._landing = False  # that offset changed: its keys are still on their way to rest
+        self._peak: dict = {}  # (which, key) -> the furthest a reflex went since the last yield
         self._failed: Exception | None = None  # why it last failed: a Goto waiting fails with it
         self.link_lost: Callable[[str], None] = lambda reason: logger.error("%s", reason)
         self.on_link: Callable[[bool, int], None] = lambda up, stalls: None
@@ -773,6 +774,7 @@ class Executor:
                 why = await runner.run(tick, self._send, self.clock, asyncio.sleep, self._yields,
                                        lambda: self._down_since is not None)
                 logger.info("motion runner yielded: %s", why)
+                self._log_reflex()
             except Exception as error:  # a reflex, not a requirement
                 self._failed = error
                 logger.warning("motion runner failed (%s) - trying again", error)
@@ -804,6 +806,27 @@ class Executor:
         self._landing = changed or (self._landing and any(
             abs(state.sent[k] - state.goal.get(k, state.sent[k])) > arbiter.SETTLE_POS
             for k in _REFLEX_KEYS if k in state.sent))
+        if reflex or self._landing or self._peak:
+            for which, pose in (("offset", reflex), ("sent", state.sent)):
+                for k in _REFLEX_KEYS:
+                    if abs(pose.get(k, 0.0)) >= abs(self._peak.get((which, k), 0.0)):
+                        self._peak[which, k] = pose.get(k, 0.0)
+
+    def _log_reflex(self) -> None:
+        """Say how far a reflex went and what the runner left on the robot: checked by eye.
+
+        Sent is the whole target, the breath and a move with it: only the antennas are the
+        reflex's alone.
+        """
+        if not self._peak:
+            return
+        def deg(pose: dict) -> str:
+            return " ".join(f"{k} {pose.get(k, 0.0):+.1f}" for k in _REFLEX_KEYS)
+        peak, self._peak = self._peak, {}
+        logger.info("reflex: peak offset %s, sent %s; at the yield offset %s, sent %s (deg)",
+                    *(deg({k: peak.get((which, k), 0.0) for k in _REFLEX_KEYS})
+                      for which in ("offset", "sent")),
+                    deg(self._reflexed), deg(self._state.sent))
 
     def _moving(self) -> bool:
         """Whether the primary is a move's: the runner's whatever else wants the body.

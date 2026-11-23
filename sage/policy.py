@@ -918,6 +918,7 @@ def stop(state: Companion, source: str, turn_id: str | None, streaming=()):
     A bare stop is the owner's global stop: every running turn, every acting body. A stop naming a turn
     reaches only the sender's own turn and effects (v1.2), so one body's "stop" never freezes another.
     `streaming`: the devices with reply text to play; a running turn's device among them is acting too.
+    The stop delivered names the turn it was for, so a body that has begun another does not stop that one.
     """
     if turn_id is not None:
         state = focus(state, source)
@@ -931,7 +932,8 @@ def stop(state: Companion, source: str, turn_id: str | None, streaming=()):
 
     def cancel(turn: Turn) -> Turn:
         return replace(turn, status="cancelled", text="") if turn in running else turn
-    rows = (Row("stop", source, turn_id),) + tuple(Row("stop", "kernel", target=target) for target in sorted(acting))
+    rows = (Row("stop", source, turn_id),) + tuple(
+        Row("stop", "kernel", turn_id, target=target) for target in sorted(acting))
     return replace(state, turn=cancel(state.turn), lanes=tuple(map(cancel, state.lanes))), rows
 
 

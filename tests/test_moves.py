@@ -189,6 +189,18 @@ class EndToEnd(unittest.TestCase):
         kernel.event("body", {"kind": "result", "sequence": move["sequence"], "status": "interrupted"})
         self.assertEqual(kernel.state.open, ())
 
+    def test_a_stop_naming_a_turn_reaches_the_body_naming_it_and_a_bare_stop_names_none(self):
+        """The body may have replaced that turn already: by the name it knows the stop is not the new one's."""
+        kernel, _ = self.kernel(answer("", **SOOTHE), answer("", **SOOTHE))
+        move = self.said(kernel, "t1", "I had such a long day.")["effects"][0]
+        kernel.event("body", {"kind": "stop", "turn_id": "t1"})
+        (named,) = kernel.effects("body", move["sequence"], 0, 0)["effects"]
+        self.assertEqual((named["kind"], named["turn_id"]), ("stop", "t1"))
+        move = self.said(kernel, "t2", "Such a long day.")["effects"][-1]
+        kernel.event("body", {"kind": "stop"})
+        (bare,) = kernel.effects("body", move["sequence"], 0, 0)["effects"]
+        self.assertEqual((bare["kind"], bare["turn_id"]), ("stop", None))
+
     def test_silence_on_a_question_is_retried_once_then_spoken(self):
         kernel, prompts = self.kernel(answer("", **SOOTHE), answer("I'm Sage."))
         effects = self.said(kernel, "t1", "What's your name?")["effects"]

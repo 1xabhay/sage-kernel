@@ -19,7 +19,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.tests.utils import SleepFrame, run_test
 from sage_device import choice, names
-from test_sage_processor import TURN, FakeSession, acts, aside, delta, heard, run, spoken
+from test_sage_processor import TURN, FakeSession, acts, aside, delta, heard, reply, run, spoken
 
 from reachy_sage_voice.executor import Result
 from reachy_sage_voice.expressions import MOVES_LINE, REACTIONS
@@ -261,6 +261,26 @@ def test_a_stale_body_plan_does_not_move():
 def test_a_stop_from_the_kernel_stops_the_body_too():
     session, executor = FakeSession([{"effects": [{"sequence": 43, "kind": "stop", "turn_id": None,
                                                    "stale": False}]}]), FakeExecutor()
+    run(make(session, executor), [heard("Tell me more."), SleepFrame(0.1)])
+    assert executor.stops == 1
+
+
+def test_a_stop_for_the_turn_this_one_replaced_does_not_stop_it():
+    """The kernel answers the body's own stop of a withdrawn turn; the one replacing it runs on.
+
+    Live 2026-11-19: "Okay, Sage.", then a question: the echo ended the question's turn unanswered.
+    """
+    stop = {"sequence": 43, "kind": "stop", "turn_id": "reachy-replaced", "stale": False}
+    session, executor = FakeSession([{"effects": [stop]},
+                                     {"effects": [reply(44, "It is far away.")]}]), FakeExecutor()
+    down, _ = run(make(session, executor), [heard("Tell me about the moon."), SleepFrame(0.1)])
+    assert executor.stops == 0
+    assert spoken(down) == ["It is far away."]
+
+
+def test_a_stop_naming_this_turn_stops_the_body():
+    stop = {"sequence": 43, "kind": "stop", "turn_id": TURN, "stale": False}
+    session, executor = FakeSession([{"effects": [stop]}]), FakeExecutor()
     run(make(session, executor), [heard("Tell me more."), SleepFrame(0.1)])
     assert executor.stops == 1
 

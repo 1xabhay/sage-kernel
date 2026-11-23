@@ -296,6 +296,7 @@ def live(mini, declared: Mapping, env: Mapping[str, str], run: Callable | None,
 
     executor.on_link = lambda up, stalls: health.report(  # for `make status`
         "voice.motion", up, ("ok" if up else "the SDK refuses commands") + f", {stalls} stalls")
+    executor.on_link(True, 0)  # a new session is a new link: the last one's "down" is over
 
     async def play_sound(name: str) -> None:  # a vocal: the move's own sound alone
         mini.media.play_sound(str(declared[name].sound_path))

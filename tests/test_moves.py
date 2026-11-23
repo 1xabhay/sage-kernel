@@ -86,8 +86,10 @@ class Decided(unittest.TestCase):
         self.assertEqual([row.kind for row in rows], ["decided", "wave", "completed"])
         self.assertEqual(rows[0].body["output"], raw)
         self.assertEqual(rows[1].body, {"input": SOOTHE["wave"]})
-        self.assertEqual(state.exchanges, ())  # not kept as conversation; the move's result is still awaited
         self.assertEqual([o.kind for o in state.open], ["wave"])
+        self.assertFalse(any(map(policy.told, state.exchanges)))  # not conversation: held only for the move's result
+        move = {"sequence": 11, "kind": "wave", "target": "body", "turn_id": "t1"}
+        self.assertEqual(policy.report(state, "body", move, "done", None, None, {})[0].exchanges, ())
 
     def test_a_question_still_silent_gets_the_last_resort_and_keeps_its_move(self):
         state, rows = self.decide("What's your name?", answer("", **SOOTHE))

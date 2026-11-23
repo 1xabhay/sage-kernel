@@ -419,19 +419,26 @@ after a conversation, never during a turn:
   sequence. Records live in the checkpoint; each change is a `remember` or
   `forget` row whose source says who made it (`writer`, `owner`, `kernel`),
   and each writer answer a `written` row with what was refused and why. At
-  most 200 are kept; a `day` or `thread` record is dropped after 14 days.
+  most 200 are kept; a `day` or `thread` record older than 14 days is left
+  out of every prompt and read-back, and dropped at the next writer commit.
+  A fact from a checkpoint before records loads as an `owner` `person`
+  record.
 - The system message ends with at most 600 characters of them: up to 5
   `person` and `like` records, the last `day` line, open threads and
   promises. Records from an unknown voice are listed apart, under a note
-  never to greet anyone by a name from them. Past 20 records, up to 2 more
-  that match the newest line ride on that line.
+  never to greet anyone by a name from them. Up to 2 records the block has
+  no room for ride on the newest line when they match it.
 - Said to the kernel by anyone but a guest, "forget about …" drops every
   record holding those words at once, with no model call, and nothing said
   in the conversation up to then is ever shown to the writer; "what do you
   remember?" is answered from the records, up to 5 and a count of the rest.
+  A forget from a `guest`, from a line maybe misheard or from one not said
+  to the kernel changes nothing: the kernel answers that nothing was
+  forgotten and why, with no model call.
 - The owner sees and fixes it from a terminal, while the kernel runs or not:
   `python -m sage memory list`, `forget ID`, `edit ID "text"`, `add "text"`
-  (on `SAGE_STATE_DIR`; `list` shows each record's source line).
+  (on `SAGE_STATE_DIR`; `list` shows each record's source line; a record
+  the owner edits becomes an `owner` record).
 
 ## 4. Effects and streaming
 

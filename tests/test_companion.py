@@ -48,6 +48,19 @@ def said(state):
     return [exchange.reply for exchange in state.exchanges]
 
 
+LISTEN = {"name": "listen", "description": "Listen to what is playing.", "max_s": 20,
+          "inputSchema": {"type": "object", "properties": {}}}
+HEARS = manifest.check_manifest({**BODY, "tools": [FEEL, LISTEN]})
+
+
+def wordless(raw, line="Listen to this.", state=None):
+    """The state after `line` is answered with `raw`, and its rows as the effects a body would report on."""
+    state = policy.submit(state or Companion(), "body", "t0", line, {}, False, HEARD)[0]
+    state, rows = policy.decided(state, "t0", policy.compile_prompt(state, "body", HEARS), raw, HEARS["tools"], 10, 1.0)
+    return state, [{"sequence": row.sequence, "kind": row.kind, "target": row.target, "turn_id": row.turn_id}
+                   for row in policy.numbered(rows, 10)]
+
+
 class Character(unittest.TestCase):
     def test_a_speaking_body_with_tools_is_a_companion_not_mostly_a_move(self):
         system = policy.compile_prompt(asked(Companion(), "Hi.")[0], "body", DECLARED).system
@@ -140,6 +153,27 @@ class Unknown(unittest.TestCase):
                          ["Tell me about it."])
 
 
+    def test_a_sentence_that_admits_and_then_answers_is_spoken(self):
+        """Review finding 2: the pattern anywhere in a sentence dropped the whole sentence, answer and all."""
+        for reply in ("I don't know much about cars, but the Corva is solid.", "I'm not sure, maybe the one in Siberia.",
+                      "It is the one in Siberia, but I'm not sure how deep."):
+            with self.subTest(reply):
+                state, _ = talk(self.ADMITTED, ("And the deepest lake?", reply))
+                self.assertEqual(said(state)[-1], reply)
+        for reply in ("Sorry, I don't know.", "Hmm, I'm not sure, no idea."):  # nothing but the admission: dropped
+            with self.subTest(reply):
+                state, _ = talk(self.ADMITTED, ("And the deepest lake?", reply))
+                self.assertEqual(said(state)[-1], policy.MOVE_ON_LINE)
+
+    def test_a_sentence_that_admits_and_then_answers_streams(self):
+        reply = "I don't know much about cars, but the Corva is solid."
+        decide, _ = answers("I don't know the tallest tree.", ['{"reply": "I do', "n't know much about cars, ",
+                                                              'but the Corva is solid."}'])
+        kernel = started(self, decide, BODY)
+        hear(kernel, "u1", "What's the tallest tree?")
+        self.assertEqual([e["text"] for e in hear(kernel, "u2", "Is the Corva any good?") if e["kind"] == "reply"], [reply])
+
+
 class Unclear(unittest.TestCase):
     def test_only_what_was_heard_decides_unclear_never_a_guess_at_who_it_was_for(self):
         for line in ("Nice weather.", "Only the kettle.", "Short one.", "Age."):
@@ -180,6 +214,20 @@ class Unclear(unittest.TestCase):
         self.assertEqual(len(prompts), 2)
         self.assertEqual([e["text"] for e in hear(kernel, "c4", "Open the fridge door.") if e["kind"] == "reply"], ["Yes! The door."])
 
+    def test_a_sentence_that_only_has_say_in_it_is_spoken_on_a_second_unclear_line(self):
+        """Review finding 2: "say that" and "say it" anywhere dropped plain sentences."""
+        for reply in ("I'd say that sounds fun.", "People say it rains a lot there.",
+                      "I didn't catch that, but the fridge door sounds right."):
+            with self.subTest(reply):
+                state, _ = talk(("Can you the fridge", "Something about the fridge. What about it?"))
+                state, prompt = asked(state, "The the door and")
+                state = policy.decided(state, "next", prompt, json.dumps({"reply": reply}), DECLARED["tools"], 50, 1.0)[0]
+                self.assertEqual(said(state)[-1], reply)
+        for reply in ("Sorry, what?", "Could you repeat that?", "I didn't catch that, say it again?"):
+            with self.subTest(reply):
+                self.assertEqual(policy.moved_on(reply + " The fridge door, maybe.", ("unclear_again",)),
+                                 "The fridge door, maybe.")
+
 
 class Asked(unittest.TestCase):
     def test_after_its_own_question_it_is_told_to_ask_none(self):
@@ -203,12 +251,11 @@ class Asked(unittest.TestCase):
         self.assertEqual(policy.move_only(asked(told, "Nice weather.")[0], "body", DECLARED["tools"]), "")
         self.assertEqual(policy.move_only(asked(told, "Help.")[0], "body", DECLARED["tools"]), "")
 
-
 class Context(unittest.TestCase):
     def test_a_turn_it_answered_with_no_words_is_not_in_its_context(self):
         state, _ = talk(("I had a long day.", json.dumps({"reply": "", "emote": {"name": "happy"}})),
                         ("My cat is asleep.", "Cats know how to rest."))
-        self.assertEqual([x.user for x in state.exchanges], ["My cat is asleep."])
+        self.assertEqual([x.user for x in state.exchanges if policy.told(x)], ["My cat is asleep."])
         context = asked(state, "She is.")[1].context
         self.assertEqual([m["role"] for m in context], ["user", "assistant", "user"])
 
@@ -239,6 +286,43 @@ class Context(unittest.TestCase):
         data = json.loads(json.dumps(policy.encode(state)))
         data["exchanges"].insert(0, {**data["exchanges"][0], "reply": "", "user": "Hm."})
         self.assertEqual(said(policy.decode(data)), ["Oaks are lovely."])
+
+
+    def test_a_turn_with_no_words_whose_tool_reported_is_told_with_what_the_tool_did(self):
+        """Review finding 3: the exchange was dropped, so the tool's result settled onto nothing."""
+        state, effects = wordless(json.dumps({"reply": "", "listen": {}}))
+        self.assertEqual([m["role"] for m in asked(state, "Hm.", device="body")[1].context], ["user"])  # still listening
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        state = policy.report(state, "body", effects[1], "done", "A slow song about rain.", None, {})[0]
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        context = asked(state, "What was it?")[1].context
+        self.assertEqual([m["role"] for m in context], ["user", "assistant", "tool", "user"])
+        self.assertTrue(context[0]["content"].startswith("Listen to this."))
+        self.assertEqual(json.loads(context[1]["content"]), {"reply": "", "listen": {}})
+        self.assertEqual(context[2]["content"], "(your body body: listen done: A slow song about rain.)")
+        self.assertEqual(policy.last_replies(state, "body"), ())  # no words: nothing to repeat or repair
+
+    def test_a_turn_with_no_words_whose_tool_failed_or_was_refused_is_told(self):
+        state, effects = wordless(json.dumps({"reply": "", "listen": {}}))
+        state = policy.report(state, "body", effects[1], "failed", None, "no microphone", {})[0]
+        self.assertEqual(asked(state, "What was it?")[1].context[2]["content"],
+                         "(your body body could not do listen: no microphone)")
+        state, _ = wordless(json.dumps({"reply": "", "emote": {"name": "furious"}}))
+        self.assertEqual([m["role"] for m in asked(state, "Well?")[1].context], ["user", "assistant", "tool", "user"])
+
+    def test_a_turn_with_no_words_whose_move_just_happened_is_let_go(self):
+        """A feeling shown and nothing said is still not conversation: its empty reply would be copied."""
+        state, effects = wordless(json.dumps({"reply": "", "emote": {"name": "happy"}}), "I had a long day.")
+        state = policy.report(state, "body", effects[1], "done", None, None, {})[0]
+        self.assertEqual((state.exchanges, state.open), ((), ()))
+
+    def test_what_the_body_did_on_its_own_is_told_once_when_a_wordless_turn_is_told_later(self):
+        state = policy.act(Companion(), "body", {"act_id": "a1", "origin": "grammar", "what": "aside", "status": "done",
+                                                 "said": "Looking left."})[0]
+        state, effects = wordless(json.dumps({"reply": "", "listen": {}}), state=state)
+        state = policy.report(state, "body", effects[1], "done", "A slow song about rain.", None, {})[0]
+        shown = json.dumps(asked(state, "What was it?")[1].context)
+        self.assertEqual(shown.count("Looking left."), 1)
 
 
 class Repeats(unittest.TestCase):

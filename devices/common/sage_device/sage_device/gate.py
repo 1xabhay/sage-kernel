@@ -3,9 +3,9 @@
 Per heard line: ``ANSWER`` (a turn for the brain), ``ACK`` (a look, no words, no model),
 ``LISTEN`` (silent) or ``OVERHEARD`` (nothing shown), and the rule that decided. The body supplies
 what it has (``Signals``); a mic-only body leaves face, voice and direction out and the same rules
-run. A conversation opens on an ANSWER and only an ANSWER keeps it open: not any heard line, which
-let a TV hold it open for 243 lines. Unsure, it looks and says nothing: a wrong glance is cheap, a
-right one makes the person carry on, and that line is answered.
+run. A conversation opens on an ANSWER, and only a line to it or its own reply keeps it open: not
+any heard line, which let a TV hold it open for 243 lines. Unsure, it looks and says nothing: a
+wrong glance is cheap, a right one makes the person turn to it, and that line is answered.
 
 ponytail: lexical and English, no weights and no model until the labelled set exists
 (``eval/noise.py baseline`` scores this function on it).
@@ -27,7 +27,8 @@ _STEP_DOWN = {ANSWER: ACK, ACK: LISTEN, LISTEN: LISTEN, OVERHEARD: OVERHEARD}
 #: A conversation closes this long, in seconds, after its last answered line or Sage's last word.
 #: ponytail: the design's guess; measure on the labelled set: to-me lines by seconds since it spoke.
 CLOSE_S = 20.0
-#: After a look (ACK), the person's next line within this, in seconds, is answered.
+#: After a look (ACK), a line within this, in seconds, that turns to it ("you", or the owner's voice
+#: going on) is answered. Any next line was: two people talking were answered from the second line.
 #: ponytail: the design's guess, the same 8 s as ``floor.CARRY_S``; measure on the labelled set.
 FOLLOW_S = 8.0
 #: Asides in a row ("he/she/they", "and/but/because") that close an open conversation.
@@ -77,8 +78,9 @@ class Attention:
     """The conversation, between lines: open or not, and what the next line is judged against."""
 
     open: bool = False
-    at: float = -math.inf  # the last ANSWER: only that refreshes it
+    at: float = -math.inf  # the last ANSWER to a line with a cue in it: only that refreshes it
     acked_at: float = -math.inf  # the last look given with no conversation open
+    acked_owner: bool = False  # and whether the voiceprint took that line for the owner's
     asides: int = 0  # asides in a row
     similarity: float | None = None  # the voice that opened it
     doa: float | None = None
@@ -92,6 +94,10 @@ def is_open(state: Attention, now: float, spoke_at: float = -math.inf) -> bool:
 def opened(state: Attention, now: float) -> Attention:
     """Sage spoke first (a greeting, a remark of its own): what comes back is in a conversation."""
     return replace(state, open=True, at=now, asides=0)
+
+
+def _owner(s: Signals) -> bool:
+    return s.similarity is not None and s.similarity >= OWNER_SIMILARITY
 
 
 def _other_voice(s: Signals, state: Attention) -> bool:
@@ -148,7 +154,11 @@ def attend(line: str, signals: Signals, state: Attention) -> tuple[str, str, Att
             outcome, reason = ANSWER, "direct"
         elif aside and len(words) >= BROADCAST_WORDS:
             outcome, reason = OVERHEARD, "aside"
-        elif now - state.acked_at <= FOLLOW_S:
+        # ponytail: "you" between two people still reads as a turn to it, and two guests cannot be
+        # told apart by the owner's voiceprint, so a guest must say more than the owner. Direction
+        # is no cue until a body hands it on (two people on one sofa share it). Measure "followed"
+        # on the labelled set: ``eval/noise.py baseline``.
+        elif now - state.acked_at <= FOLLOW_S and (you or (state.acked_owner and _owner(s))):
             outcome, reason = ANSWER, "followed"
         else:
             outcome, reason = ACK, "unsure"
@@ -163,9 +173,12 @@ def attend(line: str, signals: Signals, state: Attention) -> tuple[str, str, Att
         return outcome, reason + ", closed", Attention()
     if outcome == ANSWER:
         mine = (state.similarity, state.doa) if state.open else (s.similarity, s.doa)
-        return outcome, reason, Attention(True, now, similarity=mine[0], doa=mine[1])
+        # A plain statement in a conversation is answered, but only its reply (``spoke_at``) holds
+        # the conversation open: talk it does not reply to cannot.
+        at = state.at if reason == "open" else now
+        return outcome, reason, Attention(True, at, similarity=mine[0], doa=mine[1])
     if outcome == ACK and not state.open:
-        return outcome, reason, replace(state, acked_at=now)
+        return outcome, reason, replace(state, acked_at=now, acked_owner=_owner(s))
     if outcome == LISTEN and state.open and reason == "aside":
         asides = state.asides + 1
         closed = asides >= ASIDES_CLOSE

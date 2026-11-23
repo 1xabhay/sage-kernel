@@ -71,7 +71,11 @@ def test_4_in_a_conversation_a_question_a_request_or_a_line_about_you_or_me_is_a
 
 def test_5_in_a_conversation_a_plain_statement_is_answered_and_keeps_it_open():
     outcome, reason, state = attend("The garden looks nice today.", at(now=110.0), OPEN)
-    assert (outcome, reason, state.at) == (ANSWER, "open", 110.0)
+    assert (outcome, reason, state.open, state.at) == (ANSWER, "open", True, 100.0)
+    # Answered, and its own reply holds the conversation open; unanswered plain talk does not.
+    assert attend("I'd plant roses there.", at(now=125.0), state)[:2] == (ACK, "unsure")
+    assert did("I'd plant roses there.", state, now=125.0, spoke_at=112.0) == ANSWER
+    assert attend("Is it raining.", at(now=110.0), OPEN)[2].at == 110.0  # a line to it does
 
 
 def test_6_in_a_conversation_talk_about_others_is_listened_to_and_two_in_a_row_close_it():
@@ -112,8 +116,10 @@ def test_9_with_no_face_another_question_or_statement_gets_a_look_then_the_next_
     for line in ("Is it raining?", "The garden looks nice."):
         outcome, reason, state = attend(line, at(), CLOSED)
         assert (outcome, reason, state.open) == (ACK, "unsure", False)
-    assert attend("The rain, outside.", at(now=101.0 + FOLLOW_S), state)[:2] == (ANSWER, "followed")
-    assert did("The rain, outside.", state, now=102.0 + FOLLOW_S) == ACK  # too late: another look
+    turned = "I meant you."  # they carry on to it: a plain line from any voice is not that
+    assert attend(turned, at(now=101.0 + FOLLOW_S), state)[:2] == (ANSWER, "followed")
+    assert did(turned, state, now=102.0 + FOLLOW_S) == ACK  # too late: another look
+    assert attend("The rain, outside.", at(now=103.0), state)[:2] == (ACK, "unsure")
 
 
 def test_10_with_no_face_long_talk_about_others_is_overheard():
@@ -198,3 +204,39 @@ def test_a_mic_only_body_runs_the_same_rules_with_time_alone():
     outcome, _, state = attend("Hey, can you hear me?", Signals(5.0), CLOSED)
     assert (outcome, state.open) == (ANSWER, True)
     assert attend("The garden looks nice.", Signals(9.0), state)[0] == ANSWER
+
+
+TALK = (  # two people, to each other: plain lines and questions that name no one
+    "The garden looks nice.",
+    "It really does.",
+    "Is it warm out?",
+    "A little, by the wall.",
+    "The roses came back.",
+    "Is that the red one?",
+)
+
+
+def test_two_people_talking_with_no_face_in_view_are_never_answered():
+    """Review finding 4: a look, then any line from any voice, opened a conversation of theirs."""
+    state, outcomes = CLOSED, set()
+    for i in range(20):  # over a minute, a line every 4 s: each inside the last look's window
+        outcome, _, state = attend(TALK[i % len(TALK)], at(now=100.0 + 4 * i), state)
+        outcomes.add(outcome)
+        assert not state.open
+    assert outcomes == {ACK}
+    for theirs, mine in ((0.8, 0.2), (0.2, 0.8), (0.2, 0.2)):  # voices told apart, or both guests
+        looked = attend(TALK[0], at(similarity=theirs), CLOSED)[2]
+        assert did(TALK[1], looked, now=104.0, similarity=mine) == ACK
+
+
+def test_after_a_look_the_person_who_turns_to_it_is_answered():
+    looked = attend(TALK[0], at(), CLOSED)[2]
+    for line, reason in (
+        ("I was talking to you.", "followed"),
+        ("Tell me if it rains.", "direct"),
+        ("Sage, the garden.", "name"),
+    ):
+        assert attend(line, at(now=104.0), looked)[:2] == (ANSWER, reason)
+    assert attend(TALK[1], at(now=104.0, face=True), looked)[:2] == (ANSWER, "face")
+    owner = attend(TALK[0], at(similarity=0.8), CLOSED)[2]  # a voiceprint: the same voice goes on
+    assert attend(TALK[4], at(now=104.0, similarity=0.7), owner)[:2] == (ANSWER, "followed")

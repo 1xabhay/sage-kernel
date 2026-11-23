@@ -245,6 +245,26 @@ class Results(unittest.TestCase):
         self.assertEqual(state.turn.timing, {"stt_ms": 120, "first_audio_ms": 650})
 
 
+    def test_a_delivered_reply_interrupted_before_any_word_is_not_kept(self):
+        """Review finding 7: it stayed as an empty assistant turn, and was gone after a restart."""
+        state, _ = answered(asked("Count"))
+        reply = {"sequence": 11, "kind": "reply", "target": "reachy", "turn_id": "r1"}
+        state, _ = self.report(reply, "interrupted", "", state=state)
+        self.assertEqual((state.exchanges, state.open), ((), ()))
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+
+    def test_a_reply_interrupted_before_any_word_is_kept_for_what_its_tool_has_to_tell(self):
+        state, _ = self.report(self.reply, "interrupted", "")
+        self.assertEqual(len(state.exchanges), 1)  # the feeling is still running: its result needs a place
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        self.assertEqual(body_notes(state), [])  # and nothing is shown of it meanwhile
+        failed, _ = self.report(self.emote, "failed", reason="motor", state=state)
+        self.assertEqual(body_notes(failed), ["(the person interrupted you before you said anything)",
+                                              "(your reachy body could not do emote: motor)"])
+        done, _ = self.report(self.emote, "done", state=state)
+        self.assertEqual(done.exchanges, ())
+
+
 class Streaming(unittest.TestCase):
     def test_an_interrupted_result_naming_a_streaming_turn_ends_it_as_what_was_heard(self):
         state = asked("Count to six")

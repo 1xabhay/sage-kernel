@@ -535,12 +535,14 @@ def test_unsure_a_line_was_for_it_it_looks_and_says_nothing_and_no_model_is_aske
     assert "gate: ack (unsure)" in caplog.messages and "unsure: tilted" in caplog.messages
 
 
-def test_the_line_after_a_look_is_answered_and_carries_the_line_it_looked_at():
+def test_the_line_after_a_look_is_answered_only_if_it_turns_to_it_and_goes_alone():
+    """Review finding 4: any next line was answered, led by the line it had only looked at."""
     emotes, clock = [], [1000.0]
     session, processor = choosing(emotes, now=lambda: clock[0])
     run(processor, [heard("Is it raining.", **UNSEEN), SleepFrame(0.02),
-                    heard("The rain, outside.", **UNSEEN), SleepFrame(0.05)])
-    assert [t for _, t, _ in session.started] == ["Is it raining. The rain, outside."]
+                    heard("The rain, outside.", **UNSEEN), SleepFrame(0.02),
+                    heard("I was asking you.", **UNSEEN), SleepFrame(0.05)])
+    assert [t for _, t, _ in session.started] == ["I was asking you."]
     assert len(emotes) == 1
 
 

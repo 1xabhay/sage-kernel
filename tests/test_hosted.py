@@ -2,6 +2,9 @@
 wait and never the turn, and the key is never shown. Every network call here is to a fake on this machine."""
 
 import json
+import re
+import socket
+import struct
 import threading
 import time
 import types
@@ -268,6 +271,121 @@ class Header(unittest.TestCase):
         self.assertTrue(marks(prompt_for()))
         self.post(server.server_port, token, {**event, "turn_id": "r2"})  # no header: not addressed
         self.assertFalse(marks(prompt_for()))
+
+
+class Wire:
+    """A hosted endpoint that answers every request with `wire`, byte for byte, then closes the connection,
+    resets it, or goes silent."""
+
+    def __init__(self, wire: bytes, then="close"):
+        self.listener, self.done = socket.create_server(("127.0.0.1", 0)), threading.Event()
+        self.url = f"http://127.0.0.1:{self.listener.getsockname()[1]}"
+
+        def answer(connection):
+            with connection:
+                asked = b""
+                while b"\r\n\r\n" not in asked:
+                    asked += connection.recv(65536)
+                head, _, body = asked.partition(b"\r\n\r\n")
+                length = int(re.search(rb"content-length: *(\d+)", head.lower()).group(1))
+                while len(body) < length:
+                    body += connection.recv(65536)
+                connection.sendall(wire)
+                if then == "reset":
+                    connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                elif then == "silent":
+                    self.done.wait(5)
+
+        def serve():
+            while True:
+                try:
+                    connection, _ = self.listener.accept()
+                except OSError:
+                    return  # closed
+                threading.Thread(target=answer, args=(connection,), daemon=True).start()
+        threading.Thread(target=serve, daemon=True).start()
+
+    def close(self):
+        self.done.set()
+        self.listener.close()
+
+
+def chunk(data: bytes) -> bytes:
+    return b"%x\r\n%s\r\n" % (len(data), data)
+
+
+CHUNKED = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
+PLAIN = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+WORD = sse(text('{"reply": "Mount '))
+# What a hosted stream can do instead of answering: the name, the bytes on the wire, and how they end.
+BROKEN = (
+    ("cut inside a chunk", CHUNKED + chunk(sse(START)) + b"400\r\nevent: content_block_delta\n", "close"),
+    ("cut between chunks", CHUNKED + chunk(sse(START)), "close"),
+    ("ended with no message_stop", PLAIN + sse(START), "close"),
+    ("an empty body", PLAIN, "close"),
+    ("a page that is no stream", PLAIN + b"<html>Bad gateway</html>\n", "close"),
+    ("closed before any status line", b"", "close"),
+    ("no HTTP at all", b"what is this\r\n\r\n", "close"),
+    ("reset", PLAIN + sse(START), "reset"),
+    ("silent mid-read", PLAIN + sse(START), "silent"),
+    ("a line that is not JSON", PLAIN + sse(START) + b'data: {"type": "content_blo\n\n', "silent"),
+    ("a line that is not an object", PLAIN + sse(START) + b"data: [1, 2]\n\n", "silent"),
+    ("a null line", PLAIN + b"data: null\n\n", "silent"),
+    ("a delta with no delta", PLAIN + sse(START, {"type": "content_block_delta", "index": 0}), "silent"),
+    ("a delta that is null", PLAIN + sse(START, {"type": "content_block_delta", "index": 0, "delta": None}), "silent"),
+    ("a delta with no text", PLAIN + sse(START, {"type": "content_block_delta", "delta": {"type": "text_delta"}}), "silent"),
+    ("a start that is no message", PLAIN + sse({"type": "message_start", "message": "hello"}), "silent"),
+    ("bytes that are no text", PLAIN + b"data: \xff\xfe\n\n", "silent"),
+    ("the vendor's error event", PLAIN + sse(START, {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}), "silent"),
+    ("an error event with no error", PLAIN + sse(START, {"type": "error", "error": None}), "silent"),
+    ("a refusal", PLAIN + sse(START, {"type": "message_delta", "delta": {"stop_reason": "refusal"}, "usage": {}}, {"type": "message_stop"}), "close"),
+    ("the vendor overloaded", b"HTTP/1.1 529 Overloaded\r\nContent-Length: 0\r\n\r\n", "close"),
+)
+
+
+class CutStreams(unittest.TestCase):
+    """A hosted stream cut or malformed before the first word costs a bounded wait, and the local model answers."""
+
+    def hosted(self, wire, then):
+        fake = Wire(wire, then)
+        self.addCleanup(fake.close)
+        return model.hosted(KEY, url=fake.url, stall_s=0.3)
+
+    def test_every_failure_before_the_first_word_is_an_oserror_and_the_local_model_answers(self):
+        for name, wire, then in BROKEN:
+            with self.subTest(name):
+                hosted, local, marks, heard = self.hosted(wire, then), says('{"reply": "local"}'), model.Addressed(), []
+                with self.assertRaises(OSError) as raised:
+                    hosted(prompt_for(), heard.append)
+                self.assertNotIn(KEY, str(raised.exception))
+                marks.mark("reachy", "What is the tallest mountain?", True)
+                began = time.monotonic()
+                answer = model.routed(local, hosted, marks, deadline_s=5)(prompt_for(), heard.append)
+                self.assertEqual((answer, "".join(heard), local.calls), ('{"reply": "local"}', '{"reply": "local"}', 1))
+                self.assertIn("fallback", answer.timing)
+                self.assertLess(time.monotonic() - began, 2)
+
+    def test_a_stream_cut_after_a_word_fails_the_turn_as_an_oserror_with_no_local_words(self):
+        cuts = (("cut inside a chunk", CHUNKED + chunk(sse(START) + WORD) + b"400\r\nevent: content", "close"),
+                ("ended with no message_stop", PLAIN + sse(START) + WORD, "close"),
+                ("a line that is not an object", PLAIN + sse(START) + WORD + b"data: 7\n\n", "silent"),
+                ("silent mid-read", PLAIN + sse(START) + WORD, "silent"))
+        for name, wire, then in cuts:
+            with self.subTest(name):
+                local, marks, heard = says('{"reply": "local"}'), model.Addressed(), []
+                marks.mark("reachy", "What is the tallest mountain?", True)
+                with self.assertRaises(OSError):
+                    model.routed(local, self.hosted(wire, then), marks, deadline_s=5)(prompt_for(), heard.append)
+                self.assertEqual((heard, local.calls), (['{"reply": "Mount '], 0))
+
+    def test_what_the_kernel_raises_while_hearing_a_piece_is_not_taken_for_a_bad_stream(self):
+        class Abandoned(Exception):
+            pass
+
+        def heard(piece):
+            raise Abandoned
+        with self.assertRaises(Abandoned):
+            self.hosted(PLAIN + sse(START, text('{"reply": "Hi"}'), *END), "close")(prompt_for(), heard)
 
 
 if __name__ == "__main__":

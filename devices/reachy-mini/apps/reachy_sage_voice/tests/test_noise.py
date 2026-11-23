@@ -465,7 +465,7 @@ def test_an_old_log_is_replayed_through_the_gate_from_its_words_times_and_scores
     tv = "And then the whole team came along to see them."
     lines, did = replayed(
         (0, "The garden looks nice."),
-        (5, "It really does."),
+        (5, "I was talking to you."),
         (9, "Is it warm out?"),
         (20, tv),
         (30, tv),
@@ -494,11 +494,11 @@ def test_an_old_log_is_replayed_through_the_gate_from_its_words_times_and_scores
 
 
 def test_the_replay_report_is_counts_and_carries_no_ones_words():
-    lines, _ = replayed((0, "The garden looks nice."), (5, "It really does."), (300, "Hello Sage."))
+    lines, _ = replayed((0, "The garden looks nice."), (5, "I meant you."), (300, "Hello Sage."))
     report = noise.replay_report([lines])
     assert "3 heard lines in 1 logs" in report and "2 conversations" in report
     assert "median 0.50" in report
-    for word in ("garden", "really", "Hello"):
+    for word in ("garden", "meant", "Hello"):
         assert word not in report
 
 

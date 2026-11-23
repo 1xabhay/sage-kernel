@@ -962,3 +962,39 @@ def test_without_sight_a_sight_question_is_a_line_like_any_other():
     assert processor._see is None and processor._watching is None
     assert session.acts == [] and [line for _, line, _ in session.started] == ["What do you see?"]
     assert spoken(down) == ["I cannot see yet."]
+
+
+def paced(session, emotes=None, step=4.0):
+    """Make a processor with no face tracking whose clock moves ``step`` seconds per heard line."""
+    clock = [100.0]
+
+    class Paced(SageProcessor):
+        async def _submit(self, heard, hold=True):
+            clock[0] += step
+            await super()._submit(heard, hold)
+
+    async def play_emote(name, sound):
+        if emotes is not None:
+            emotes.append(name)
+    return Paced(session, play_emote, Playback(), now=lambda: clock[0])
+
+
+def test_two_people_talking_out_of_view_for_a_minute_reach_the_kernel_with_not_one_line():
+    """Review finding 4: overheard speech is never sent as said to it, so never stored or hosted."""
+    talk = ("The garden looks nice.", "It really does.", "Is it warm out?",
+            "A little, by the wall.", "The roses came back.", "Is that the red one?")
+    session, emotes = FakeSession(), []
+    run(paced(session, emotes), [frame for i in range(20)
+                                 for frame in (heard(talk[i % 6], face=False), SleepFrame(0.01))])
+    assert session.started == [] and session.addressed == []
+    assert emotes and set(emotes) == {UNSURE_CLIP}  # looks, and no words
+
+
+def test_after_a_look_the_one_who_turns_to_it_is_answered_and_the_looked_at_line_stays_behind():
+    """The line it only looked at was never taken as said to it: it does not ride along."""
+    for turned in ("I was talking to you.", "Sage, what time is it?", "Tell me the time."):
+        session = FakeSession()
+        run(paced(session), [heard("The garden looks nice.", face=False), SleepFrame(0.01),
+                             heard(turned, face=False), SleepFrame(0.05)])
+        assert [text for _, text, _ in session.started] == [turned]
+        assert session.addressed == [True]

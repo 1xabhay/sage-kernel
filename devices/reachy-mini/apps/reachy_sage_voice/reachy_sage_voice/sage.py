@@ -513,8 +513,10 @@ class SageProcessor(FrameProcessor):
         a scrap) is the rest of it, cut by a pause, and joins it; whole lines between others do not.
 
         Else "": no turn, and the kernel never hears the words. A look (ACK) is a muted tilt, at
-        most one every ``COOLDOWN_S``: its motors can make the next noise. Real words it did not
-        answer lead what the person says next within ``CARRY_S``.
+        most one every ``COOLDOWN_S``: its motors can make the next noise. Real words it took as
+        said to it but too unclear to answer lead what the person says next within ``CARRY_S``.
+        A line it was only unsure of, or took for talk between others, does not: it was never
+        established as said to it, and what leads an answered line is sent as said to it.
         """
         now = self._now()
         outcome, rule, self._attention = gate.attend(heard, gate.Signals(
@@ -526,7 +528,9 @@ class SageProcessor(FrameProcessor):
         if outcome == gate.OVERHEARD:
             logger.info("overheard: quiet")
             return ""
-        if trustworthy(heard, is_name) and (outcome == gate.ACK or half_heard(heard, is_name)):
+        said_to_it = rule.split(",")[0] not in ("unsure", "aside")
+        if said_to_it and trustworthy(heard, is_name) and (
+                outcome == gate.ACK or half_heard(heard, is_name)):
             self._cut = (heard, now)
         busy = self._playback.busy or bool(self._executor and self._executor.busy())
         if outcome == gate.ACK and not busy and now - self._unsure_at >= COOLDOWN_S:

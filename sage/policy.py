@@ -58,7 +58,7 @@ MAX_OPS = 5  # changes the writer may make after one conversation; ponytail: a g
 MAX_RECORDS = 200
 RECALL_CHARS = 600  # the block at the end of the system prompt; ponytail: a guess, ~170 of the prompt's ~3k tokens
 CORE_KNOWN = 5  # person and like records in that block
-RANKED_PAST, RECALL_EXTRA = 20, 2  # past this many records, up to this many more ride on the newest line (`relevant`)
+RECALL_EXTRA = 2  # records the block has no room for that may ride on the newest line, the best matches (`relevant`)
 STALE_S = 14 * 86400.0  # a day line or an open thread older than this is dropped; ponytail: a guess
 DAY_LINES = 7  # day lines kept, newest; only the last is in the block
 READ_BACK = 5  # records read aloud when asked what it remembers
@@ -87,6 +87,8 @@ OPENING_WORDS = 4  # words of a reply held while they could still open a claim o
 REPAIRS = {name: _PROMPT[name] for name in ("unclear_again", "unknown_again", "asked_last")}
 ADMITS = re.compile(_RULES["admits"])  # "I don't know.", and the kernel's own last resort
 ASKS_AGAIN = re.compile(_RULES["asks_again"])  # "Sorry, say that again?"
+CLAUSE = re.compile(r"[,;:\u2014]|\bbut\b")  # where a sentence that admits may go on to answer (`moved_on`)
+FILLER = frozenset(("", "sorry", "pardon", "hmm", "hm", "well", "honestly", "oh", "um", "uh", "huh", "what"))  # no answer
 # Unclear lines in a row, the newest included, from which the answer is a move and the model is not asked.
 # ponytail: a guess (the design's "third in a row"); score replies to unclear lines in evals/companion.py.
 MAX_UNCLEAR = 3
@@ -521,13 +523,20 @@ def repairs(state: Companion, device: str) -> tuple[str, ...]:
 def moved_on(text: str, again, closed: bool = True) -> str:
     """`text` without the sentences that go round a loop again, whatever the note said: a second "I don't know"
     running, a second "say that again". While streaming (`closed` false) the sentence being written is held:
-    it could still become one. ponytail: patterns (the character's); a miss is one more "I don't know"."""
+    it could still become one. Only a sentence that says nothing else is dropped: "I don't know much about cars,
+    but the Civic is solid." is an answer, so every clause of it must go round the loop, filler aside.
+    ponytail: patterns (the character's) over clauses cut at commas and "but"; a miss is one more "I don't know",
+    never a lost answer. evals/companion.py on a journal counts both."""
     dropped = [loop for name, loop in (("unclear_again", ASKS_AGAIN), ("unknown_again", ADMITS)) if name in again]
     if not dropped:
         return text
     sentences = re.split(r"(?<=[.!?])\s+", text)
-    return " ".join(sentence for sentence in (sentences if closed else sentences[:-1])
-                    if not any(loop.search(_plain(sentence).strip()) for loop in dropped))
+    def loops(sentence: str) -> bool:
+        plain = _plain(sentence).strip()
+        clauses = [clause.strip() for clause in CLAUSE.split(plain) if clause.strip(" .!?") not in FILLER]
+        return any(loop.search(plain) for loop in dropped) and all(
+            any(loop.search(clause) for loop in dropped) for clause in clauses)
+    return " ".join(sentence for sentence in (sentences if closed else sentences[:-1]) if not loops(sentence))
 
 
 def move_only(state: Companion, device: str, tools) -> str:
@@ -719,17 +728,32 @@ def _unheard(input: dict | None) -> dict | None:
     return {**input, "media": {k: v for k, v in input["media"].items() if k != "heard"}}
 
 
+def told(exchange: Exchange) -> bool:
+    """Whether the model is shown `exchange`: Sage spoke in it, or a tool of it failed, was refused or reported
+    something. A turn it answered with no words is not conversation: 53% of its own past turns in the prompt
+    were empty replies it then copied (journal 11-20). ponytail: a wordless turn's tool is not shown while it
+    still runs ("What are you doing?" mid-song has no trace); show open calls if that is missed."""
+    return bool(exchange.reply.strip()) or any(call.outcome or call.done for call in exchange.calls)
+
+
+def _worth(exchanges, open) -> tuple[Exchange, ...]:
+    """`exchanges` without those that tell nothing and never will: no words, and no tool still to report."""
+    running = {effect.sequence for effect in open}
+    return tuple(x for x in exchanges if told(x) or any(call.sequence in running for call in x.calls))
+
+
 def windowed(exchanges: tuple[Exchange, ...], exchange: Exchange) -> tuple[Exchange, ...]:
-    """`exchanges` with one more, if Sage spoke in it: a turn it answered with no words is not conversation,
-    and 53% of its own past turns in the prompt were empty replies it then copied (journal 11-20)."""
-    if not exchange.reply.strip():
+    """`exchanges` with one more, if Sage spoke in it or chose a tool: the tool's result needs its exchange to
+    settle on, and `_settle` lets the exchange go if that result tells nothing (`told`)."""
+    if not (exchange.reply.strip() or exchange.calls):
         return exchanges
     exchanges += (exchange,)
     return exchanges if len(exchanges) <= WINDOW else exchanges[-KEPT:]
 
 
-def compile_prompt(state: Companion, device: str, declared: dict) -> CompiledPrompt:
-    """The prompt for the current turn of `device`, whose manifest is `declared`.
+def compile_prompt(state: Companion, device: str, declared: dict, now: float | None = None) -> CompiledPrompt:
+    """The prompt for the current turn of `device`, whose manifest is `declared`. With the time `now`, a day line
+    or open thread gone stale is left out of what is remembered (`_fresh`).
 
     The body's senses and tools follow the persona, the same on every turn of that device. Another
     body's exchanges are one narrated line each. This body's past answers appear as the JSON the model gave, cut to what was heard, each followed by what its
@@ -740,6 +764,7 @@ def compile_prompt(state: Companion, device: str, declared: dict) -> CompiledPro
     resort answered is left out: those are not the model's words, and it would say them again as its own.
     """
     persona, examples, typed = medium(declared)
+    state = replace(state, facts=_fresh(state.facts, now))
 
     def framed(line: str, input: dict | None = None, newest: bool = False) -> str:
         when = f"[{input['when']}]\n" if input and input.get("when") else ""
@@ -748,7 +773,7 @@ def compile_prompt(state: Companion, device: str, declared: dict) -> CompiledPro
         return when + ((_heard(line, input) if newest else line) if typed is None else typed.get(line, line))
     context = []
     for exchange in state.exchanges:
-        if exchange.reply in RESORTS:
+        if exchange.reply in RESORTS or not told(exchange):
             continue
         if exchange.device not in (device, ""):  # older checkpoints name no device: one body's, in full
             context += [*_acts(exchange.acts, device), _narrated(exchange)]
@@ -943,8 +968,8 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
         opened.append(Open(reply_sequence, turn.source, turn_id, "reply", now + REPLY_TIMEOUT_S))
     rows.append(Row("completed", "kernel", turn_id))
     mine, rest = _own(state.acts, turn.source)
-    exchange = Exchange(turn.text, text, reply_sequence, tuple(recorded), turn.source, input=_unheard(turn.input), acts=mine,
-                        output=output)
+    exchange = Exchange(turn.text, text, reply_sequence, tuple(recorded), turn.source, input=_unheard(turn.input),
+                        acts=mine if text else (), output=output)  # with no words they wait in `acts`: told once
     idle = 0 if state.topic and _notes_match(state)[1] else state.notes_idle + 1  # judged before the turn is added
     # What the body did on its own is told with the next line Sage speaks to: an unkept exchange leaves it waiting.
     return replace(state, turn=replace(turn, status="completed", text=""), open=state.open + tuple(opened),
@@ -967,10 +992,9 @@ def _core(facts) -> list[dict]:
     """The records in the system prompt's block: as much of the core as fits RECALL_CHARS, heads included."""
     used, shown = len(MEMORY) + (len(UNPLACED) + 1 if any(r["who"] != "owner" for r in facts) else 0), []
     for record in _ranked(facts)[0]:
-        used += len(_told(record)) + 3
-        if used > RECALL_CHARS:
-            break
-        shown.append(record)
+        if used + len(_told(record)) + 3 <= RECALL_CHARS:  # one too long never cuts the shorter ones after it
+            used += len(_told(record)) + 3
+            shown.append(record)
     return shown
 
 
@@ -989,9 +1013,9 @@ def recall(facts) -> str:
 
 
 def _recalled(state: Companion) -> str:
-    """Past RANKED_PAST records, up to RECALL_EXTRA that match the newest line and are not in the block, on that
-    line only (like notes)."""
-    if len(state.facts) <= RANKED_PAST or state.turn.text.startswith("["):
+    """Up to RECALL_EXTRA records that match the newest line and are not in the block, on that line only (like
+    notes): however few there are, one the block left out is still found by asking for it."""
+    if state.turn.text.startswith("["):
         return ""
     shown = [r["id"] for r in _core(state.facts)]
     found = relevant(tuple(_told(r) for r in state.facts if r["id"] not in shown), state.turn.text, RECALL_EXTRA)
@@ -1005,6 +1029,12 @@ def _record(facts, who: str, kind: str, text: str, at: float, source: int | None
             "from": source}
 
 
+def _fresh(facts, now: float | None) -> tuple[dict, ...]:
+    """`facts` without day lines and open threads past STALE_S at `now` (None: no clock, all of them). Read past
+    here, in every prompt and read-back; dropped for good only where `_kept` runs."""
+    return tuple(r for r in facts if now is None or not (r["kind"] in ("day", "thread") and now - r["at"] > STALE_S))
+
+
 def _kept(facts, record: dict | None, now: float) -> tuple[dict, ...]:
     """`facts` with `record`, if there is one, added or put in place of the one with its id; then without day
     lines and open threads past STALE_S, day lines past the newest DAY_LINES, and whatever is over MAX_RECORDS
@@ -1012,7 +1042,7 @@ def _kept(facts, record: dict | None, now: float) -> tuple[dict, ...]:
     known = record and any(r["id"] == record["id"] for r in facts)
     facts = [record if r["id"] == record["id"] else r for r in facts] if known else [*facts, *([record] if record else ())]
     days = [r["id"] for r in facts if r["kind"] == "day"][:-DAY_LINES]
-    facts = [r for r in facts if r["id"] not in days and not (r["kind"] in ("day", "thread") and now - r["at"] > STALE_S)]
+    facts = [r for r in _fresh(facts, now) if r["id"] not in days]
     while len(facts) > MAX_RECORDS:
         facts.remove(next((r for r in facts if r["kind"] != "person"), facts[0]))
     return tuple(facts)
@@ -1020,9 +1050,10 @@ def _kept(facts, record: dict | None, now: float) -> tuple[dict, ...]:
 
 def records(facts) -> tuple[dict, ...]:
     """`facts` as records. Before records a fact was its text alone, about nobody in particular and from no
-    line (an earlier checkpoint, a bench scenario): each is kept, as an unknown voice's."""
+    line (an earlier checkpoint, a bench scenario): each is kept, as the owner's, since only the person's own
+    lines were remembered then."""
     return tuple(fact if isinstance(fact, dict) else
-                 {"id": n, "who": "unknown", "kind": "person", "text": fact, "at": 0.0, "from": None}
+                 {"id": n, "who": "owner", "kind": "person", "text": fact, "at": 0.0, "from": None}
                  for n, fact in enumerate(facts, 1))
 
 
@@ -1123,18 +1154,24 @@ def written(state: Companion, end: int | None, lines, output: str | None, now: f
     return replace(state, facts=_kept(facts, None, now), cursor=max(state.cursor, end), due=max(0, state.due - 1)), tuple(rows)
 
 
-def remembering(state: Companion, device: str, head: int, cap: int = manifest.MAX_REPLY):
+def remembering(state: Companion, device: str, head: int, cap: int = manifest.MAX_REPLY, now: float | None = None):
     """The kernel's own answer when `device`'s newest line asks it to forget, or what it remembers: (state,
     rows, words), no model asked; words "" for any other line. Only for a line said to Sage, clearly heard, and
-    not by a guest. Forgetting drops every record that holds all the words named, and lets go of everything said
-    up to now (`head`, the journal's newest row): the writer never reads it, so what was just said cannot come
-    back as a memory. ponytail: patterns (the character's), English in the default file; "forget it" meaning
-    "never mind" costs this conversation's memories, on the side of forgetting."""
+    not by a guest; a forget from any other line changes nothing and is answered that nothing was forgotten, and
+    why: the model cannot forget, and may say it did. Forgetting drops every record that holds all the words
+    named, and lets go of everything said up to now (`head`, the journal's newest row): the writer never reads
+    it, so what was just said cannot come back as a memory. ponytail: patterns (the character's), English in the
+    default file; "forget it" meaning "never mind" costs this conversation's memories, on the side of forgetting."""
     turn = lane(state, device)
-    if not turn.addressed or turn.speaker == "guest" or turn.text.startswith("[") or misheard(turn.text, turn.input):
+    if turn.text.startswith("["):
         return state, (), ""
     plain = " ".join(re.sub(r"[^\w\s']", " ", _plain(turn.text)).split())
-    if found := FORGETS.search(plain):
+    found = FORGETS.search(plain)
+    refused = ("kept_aside" if not turn.addressed else "kept_guest" if turn.speaker == "guest"
+               else "kept_unclear" if misheard(turn.text, turn.input) else "")
+    if refused:
+        return state, (), _LINES[refused] if found else ""
+    if found:
         named = set(_terms(" ".join(w for w in (found["what"] or "").split() if w not in FORGET_THAT)))
         gone = [r for r in state.facts if named and named <= set(_terms(r["text"]))]
         rows = tuple(Row("forget", "kernel", turn.turn_id, {"id": r["id"]}) for r in gone) + (
@@ -1143,7 +1180,8 @@ def remembering(state: Companion, device: str, head: int, cap: int = manifest.MA
         return state, rows, _NOTES["forgot"].format(count=len(gone)) if gone else _LINES["forgot_none"]
     if not ASKS_MEMORY.search(plain):
         return state, (), ""
-    texts = [r["text"] + ("" if r["text"][-1:] in ".!?" else ".") for part in _ranked(state.facts) for r in part]
+    texts = [r["text"] + ("" if r["text"][-1:] in ".!?" else ".")
+             for part in _ranked(_fresh(state.facts, now)) for r in part]
     if not texts:
         return state, (), _LINES["remembers_none"]
 
@@ -1159,8 +1197,9 @@ def remembering(state: Companion, device: str, head: int, cap: int = manifest.MA
 
 
 def amend(state: Companion, op: str, now: float, id: int | None = None, text: str = ""):
-    """The owner's own change, from `python -m sage memory`: add a record, edit one's text, or forget one.
-    ValueError, saying why, when it cannot be done."""
+    """The owner's own change, from `python -m sage memory`: add a record, edit one's text, or forget one. A
+    record the owner edits is the owner's from then on, whoever said it first. ValueError, saying why, when it
+    cannot be done."""
     old = next((r for r in state.facts if r["id"] == id), None)
     text = _clean(text)
     if op != "add" and old is None:
@@ -1169,7 +1208,8 @@ def amend(state: Companion, op: str, now: float, id: int | None = None, text: st
         raise ValueError("it needs some text")
     if op == "forget":
         return replace(state, facts=tuple(r for r in state.facts if r is not old)), (Row("forget", "owner", None, {"id": id}),)
-    record = {**old, "text": text, "at": now} if op == "edit" else _record(state.facts, "owner", "person", text, now, None)
+    record = ({**old, "who": "owner", "text": text, "at": now} if op == "edit"
+              else _record(state.facts, "owner", "person", text, now, None))
     return replace(state, facts=_kept(state.facts, record, now)), (Row("remember", "owner", None, record),)
 
 
@@ -1243,8 +1283,8 @@ def _settle(state: Companion, effect: Open, status: str, text: str = "", reason:
         return replace(exchange, calls=tuple(
             replace(call, outcome=_outcome(status, text, reason), done=done) if call.sequence == effect.sequence
             else call for call in exchange.calls))
-    return replace(state, open=tuple(o for o in state.open if o is not effect),
-                   exchanges=tuple(update(exchange) for exchange in state.exchanges))
+    open = tuple(o for o in state.open if o is not effect)
+    return replace(state, open=open, exchanges=_worth(map(update, state.exchanges), open))
 
 
 def _lasted(state: Companion, turn_id: str, key: str, duration_ms: int | None) -> Companion:
@@ -1330,13 +1370,14 @@ def _call(data: dict) -> Call:
 def decode(data: dict) -> Companion:
     # ponytail: formats are migrated here by shape; add a checkpoint version the next time one changes.
     # Before 0.2.0 an exchange also kept `repeat` (hidden from the model); it is dropped.
+    open = tuple(Open(**o) for o in data["open"])
     return Companion(
         turn=Turn(**data["turn"]),
-        exchanges=tuple(Exchange(**{**{k: v for k, v in x.items() if k != "repeat"},
-                                    "calls": tuple(map(_call, x["calls"])),
-                                    "acts": tuple(Act(**a) for a in x.get("acts", ()))}) for x in data["exchanges"]
-                        if x["reply"].strip()),  # once, a turn answered with no words was kept
-        open=tuple(Open(**o) for o in data["open"]), quiet_until=data.get("quiet_until"),
+        exchanges=_worth((Exchange(**{**{k: v for k, v in x.items() if k != "repeat"},
+                                      "calls": tuple(map(_call, x["calls"])),
+                                      "acts": tuple(Act(**a) for a in x.get("acts", ()))}) for x in data["exchanges"]),
+                         open),  # once, every turn answered with no words was kept
+        open=open, quiet_until=data.get("quiet_until"),
         facts=records(data.get("facts", ())), topic=data.get("topic", ""), notes=tuple(data.get("notes", ())),
         notes_idle=data.get("notes_idle", 0), acts=tuple(Act(**a) for a in data.get("acts", ())),
         lanes=tuple(Turn(**t) for t in data.get("lanes", ())),  # none before v1.2: one lane, `turn`

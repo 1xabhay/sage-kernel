@@ -56,7 +56,7 @@ def gated(lines) -> list[tuple[float, dict]] | None:
     state, spoke, asked, out = gate.Attention(), -math.inf, False, []
     for at, body in lines:
         signals = gate.Signals(now=at, spoke_at=spoke, asked=asked and at - spoke < gate.CLOSE_S,
-                               named=lambda word: word.strip("'s") == name)
+                               named=lambda word: word.removesuffix("'s") == name)
         outcome, _, state = gate.attend(body["text"], signals, state)
         if outcome == gate.ANSWER and body["replied"]:
             spoke, asked = body["replied"][0], body["replied"][1].rstrip().endswith("?")

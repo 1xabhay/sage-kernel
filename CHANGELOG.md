@@ -20,14 +20,19 @@ and every protocol change is listed under **Protocol**.
   not by a guest and clearly heard, and proposes at most 5 changes and a line about the day; the
   kernel refuses any that cites no such line. The call is dropped the moment a turn starts.
 - `facts` in the checkpoint are records `{id, who, kind, text, at, from}`. A checkpoint of an earlier
-  kernel loads with every fact kept (`who` unknown, `kind` person). At most 200, was 20.
+  kernel loads with every fact kept (`who` owner: only the person's own lines were remembered then;
+  `kind` person). At most 200, was 20.
 - The system prompt ends with at most 600 characters of memory (who they are, the last day, what is
-  open), records from an unknown voice apart and never greeted by name from; past 20 records, 2 more
-  that match ride on the newest line. The greeting may ask after one open thing, never more.
+  open), records from an unknown voice apart and never greeted by name from; up to 2 records it has
+  no room for ride on the newest line when they match it. A `day` or `thread` record older than 14
+  days is left out of every prompt and read-back at once, and dropped at the next writer commit. The greeting may ask after one open thing, never more.
 - "Forget about …" and "what do you remember?", said to Sage, are answered by the kernel with no
-  model call. A forget also keeps everything said so far in that conversation from the writer.
+  model call. A forget also keeps everything said so far in that conversation from the writer. A
+  forget from a guest, an unclear line or a line not said to Sage changes nothing, and the kernel
+  says that nothing was forgotten and why; the model is not asked.
 - Character keys added: `prompt.memory_none`, `memory_unplaced`, `recalled`, `recall_kinds`, `writer`,
-  `writer_known`, `writer_said`, `writer_answered`, `lines.forgot_none`, `remembers`, `remembers_none`,
+  `writer_known`, `writer_said`, `writer_answered`, `lines.forgot_none`, `kept_aside`, `kept_guest`,
+  `kept_unclear`, `remembers`, `remembers_none`,
   `templates.forgot`, `remembers_more`, `patterns.forgets`, `asks_memory`, `words.forget_that`;
   `prompt.memory` and `proactive.greet` reworded. A custom character file needs the new keys.
 - Sage is a companion on every speaking body (owner, 2026-11-21). The "mostly a move" persona, its

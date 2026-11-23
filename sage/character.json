@@ -54,6 +54,9 @@
     "watching": "Ooh, hard to say. Let's see!",
     "alive": "I'm not alive, and I don't have feelings like you do.",
     "forgot_none": "I had nothing on that, and I won't keep what we just said.",
+    "kept_aside": "I wasn't sure that was meant for me, so I haven't forgotten anything. Say it to me if you want me to.",
+    "kept_guest": "I haven't forgotten anything: I couldn't tell that was my person's voice. Could you say it once more?",
+    "kept_unclear": "I didn't hear that clearly, so I haven't forgotten anything. Could you say it again?",
     "remembers": "I remember this.",
     "remembers_none": "I don't remember anything about you yet."
   },
@@ -234,7 +237,7 @@
       "\\bbeats me\\b"
     ],
     "asks_again": [
-      "\\b(?:say|repeat) (?:that|it)(?: again)?\\b",
+      "\\b(?:say (?:that|it) again|repeat (?:that|it))\\b",
       "\\bcome again\\b",
       "\\b(?:can|could) you repeat\\b",
       "\\b(?:didn't|did not|couldn't|could not) (?:\\w+ )?(?:catch|hear|get) (?:that|you|it)\\b",

@@ -198,6 +198,34 @@ def strict(node):
     return kept
 
 
+def _pieces(response, usage: dict):
+    """The answer's text, piece by piece, from the vendor's event stream; its token counts go into `usage`.
+    OSError, like the network's own, for a stream that is cut, malformed, refused or ends before its
+    message_stop: a server or proxy that closes cleanly mid-answer raises nothing by itself."""
+    try:
+        for line in response:
+            if not line.startswith(b"data:"):
+                continue
+            event = json.loads(line[5:])
+            kind = event.get("type")
+            if kind == "error":
+                raise OSError(f"Hosted model: {event.get('error', {}).get('type')}"[:200])
+            if kind == "message_start":
+                usage.update(event.get("message", {}).get("usage") or {})
+            elif kind == "message_delta":
+                usage.update(event.get("usage") or {})
+                if event.get("delta", {}).get("stop_reason") == "refusal":
+                    raise OSError("Hosted model: refused")
+            elif kind == "content_block_delta" and event["delta"].get("type") == "text_delta" and event["delta"]["text"]:
+                yield event["delta"]["text"]
+            elif kind == "message_stop":
+                return
+    # IncompleteRead (cut inside a chunk) is an HTTPException, not an OSError; the rest are a malformed event.
+    except (http.client.HTTPException, ValueError, KeyError, TypeError, AttributeError) as error:
+        raise OSError(f"Hosted model: a broken stream ({type(error).__name__})") from None
+    raise OSError("Hosted model: the stream ended before the answer did")
+
+
 def hosted(key: str, model: str = HOSTED_MODEL, url: str = HOSTED_URL, stall_s: float = HOSTED_STALL_S):
     """A `decide(prompt, heard) -> answer` on the vendor's Messages API, streamed. `key` goes in one request
     header and nowhere else: no message, log line or error holds it."""
@@ -227,28 +255,15 @@ def hosted(key: str, model: str = HOSTED_MODEL, url: str = HOSTED_URL, stall_s: 
                 kind = "error"
             error.close()
             raise OSError(f"Hosted model: HTTP {error.code} {kind}"[:200]) from None
+        except http.client.HTTPException as error:  # an answer that is not HTTP
+            raise OSError(f"Hosted model: {type(error).__name__}") from None
         with response:
-            for line in response:
-                if not line.startswith(b"data:"):
-                    continue
-                event = json.loads(line[5:])
-                kind = event.get("type")
-                if kind == "error":
-                    raise OSError(f"Hosted model: {event.get('error', {}).get('type')}"[:200])
-                if kind == "message_start":
-                    usage.update(event.get("message", {}).get("usage") or {})
-                elif kind == "message_delta":
-                    usage.update(event.get("usage") or {})
-                    if event.get("delta", {}).get("stop_reason") == "refusal":
-                        raise OSError("Hosted model: refused")
-                elif kind == "content_block_delta" and event["delta"].get("type") == "text_delta" and event["delta"]["text"]:
-                    answer.append(event["delta"]["text"])
-                    if sum(map(len, answer)) > MAX_ANSWER:
-                        raise OSError("The model's answer is too long")
-                    first = first or time.monotonic()
-                    heard(answer[-1])
-                elif kind == "message_stop":
-                    break
+            for piece in _pieces(response, usage):
+                answer.append(piece)
+                if sum(map(len, answer)) > MAX_ANSWER:
+                    raise OSError("The model's answer is too long")
+                first = first or time.monotonic()
+                heard(piece)
         done = Answer("".join(answer))
         sent = sum(usage.get(name) or 0 for name in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
         done.timing = {"model": model, "prompt_tokens": sent, "gen_tokens": usage.get("output_tokens") or 0,

@@ -143,7 +143,7 @@ class Kernel:
         with self.lock:
             if self._running():
                 return
-            prompt = policy.compile_prompt(self.state, source, self.manifests[source])
+            prompt = policy.compile_prompt(self.state, source, self.manifests[source], self.clock())
         started = time.monotonic()
         try:
             self.warm(prompt, heard)
@@ -209,7 +209,7 @@ class Kernel:
                 self._presence(source, data["state"], data["confidence"])
             if kind == "submitted" and more:
                 declared = self.manifests.get(source, NOTHING)
-                prompt = policy.compile_prompt(state, source, declared)
+                prompt = policy.compile_prompt(state, source, declared, self.clock())
                 # A body may say its lines never go to the web (manifest.search false): a notebook's file stays.
                 web = self.search and declared.get("search", True)
                 known = tuple(record["text"] for record in state.facts)
@@ -257,7 +257,7 @@ class Kernel:
             self._commit(state, rows)
             self._hang_up()
             declared = self.manifests.get(device, NOTHING)
-            prompt = policy.compile_prompt(state, device, declared)
+            prompt = policy.compile_prompt(state, device, declared, now)
             threading.Thread(target=self._think, args=(device, turn_id, prompt, declared), daemon=True).start()
 
     def ticking(self, every: float = 0.25) -> None:
@@ -379,7 +379,7 @@ class Kernel:
             state, rows = policy.take_notes(policy.focus(self.state, source), source, query[:200],
                                             [p[:600] for p in passages])
             self._commit(state, rows)
-            return policy.compile_prompt(self.state, source, declared)
+            return policy.compile_prompt(self.state, source, declared, self.clock())
 
     def _think(self, source: str, turn_id: str, prompt: CompiledPrompt, declared: dict, query: str = "") -> None:
         senses = declared["senses"]
@@ -397,7 +397,7 @@ class Kernel:
             quiet = policy.move_only(self.state, source, declared["tools"])
             # "Forget that", "what do you remember": the kernel's own, exact, and done before any model could err.
             state, rows, memory = policy.remembering(policy.focus(self.state, source), source, self.journal.head,
-                                                     prompt.max_reply)
+                                                     prompt.max_reply, self.clock())
             self._commit(state, rows)
         try:
             if memory:

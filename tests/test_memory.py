@@ -14,6 +14,7 @@ import threading
 import time
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -135,11 +136,12 @@ class OldCheckpoints(unittest.TestCase):
         state = policy.decode(OLD)
         self.assertEqual([(r["id"], r["text"], r["from"]) for r in state.facts],
                          [(1, "Their name is Juno.", None), (2, "Likes oolong tea.", None)])
-        self.assertTrue(all(r["who"] == "unknown" for r in state.facts))  # nobody said whose voice it was
+        self.assertTrue(all(r["who"] == "owner" for r in state.facts))  # only the person's own lines were kept then
         self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
         system = policy.compile_prompt(policy.focus(state, "reachy"), "reachy", BODY).system
         self.assertIn("- Their name is Juno.", system)
         self.assertIn("- Likes oolong tea.", system)
+        self.assertNotIn(policy.UNPLACED, system)
 
     def test_an_earlier_journal_opens_and_its_facts_survive_the_kernel_s_next_commit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -150,6 +152,16 @@ class OldCheckpoints(unittest.TestCase):
             kernel = Kernel(Journal(path), lambda prompt, heard: "{}")  # its start commits a row
             self.assertEqual([r["text"] for r in Journal(path).state.facts], OLD["facts"])
             self.assertEqual(kernel.state.facts, Journal(path).state.facts)
+
+    def test_a_full_earlier_memory_loads_whole_and_every_fact_can_still_reach_a_prompt(self):
+        old = [f"Keeps bees in hive {n}." for n in range(1, 20)] + ["Their name is Juno."]  # 20: the earlier cap
+        state = policy.decode({**OLD, "facts": old})
+        self.assertEqual([r["text"] for r in state.facts], old)
+        self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
+        for line, text in (("What is my name?", "Their name is Juno."), ("How is hive 3?", "Keeps bees in hive 3.")):
+            asked = policy.submit(policy.focus(state, "reachy"), "reachy", "r2", line, {}, False)[0]
+            prompt = policy.compile_prompt(asked, "reachy", BODY)
+            self.assertIn(text, prompt.system + prompt.context[-1]["content"], line)
 
 
 class Conversations(Home):
@@ -412,7 +424,7 @@ class Recall(unittest.TestCase):
     def test_with_nothing_remembered_the_block_says_so(self):
         self.assertTrue(policy.recall(()).endswith(policy.NOTHING_YET))
 
-    def test_up_to_twenty_records_nothing_is_ranked_and_past_twenty_two_matching_ones_ride_on_the_newest_line(self):
+    def test_two_records_that_match_and_are_not_in_the_block_ride_on_the_newest_line(self):
         few = tuple(record(n, f"Keeps bees in hive {n}.", kind="like", at=float(n)) for n in range(1, 21))
         many = few + tuple(record(20 + n, text, kind="like", at=0.0) for n, text in enumerate(
             ("Grows tomatoes on the balcony.", "Their tomatoes won a prize.", "Tomatoes are their favourite.",
@@ -421,12 +433,45 @@ class Recall(unittest.TestCase):
         def newest(facts):
             state = policy.submit(Companion(facts=facts), "reachy", "r1", "How are my tomatoes doing?", {}, False)[0]
             return policy.compile_prompt(state, "reachy", BODY).context[-1]["content"]
-        self.assertEqual(newest(few[:19] + (record(20, "Their tomatoes won a prize.", kind="like", at=0.0),)).count("omatoes"), 1)
+        self.assertEqual(newest(few[:4] + (record(5, "Their tomatoes won a prize.", kind="like", at=0.0),)).count("omatoes"), 1)
         self.assertEqual(newest(many).count("omatoes"), 1 + policy.RECALL_EXTRA)  # the line's own, and two records
         self.assertNotIn("cello", newest(many))
 
     def test_a_name_from_a_fact_never_leaves_in_a_web_query(self):
         self.assertEqual(policy.needs_search("Who is Mika?", SURE, ("Their name is Mika.",)), "")
+
+    def test_a_record_the_block_has_no_room_for_rides_on_a_line_that_asks_for_it_however_few_there_are(self):
+        facts = (record(1, "Their name is Wren.", at=1.0),) + tuple(
+            record(n, f"Likes honey from hive {n}.", kind="like", at=float(n)) for n in range(2, 9))
+        state = policy.submit(Companion(facts=facts), "reachy", "r1", "What is my name?", {}, False)[0]
+        prompt = policy.compile_prompt(state, "reachy", BODY)
+        self.assertNotIn("Wren", prompt.system)  # five newer ones fill the block
+        self.assertIn("- Their name is Wren.", prompt.context[-1]["content"])
+
+    def test_a_record_too_long_for_the_block_does_not_cut_what_is_open_after_it(self):
+        room = policy.RECALL_CHARS - len(policy.MEMORY)
+        facts = (record(1, "Tea on Friday.", kind="thread", at=1.0), record(2, "y" * 100, at=2.0),
+                 record(3, "x" * (room - 53), at=3.0))  # 3 leaves 50 characters: not enough for 2, enough for 1
+        block = policy.recall(facts)
+        self.assertLessEqual(len(block), policy.RECALL_CHARS)
+        self.assertNotIn("yyy", block)
+        self.assertIn("Tea on Friday.", block)
+
+    def test_after_weeks_away_an_old_thread_and_day_line_are_not_offered_and_nothing_is_dropped(self):
+        facts = (record(1, "Their name is Wren.", at=0.0), record(2, "Their sister visits on Friday.", kind="thread", at=0.0),
+                 record(3, "They talked about soup.", kind="day", at=0.0))
+        greeting = policy.start_proactive(Companion(facts=facts), "reachy", "k1", "greet")[0]
+        asked = policy.submit(Companion(facts=facts), "reachy", "r1", "What about Friday and the soup?", {}, False)[0]
+        for state in (greeting, asked):
+            fresh = policy.compile_prompt(state, "reachy", BODY, now=policy.STALE_S - 1)
+            self.assertIn("Friday", fresh.system)
+            self.assertIn("soup", fresh.system)
+            stale = policy.compile_prompt(state, "reachy", BODY, now=policy.STALE_S + 1)
+            told = stale.system + "".join(m["content"] for m in stale.context)  # the block, and what rides on the line
+            self.assertIn("Wren", told)
+            self.assertNotIn("sister", told)
+            self.assertNotIn("talked about soup", told)
+            self.assertEqual(state.facts, facts)  # read past, not thrown away: only the writer or the owner drops
 
 
 class Spoken(Home):
@@ -485,12 +530,40 @@ class Spoken(Home):
         self.say(kernel, "Forget about the pills.", speaker="guest")
         self.say(kernel, "Forget about the pills.", addressed=False, speaker="unknown")
         self.say(kernel, "What do you remember about me?", speaker="guest")
-        self.assertEqual((self.texts(kernel), len(self.asked)), (["Takes their pills at nine."], 3))
+        self.assertEqual((self.texts(kernel), len(self.asked)), (["Takes their pills at nine."], 1))  # the model: the last
 
     def test_remember_this_is_answered_by_the_model_and_written_after_the_conversation(self):
         kernel = self.kernel()
         self.assertEqual(self.say(kernel, "Remember, I take my pills at nine."), "Reply 1.")  # s3: confirmed in words
         self.assertEqual(kernel.state.facts, ())
+
+    def test_a_forget_it_will_not_act_on_is_answered_by_the_kernel_saying_nothing_was_forgotten_and_why(self):
+        kernel = self.remembered("Takes their pills at nine.")
+        cursor = kernel.state.cursor
+        said = [self.say(kernel, "Forget that.", speaker="guest"),  # the owner's own short line can score as a guest's
+                self.say(kernel, "Forget that.", input={"medium": "speech", "confidence": 0.4}),
+                self.say(kernel, "Forget about the pills.", addressed=False, speaker="unknown")]
+        self.assertEqual(said, [policy._LINES[key] for key in ("kept_guest", "kept_unclear", "kept_aside")])
+        self.assertEqual(self.asked, [])  # never the model: it cannot forget, and may say it did
+        self.assertEqual((self.texts(kernel), kernel.state.cursor), (["Takes their pills at nine."], cursor))
+        self.assertEqual(self.rows(kernel, "forget"), [])
+        for line in said:
+            self.assertLessEqual(len(line), manifest.MAX_REPLY)
+
+    def test_three_weeks_on_the_kernel_neither_offers_nor_reads_back_an_old_thread_and_still_holds_it(self):
+        kernel = self.kernel(write=None)  # no writer has run since: nothing has dropped it yet
+        thread = record(1, "Their sister visits on Friday.", kind="thread", at=self.clock())
+        with kernel.lock:
+            kernel._commit(replace(kernel.state, facts=(thread, record(2, "Their name is Wren.", at=self.clock()))),
+                           (policy.Row("remember", "writer", None, thread),))
+        self.say(kernel, "Hello Sage.")
+        self.assertIn("Friday", self.asked[-1].system)
+        self.later(kernel, 21 * 86400.0)
+        self.say(kernel, "Hello Sage.")
+        self.assertNotIn("Friday", self.asked[-1].system)
+        self.assertIn("Wren", self.asked[-1].system)
+        self.assertNotIn("Friday", self.say(kernel, "What do you remember about me?"))
+        self.assertIn(thread, kernel.state.facts)
 
 
 class OwnerCommand(Home):
@@ -537,6 +610,15 @@ class OwnerCommand(Home):
         code, out = self.run_memory("list", directory=empty)
         self.assertEqual((code, list(empty.iterdir())), (1, []))  # never makes a journal where there was none
         self.assertIn(str(empty), out)
+
+    def test_a_record_the_owner_edits_becomes_the_owner_s(self):
+        kernel = self.kernel()
+        with kernel.lock:
+            unplaced = record(1, "Their name is Wren.", who="unknown")
+            kernel._commit(replace(kernel.state, facts=(unplaced,)), (policy.Row("remember", "writer", None, unplaced),))
+        self.assertEqual(self.run_memory("edit", "1", "Their name is Wren.")[0], 0)
+        self.assertEqual([(r["who"], r["text"]) for r in Journal(kernel.journal.path).state.facts],
+                         [("owner", "Their name is Wren.")])
 
     def test_the_command_runs_as_python_m_sage_memory_on_the_folder_the_environment_names(self):
         kernel = self.kernel()
@@ -644,6 +726,15 @@ class OfflineScore(Home):
         shown = []  # and even it was shown nothing of the TV's, a guest's or a half-heard line
         scored.score(lambda prompt, heard: shown.append(prompt.context[-1]["content"]) or "{}", cases)
         self.assertFalse(any(word in text for text in shown for word in ("Lena", "Tomas", "spare key")))
+
+    def test_the_gate_s_replay_knows_the_body_s_name(self):
+        from evals import memory as scored
+        lines = [(n * 100.0, {"text": text, "replied": None}) for n, text in enumerate((
+            f"The weather is nice, {policy.NAME}.", f"That is {policy.NAME}'s chair.", "The weather is nice."))]
+        replayed = scored.gated(lines)
+        if replayed is None:
+            self.skipTest("the body's gate is not in the kernel's image")
+        self.assertEqual([body["addressed"] for _, body in replayed], [True, True, False])
 
 
 if __name__ == "__main__":

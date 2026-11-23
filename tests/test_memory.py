@@ -389,6 +389,28 @@ class TheWriter(Home):
         self.later(kernel, 120)
         self.assertEqual(len(self.wrote), 2)
 
+    def test_a_writer_that_keeps_failing_is_asked_less_and_less_often_and_never_drops_the_conversation(self):
+        kernel = self.kernel()
+        self.say(kernel, "I like oolong tea.")
+
+        def down(prompt):
+            raise OSError("the stream ended before the answer did")
+        self.writes = down
+        self.later(kernel)
+        asked = []
+        for _ in range(240):  # four hours, a minute at a time
+            self.later(kernel, 60)
+            asked.append(len(self.wrote))
+        self.assertEqual(asked[:7], [2, 2, 3, 3, 3, 3, 4])  # after 1 minute, then 2 more, then 4 more
+        self.assertLessEqual(asked[-1], 10)  # ponytail: at most hourly in the end, was every minute for ever
+        self.assertEqual(asked[-1] - asked[-61], 1)  # and still asked: it is owed until it is written
+        self.assertEqual((kernel.state.due, kernel.state.cursor, self.rows(kernel, "written")), (1, 0, []))
+        self.writes = lambda prompt: {"operations": [{"op": "add", "kind": "like", "text": "Likes oolong tea.",
+                                                      "from": cited(prompt, "I like oolong tea.")}], "day": ""}
+        self.later(kernel, 3600)
+        self.assertEqual((self.texts(kernel), kernel.state.due), (["Likes oolong tea."], 0))
+        self.assertEqual(kernel.write_fails, 0)  # the next failure waits a minute again
+
     def test_without_a_writer_conversations_still_end_and_nothing_is_written(self):
         kernel = self.kernel(write=None)
         self.say(kernel, "I like oolong tea.")
@@ -621,6 +643,47 @@ class Spoken(Home):
         self.assertIn("Wren", self.asked[-1].system)
         self.assertIn("Wren", self.say(kernel, "What do you remember about me?", speaker="unknown"))
 
+    def test_a_guest_s_turn_holds_none_of_what_was_said_with_memory_in_reach_and_all_of_their_own(self):
+        kernel = self.remembered("Their name is Wren.", "Takes their pills at nine.")
+        self.assertIn("at nine", self.say(kernel, "What do you remember about me?"))  # read back to the owner
+        self.say(kernel, "Is it time for my tablets yet?")  # answered with the records in the prompt
+        self.say(kernel, "My name is Ada, I'm visiting.", speaker="guest")
+        self.say(kernel, "What did you just tell them?", speaker="guest")
+        context = self.asked[-1].context
+        told = self.asked[-1].system + "".join(m["content"] for m in context)
+        for secret in ("Wren", "at nine", "tablets", "Reply 1."):  # the read-back, the owner's line, the answer to it
+            self.assertNotIn(secret, told)
+        # A guest is remembered for one conversation: their own lines and the answers to them, in full.
+        self.assertEqual([m["role"] for m in context], ["user", "assistant", "user"])
+        self.assertIn("My name is Ada, I'm visiting.", context[0]["content"])
+        self.assertEqual(json.loads(context[1]["content"])["reply"], "Reply 2.")
+
+    def test_what_a_guest_said_reaches_the_owner_s_turn_as_a_guest_s_and_never_as_their_own_line(self):
+        kernel = self.remembered("Their name is Wren.")
+        self.say(kernel, "Hello Sage.")
+        self.say(kernel, "My name is Ada, I'm visiting.", speaker="guest")
+        self.say(kernel, "Who was that?")
+        context = self.asked[-1].context
+        self.assertEqual([m["role"] for m in context], ["user", "assistant", "tool", "user"])  # the owner's own in full
+        self.assertEqual(context[2]["content"], '(a guest) they said "My name is Ada, I\'m visiting."; you said "Reply 2."')
+        self.assertTrue(all("Ada" not in m["content"] for m in context if m["role"] != "tool"))
+        self.assertEqual(Journal(kernel.journal.path).state.exchanges, kernel.state.exchanges)  # kept across a restart
+
+    def test_a_guest_cut_off_mid_reply_is_still_the_guest_s_exchange(self):
+        state = policy.submit(Companion(), "reachy", "g1", "My name is Ada.", {}, False, addressed=True, speaker="guest")[0]
+        state = policy.report_turn(state, "reachy", "g1", None, "interrupted", "Hello A", None, {})[0]
+        state = policy.submit(state, "reachy", "o1", "Who was that?", {}, False, addressed=True, speaker="owner")[0]
+        self.assertEqual([m["role"] for m in policy.compile_prompt(state, "reachy", BODY).context], ["tool", "user"])
+
+    def test_a_body_that_marks_no_voice_keeps_every_exchange_in_every_turn_as_before(self):
+        kernel = self.remembered("Takes their pills at nine.")
+        self.say(kernel, "What do you remember about me?", speaker="unknown")
+        self.say(kernel, "Is it time for my tablets yet?", speaker="unknown")
+        self.say(kernel, "Thanks.", speaker="unknown")
+        context = self.asked[-1].context
+        self.assertEqual([m["role"] for m in context], ["user", "assistant"] * 2 + ["user"])
+        self.assertIn("at nine", context[1]["content"])
+
 
 class OwnerCommand(Home):
     def run_memory(self, *args, directory=None):
@@ -690,7 +753,8 @@ class OwnerCommand(Home):
 class WriterProvider(unittest.TestCase):
     """sage.adapters.model.writer: the local model's call for memory, which a turn can end at once."""
 
-    def serve(self, answer):
+    def serve(self, answer, raw=None, hold=False):
+        """An Ollama that streams `answer` and its done chunk; or the bytes `raw` and no more (`hold`: then waits)."""
         test, self.requests, self.release = self, [], threading.Event()
 
         class Handler(BaseHTTPRequestHandler):
@@ -701,8 +765,13 @@ class WriterProvider(unittest.TestCase):
                     return
                 self.send_response(200)
                 self.end_headers()
-                for piece, done in ((answer[:5], False), (answer[5:], False), ("", True)):
+                if raw:
+                    self.wfile.write(raw)
+                for piece, done in ((answer[:5], False), (answer[5:], False), ("", True))[:None if raw is None else 0]:
                     self.wfile.write(json.dumps({"message": {"content": piece}, "done": done}).encode() + b"\n")
+                if hold:
+                    self.wfile.flush()
+                    test.release.wait(10)  # a model still writing its answer
 
             def log_message(self, *args):
                 pass
@@ -737,6 +806,34 @@ class WriterProvider(unittest.TestCase):
         thread.join(5)
         self.assertEqual((len(failed), thread.is_alive()), (1, False))
         self.assertLess(time.monotonic() - began, 2)
+
+    def test_a_stream_that_is_cut_malformed_or_over_before_its_done_chunk_is_a_failed_call_never_an_answer(self):
+        prompt = policy.writer_prompt((), [(7, "owner", "I like oolong tea.", "")])
+        piece = json.dumps({"message": {"content": '{"operations": [], "day": ""}'}, "done": False}).encode() + b"\n"
+        for raw in (piece,  # the whole answer, and the server gone before it said so
+                    piece[:40],  # cut inside a chunk
+                    piece + b"<html>bad gateway</html>\n", piece + b"[]\n", b""):
+            heard = []
+            with self.assertRaises(OSError, msg=raw):
+                model.writer(self.serve("", raw=raw), "qwen3:4b")(prompt, heard.append)
+
+    def test_hanging_up_mid_answer_fails_the_call_at_once_with_what_came_so_far_thrown_away(self):
+        piece = json.dumps({"message": {"content": '{"operations": ['}, "done": False}).encode() + b"\n"
+        write, heard, ended = model.writer(self.serve("", raw=piece, hold=True), "qwen3:4b"), [], []
+
+        def call():
+            try:
+                ended.append(write(policy.writer_prompt((), [(7, "owner", "I like oolong tea.", "")]), heard.append))
+            except OSError as error:
+                ended.append(error)
+        thread = threading.Thread(target=call, daemon=True)
+        thread.start()
+        self.assertTrue(until(lambda: heard))
+        began = time.monotonic()
+        write.hang_up()
+        thread.join(5)
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertIsInstance(ended[0], OSError)
 
     def test_the_writer_is_never_a_remote_model_over_plain_http(self):
         with self.assertRaises(ValueError):

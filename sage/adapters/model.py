@@ -117,7 +117,8 @@ WRITER_PREDICT = 500
 
 def writer(url: str, model: str):
     """A `write(prompt, heard) -> answer` for the kernel's memory writer, on the Ollama at `url`, never streamed
-    to anyone. `write.hang_up()`, from any thread, ends a call in flight at once, even one still waiting for
+    to anyone. OSError for a call that did not end with the model's own done chunk: the kernel keeps the
+    conversation and asks again later, where half an answer would have been its last word. `write.hang_up()`, from any thread, ends a call in flight at once, even one still waiting for
     its first piece: the model server stops when its client is gone, so a turn never queues behind the writer.
     (`provider` cannot: urllib keeps its socket to itself.)"""
     if not model or _bad(url):
@@ -130,7 +131,9 @@ def writer(url: str, model: str):
         secure = parsed.scheme == "https"
         call = (http.client.HTTPSConnection if secure else http.client.HTTPConnection)(
             parsed.hostname, parsed.port, timeout=TIMEOUT_S)
-        calls.append(call)
+        call.connect()
+        # The socket, not the connection: http.client lets go of its own once a response has no length.
+        calls.append(sock := call.sock)
         try:
             call.request("POST", "/api/chat", json.dumps({
                 "model": model, "messages": prompt.messages(), "format": prompt.format, "stream": True, "think": False,
@@ -139,31 +142,25 @@ def writer(url: str, model: str):
             if response.status != 200:
                 raise OSError(f"Ollama: HTTP {response.status}")
             answer = []
-            for line in response:
-                chunk = json.loads(line) if line.strip() else {}
-                if "error" in chunk:
-                    raise OSError(f"Ollama: {chunk['error']}")
-                if piece := chunk.get("message", {}).get("content", ""):
+            for piece, _ in _chunks(response):  # cut, malformed or over before its done chunk: OSError, no answer
+                if piece:
                     answer.append(piece)
                     if sum(map(len, answer)) > MAX_ANSWER:
                         raise OSError("The writer's answer is too long")
                     heard(piece)
-                if chunk.get("done"):
-                    break
             return "".join(answer)
         except http.client.HTTPException as error:  # hung up mid-answer, or a server that is not Ollama
             raise OSError(f"Ollama: {type(error).__name__}") from None
         finally:
-            calls.remove(call)
+            calls.remove(sock)
             call.close()
 
     def hang_up() -> None:
-        for call in calls.copy():  # the calling thread removes its own
-            if call.sock is not None:
-                try:
-                    call.sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass  # already gone
+        for sock in calls.copy():  # the calling thread removes its own
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # already gone
     write.hang_up = hang_up
     return write
 

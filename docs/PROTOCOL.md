@@ -429,6 +429,12 @@ after a conversation, never during a turn:
   that it keeps that for its person. A device that sends no speaker mark
   cannot tell voices apart: every voice is its person's there, so the
   privacy starts when the device has a voiceprint and marks each line.
+  The same holds for the conversation so far: a guest's prompt holds only
+  the earlier exchanges a guest spoke, since any other was answered with
+  memory in reach and may say it (a read-back, a reply that used a record).
+  On any other turn a guest's exchange is one narrated line (`(a guest)
+  they said "…"; you said "…"`), never the person's own line. With no
+  speaker marks every exchange is in every prompt, as before.
   A fact from a checkpoint before records loads as an `owner` `person`
   record.
 - The system message ends with at most 600 characters of them: up to 5

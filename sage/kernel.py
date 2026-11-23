@@ -23,7 +23,10 @@ PROTOCOLS = (1,)
 MAX_WAIT_S = 25.0
 MIN_CONFIDENCE = 0.5  # a seen edge below this is journaled but is no arrival (lead, 2026-10-20)
 NOTHING = {"senses": (), "tools": ()}
-WRITER_RETRY_S = 60.0  # after a writer call that failed (its model down), before the next; ponytail: a guess
+# After a writer call that failed (its model down, its stream cut), before the next: doubled for each failure
+# in a row, an hour at most, so a writer that never works costs one call an hour and is still owed. A kernel
+# restart starts again at a minute. ponytail: guesses; count "could not write memory" in the log to set them.
+WRITER_RETRY_S, WRITER_RETRY_MAX_S = 60.0, 3600.0
 # What this kernel serves beyond v1's core, so a device can degrade gracefully instead of probing (v1.1).
 FEATURES = ("acted", "body", "done_text", "health", "input", "notes", "presence", "saw", "search")
 
@@ -59,6 +62,7 @@ class Kernel:
         # The memory writer: a model call of the same shape, made between conversations and dropped for any
         # turn (`write.hang_up()`, if it has one, ends a call in flight at once). None: nothing is written.
         self.write, self.idle_s, self.writing, self.write_after = write, idle_s, False, 0.0
+        self.write_fails = 0  # writer calls failed in a row
         self.hung = False  # the writer's call in flight was dropped for a turn
         # Presence is not kept across restarts, so the first seen after one is an arrival; quiet is kept.
         self.timings = timings
@@ -268,6 +272,10 @@ class Kernel:
             except (OSError, sqlite3.Error) as caught:
                 print(f"sage: could not start a proactive turn: {caught}", file=sys.stderr)
 
+    def _write_later(self) -> None:
+        self.write_after = self.clock() + min(WRITER_RETRY_S * 2 ** self.write_fails, WRITER_RETRY_MAX_S)
+        self.write_fails += 1
+
     def _write(self) -> None:
         """Read one closed conversation into memory: the lines said to Sage in it go to the writer, and what it
         answers is checked and kept (policy.written). Dropped the moment a turn runs, and run again from the
@@ -291,10 +299,11 @@ class Kernel:
             except Exception as caught:  # noqa: BLE001 -- memory can wait: the conversation stays unread
                 with self.lock:
                     if not self.hung:  # hung up for a turn is no failure
-                        self.write_after = self.clock() + WRITER_RETRY_S
+                        self._write_later()
                         print(f"sage: could not write memory: {type(caught).__name__}: {caught}"[:300], file=sys.stderr)
                 return
             with self.lock:
+                self.write_fails = 0
                 state, rows = policy.written(self.state, end, lines, output, self.clock())
                 self._commit(state, rows)
                 kept = sum(row.kind in ("remember", "forget") for row in rows)
@@ -304,7 +313,7 @@ class Kernel:
             for source in changed if self.warm else ():  # a new system prompt, cold in the model server's cache
                 threading.Thread(target=self._warm, args=(source,), daemon=True).start()
         except (OSError, sqlite3.Error) as caught:  # the journal: likewise, later
-            self.write_after = self.clock() + WRITER_RETRY_S
+            self._write_later()
             print(f"sage: could not write memory: {caught}", file=sys.stderr)
         finally:
             with self.lock:

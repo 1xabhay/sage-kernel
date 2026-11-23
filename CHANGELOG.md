@@ -33,6 +33,14 @@ and every protocol change is listed under **Protocol**.
 - Memory is the owner's to read (owner, 2026-11-23). The prompt of a line marked `Sage-Speaker: guest`
   holds no record, in the block or on the line, and a guest's "what do you remember?" is answered by
   the kernel, not the model. A line with no speaker mark (no voiceprint enrolled) reads memory as before.
+- A guest's prompt also holds none of the conversation's exchanges but those a guest spoke: the others
+  were answered with memory in the prompt, so a read-back or a reply that used a record could be asked for
+  again. On a turn that is not a guest's, a guest's exchange is one narrated line (`(a guest) they said …`),
+  not a line of the person's own. With no speaker marks nothing changes. Exchanges in the checkpoint gain `guest`.
+- A memory writer stream that is cut, malformed or ends before its `done` chunk is a failed write: the
+  conversation stays unread and is asked for again, where half an answer used to be taken as the whole and
+  the conversation passed over for good. Failed writes in a row wait 1 minute, then double, to at most an
+  hour (was every minute). Hanging up for a turn also ends a call whose response had no length.
 - The person's name is first in the memory block, then the rest of who they are, then likes. A record
   from an unknown voice that rides on the newest line sits under the never-greet-by-name note.
 - A record the kernel drops for its age or for room leaves a `forget` row (`why`: `old`, `full`).

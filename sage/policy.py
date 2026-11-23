@@ -163,6 +163,7 @@ class Exchange:
     input: dict = field(default_factory=dict)  # how the line came in (submitted.input), if the device said
     acts: tuple[Act, ...] = ()  # what the body did on its own before this line, told just before it
     output: str = ""  # the model's raw answer, as it streamed: the bytes the model server has cached
+    guest: bool = False  # the body said a guest spoke the line: answered with no memory in the prompt
 
 
 @dataclass(frozen=True)
@@ -651,12 +652,14 @@ def _acts(acts, device: str) -> list[dict]:
 
 def _narrated(exchange: Exchange) -> dict:
     """An exchange on another body, told in one line: its answer JSON, tools and reports would be echoed as
-    this body's own (design §10 row 5). ponytail: each side cut to DONE_TEXT; a summary if that loses too much."""
+    this body's own (design §10 row 5). A guest's exchange likewise, on a turn that is not a guest's: in full it
+    would read as the person's own line. ponytail: each side cut to DONE_TEXT; a summary if that loses too much."""
     def cut(text) -> str:
         return " ".join(text.split())[:DONE_TEXT]
     they = "" if exchange.user.startswith("[") else f'they said "{cut(exchange.user)}"; '  # [a kernel note]
     said = f'you said "{cut(exchange.reply)}"' if exchange.reply else "you said nothing"
-    return {"role": "tool", "content": f"(on {exchange.device}) {they}{said}"}
+    where = "a guest" if exchange.guest else f"on {exchange.device}"
+    return {"role": "tool", "content": f"({where}) {they}{said}"}
 
 
 def take_notes(state: Companion, source: str, topic: str, passages):
@@ -774,6 +777,12 @@ def compile_prompt(state: Companion, device: str, declared: dict, now: float | N
     # so no phrasing can read it back. A body that sends no mark cannot tell voices apart (no voiceprint
     # enrolled): every voice is its person's there, as it was before voiceprints, or the owner would lose
     # their own memory. ponytail: the model server re-reads the prompt after a guest's turn (the system text changed).
+    # The same line runs through the conversation's earlier exchanges. A guest's turn holds only those a guest
+    # spoke: every other was answered with memory in the prompt, so its reply may say what is remembered (a
+    # read-back, an answer that used a record), and a guest's were themselves compiled from guests' alone.
+    # A turn that is not a guest's holds a guest's exchange as one narrated line, never as its person's own.
+    # ponytail: the owner's own line scored as a guest's is answered without the conversation so far; a body
+    # unsure of the voice should send no mark rather than `guest` if that is heard too often.
     mine = state.turn.speaker != "guest"
     state = replace(state, facts=_fresh(state.facts, now) if mine else ())
 
@@ -784,9 +793,10 @@ def compile_prompt(state: Companion, device: str, declared: dict, now: float | N
         return when + ((_heard(line, input) if newest else line) if typed is None else typed.get(line, line))
     context = []
     for exchange in state.exchanges:
-        if exchange.reply in RESORTS or not told(exchange):
+        if exchange.reply in RESORTS or not told(exchange) or (not mine and not exchange.guest):
             continue
-        if exchange.device not in (device, ""):  # older checkpoints name no device: one body's, in full
+        # older checkpoints name no device: one body's, in full
+        if exchange.device not in (device, "") or (mine and exchange.guest):
             context += [*_acts(exchange.acts, device), _narrated(exchange)]
             continue
         context += [*_acts(exchange.acts, device),
@@ -981,7 +991,7 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
     rows.append(Row("completed", "kernel", turn_id))
     mine, rest = _own(state.acts, turn.source)
     exchange = Exchange(turn.text, text, reply_sequence, tuple(recorded), turn.source, input=_unheard(turn.input),
-                        acts=mine if text else (), output=output)  # with no words they wait in `acts`: told once
+                        acts=mine if text else (), output=output, guest=turn.speaker == "guest")  # with no words they wait in `acts`: told once
     idle = 0 if state.topic and _notes_match(state)[1] else state.notes_idle + 1  # judged before the turn is added
     # What the body did on its own is told with the next line Sage speaks to: an unkept exchange leaves it waiting.
     return replace(state, turn=replace(turn, status="completed", text=""), open=state.open + tuple(opened),
@@ -1358,7 +1368,8 @@ def report_turn(state: Companion, source: str, turn_id: str, reply: dict | None,
         state = replace(state, turn=replace(turn, status="interrupted", text=""), acts=rest if heard else state.acts,
                         exchanges=windowed(state.exchanges, Exchange(turn.text, heard, device=turn.source,
                                                                      interrupted=status == "interrupted",
-                                                                     input=_unheard(turn.input), acts=mine)))
+                                                                     input=_unheard(turn.input), acts=mine,
+                                                                     guest=turn.speaker == "guest")))
         body = {"turn_id": turn_id, "status": status, "reason": reason, "text": text, "timing": timing,
                 "duration_ms": duration_ms}
         # A streaming reply has no sequence yet, so its duration is kept under "reply" (lead).

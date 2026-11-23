@@ -30,6 +30,15 @@ and every protocol change is listed under **Protocol**.
   model call. A forget also keeps everything said so far in that conversation from the writer. A
   forget from a guest, an unclear line or a line not said to Sage changes nothing, and the kernel
   says that nothing was forgotten and why; the model is not asked.
+- Memory is the owner's to read (owner, 2026-11-23). The prompt of a line marked `Sage-Speaker: guest`
+  holds no record, in the block or on the line, and a guest's "what do you remember?" is answered by
+  the kernel, not the model. A line with no speaker mark (no voiceprint enrolled) reads memory as before.
+- The person's name is first in the memory block, then the rest of who they are, then likes. A record
+  from an unknown voice that rides on the newest line sits under the never-greet-by-name note.
+- A record the kernel drops for its age or for room leaves a `forget` row (`why`: `old`, `full`).
+- A hosted answer that ends with no text is answered by the local model. A local stream that is cut,
+  malformed or ends before its `done` chunk fails the turn as an `OSError`, never as half an answer.
+- Character keys added: `prompt.memory_withheld`, `lines.remembers_guest`, `patterns.names`.
 - Character keys added: `prompt.memory_none`, `memory_unplaced`, `recalled`, `recall_kinds`, `writer`,
   `writer_known`, `writer_said`, `writer_answered`, `lines.forgot_none`, `kept_aside`, `kept_guest`,
   `kept_unclear`, `remembers`, `remembers_none`,

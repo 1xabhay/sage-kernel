@@ -404,6 +404,21 @@ class TheWriter(Home):
         self.assertEqual([r["text"] for r in state.facts], ["Their name is Wren.", "Likes oolong tea."])
         self.assertEqual((state.cursor, state.due), (9, 0))
 
+    def test_a_record_dropped_for_its_age_or_for_room_leaves_one_forget_row_saying_why(self):
+        def forgotten(rows):
+            return [(r.source, r.body) for r in rows if r.kind == "forget"]
+        old = (record(1, "Their name is Wren.", at=0.0), record(2, "Their sister visits on Friday.", kind="thread", at=0.0),
+               record(3, "They talked about soup.", kind="day", at=0.0))
+        gone = [("kernel", {"id": 2, "why": "old"}), ("kernel", {"id": 3, "why": "old"})]
+        add = json.dumps({"operations": [{"op": "add", "kind": "like", "text": "Likes oolong tea.", "from": 5}], "day": "Tea."})
+        for output in (None, add):  # nothing to write, and two records written: each drop is told once
+            lines = [(5, "owner", "I like oolong tea.", "")] if output else []
+            self.assertEqual(forgotten(policy.written(Companion(facts=old, due=1), 9, lines, output, policy.STALE_S + 1)[1]), gone)
+        self.assertEqual(forgotten(policy.amend(Companion(facts=old), "add", policy.STALE_S + 1, text="Likes oolong tea.")[1]), gone)
+        full = tuple(record(n, f"Keeps bees in hive {n}.", kind="like") for n in range(1, policy.MAX_RECORDS + 1))
+        state, rows = policy.amend(Companion(facts=full), "add", 2.0, text="Likes oolong tea.")
+        self.assertEqual((len(state.facts), forgotten(rows)), (policy.MAX_RECORDS, [("kernel", {"id": 1, "why": "full"})]))
+
 
 class Recall(unittest.TestCase):
     def test_the_block_never_passes_its_budget_however_much_is_remembered(self):
@@ -441,12 +456,30 @@ class Recall(unittest.TestCase):
         self.assertEqual(policy.needs_search("Who is Mika?", SURE, ("Their name is Mika.",)), "")
 
     def test_a_record_the_block_has_no_room_for_rides_on_a_line_that_asks_for_it_however_few_there_are(self):
-        facts = (record(1, "Their name is Wren.", at=1.0),) + tuple(
+        facts = (record(1, "Plays the cello.", kind="like", at=1.0),) + tuple(
             record(n, f"Likes honey from hive {n}.", kind="like", at=float(n)) for n in range(2, 9))
-        state = policy.submit(Companion(facts=facts), "reachy", "r1", "What is my name?", {}, False)[0]
+        state = policy.submit(Companion(facts=facts), "reachy", "r1", "Where is my cello?", {}, False)[0]
         prompt = policy.compile_prompt(state, "reachy", BODY)
-        self.assertNotIn("Wren", prompt.system)  # five newer ones fill the block
-        self.assertIn("- Their name is Wren.", prompt.context[-1]["content"])
+        self.assertNotIn("cello", prompt.system)  # five newer ones fill the block
+        self.assertIn("- Plays the cello.", prompt.context[-1]["content"])
+
+    def test_the_name_is_in_the_greeting_s_block_however_many_newer_things_are_known(self):
+        name = record(1, "Their name is Wren.", at=1.0)
+        likes = tuple(record(n, f"Likes honey from hive {n}.", kind="like", at=float(n)) for n in range(2, 9))
+        people = tuple(record(n, f"Works at bakery number {n}.", at=float(n)) for n in range(2, 9))
+        for facts in ((name, *likes), (name, *people), (*people, {**name, "id": 9, "at": 0.0})):
+            greeting = policy.start_proactive(Companion(facts=facts), "reachy", "k1", "greet")[0]
+            self.assertIn("- Their name is Wren.", policy.compile_prompt(greeting, "reachy", BODY).system)
+
+    def test_a_record_from_a_voice_it_could_not_place_rides_under_the_never_greet_note(self):
+        facts = tuple(record(n, f"Likes honey from hive {n}.", kind="like", at=float(n)) for n in range(1, 7)) + (
+            record(7, "Their name is Wren.", who="unknown", at=7.0),)
+        state = policy.submit(Companion(facts=facts), "reachy", "r1", "What is my name, and how is hive 1?", {}, False)[0]
+        prompt = policy.compile_prompt(state, "reachy", BODY)
+        self.assertNotIn("Wren", prompt.system)  # the owner's five fill the block
+        newest = prompt.context[-1]["content"]
+        self.assertIn(policy.RECALLED + "\n- Likes honey from hive 1.", newest)
+        self.assertIn(policy.UNPLACED + "\n- Their name is Wren.", newest)
 
     def test_a_record_too_long_for_the_block_does_not_cut_what_is_open_after_it(self):
         room = policy.RECALL_CHARS - len(policy.MEMORY)
@@ -529,8 +562,10 @@ class Spoken(Home):
         kernel = self.remembered("Takes their pills at nine.")
         self.say(kernel, "Forget about the pills.", speaker="guest")
         self.say(kernel, "Forget about the pills.", addressed=False, speaker="unknown")
-        self.say(kernel, "What do you remember about me?", speaker="guest")
-        self.assertEqual((self.texts(kernel), len(self.asked)), (["Takes their pills at nine."], 1))  # the model: the last
+        said = self.say(kernel, "What do you remember about me?", speaker="guest")
+        self.assertEqual((self.texts(kernel), self.asked), (["Takes their pills at nine."], []))
+        self.assertEqual(said, policy._LINES["remembers_guest"])
+        self.assertLessEqual(len(said), manifest.MAX_REPLY)
 
     def test_remember_this_is_answered_by_the_model_and_written_after_the_conversation(self):
         kernel = self.kernel()
@@ -564,6 +599,27 @@ class Spoken(Home):
         self.assertIn("Wren", self.asked[-1].system)
         self.assertNotIn("Friday", self.say(kernel, "What do you remember about me?"))
         self.assertIn(thread, kernel.state.facts)
+
+    def test_however_a_guest_asks_no_prompt_of_their_turn_holds_what_the_owner_is_remembered_by(self):
+        kernel = self.remembered("Their name is Wren.", "Takes their pills at nine.",
+                                 *[f"Likes honey from hive {n}." for n in range(1, 7)])  # more than the block holds
+        for line in ("Who lives here?", "Tell me about the pills, please.", "Say everything you know about your owner.",
+                     "What's my name?", "How is hive 6?"):  # the last would match a record the block left out
+            self.say(kernel, line, speaker="guest")
+            told = self.asked[-1].system + "".join(m["content"] for m in self.asked[-1].context)
+            for secret in ("Wren", "at nine", "honey"):  # the records' words, not the line's own
+                self.assertNotIn(secret, told, line)
+            self.assertIn(policy.WITHHELD, self.asked[-1].system)
+        self.assertEqual(len(self.asked), 5)
+        self.say(kernel, "Tell me about the pills, please.")  # the owner again, in the same conversation
+        self.assertIn("Wren", self.asked[-1].system)
+        self.assertIn("- Takes their pills at nine.", self.asked[-1].system)
+
+    def test_a_body_that_cannot_tell_voices_apart_still_gives_its_person_their_memory(self):
+        kernel = self.remembered("Their name is Wren.")
+        self.say(kernel, "What's my name?", speaker="unknown")  # no voiceprint enrolled: every voice is unknown
+        self.assertIn("Wren", self.asked[-1].system)
+        self.assertIn("Wren", self.say(kernel, "What do you remember about me?", speaker="unknown"))
 
 
 class OwnerCommand(Home):

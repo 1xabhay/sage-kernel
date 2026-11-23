@@ -58,6 +58,26 @@ def _bad(url: str) -> bool:
                 or parsed.password or parsed.query or parsed.fragment or parsed.path.strip("/"))
 
 
+def _chunks(response):
+    """Ollama's stream as (piece, chunk), through its done chunk. OSError, like the network's own, for a stream
+    that is cut, malformed, an error, or ends before its done chunk: a server that closes cleanly mid-answer
+    raises nothing by itself, and half an answer is not the answer."""
+    try:
+        for line in response:
+            if not line.strip():
+                continue
+            chunk = json.loads(line)
+            if "error" in chunk:
+                raise OSError(f"Ollama: {chunk['error']}"[:200])
+            yield chunk.get("message", {}).get("content", ""), chunk
+            if chunk.get("done"):
+                return
+    # IncompleteRead (cut inside a chunk) is an HTTPException, not an OSError; the rest are a malformed line.
+    except (http.client.HTTPException, ValueError, TypeError, AttributeError) as error:
+        raise OSError(f"Ollama: a broken stream ({type(error).__name__})") from None
+    raise OSError("Ollama: the stream ended before the answer did")
+
+
 def provider(url: str, model: str, num_predict: int | None = None):
     """A `decide(prompt, heard) -> answer` for the kernel, for the Ollama at base URL `url`.
     `num_predict=1` makes a warm-up: it prefills the prompt into Ollama's cache and decodes one token."""
@@ -76,21 +96,12 @@ def provider(url: str, model: str, num_predict: int | None = None):
         request = urllib.request.Request(endpoint, body, {"Content-Type": "application/json"})
         answer, final = [], {}
         with opener.open(request, timeout=TIMEOUT_S) as response:
-            for line in response:
-                if not line.strip():
-                    continue
-                chunk = json.loads(line)
-                if "error" in chunk:
-                    raise OSError(f"Ollama: {chunk['error']}")
-                piece = chunk.get("message", {}).get("content", "")
+            for piece, final in _chunks(response):
                 if piece:
                     answer.append(piece)
                     if sum(map(len, answer)) > MAX_ANSWER:
                         raise OSError("The model's answer is too long")
                     heard(piece)
-                if chunk.get("done"):
-                    final = chunk
-                    break
         done = Answer("".join(answer))
         done.timing = timing(final)
         return done
@@ -264,6 +275,8 @@ def hosted(key: str, model: str = HOSTED_MODEL, url: str = HOSTED_URL, stall_s: 
                     raise OSError("The model's answer is too long")
                 first = first or time.monotonic()
                 heard(piece)
+        if not answer:  # it ended as it should and said nothing: a failure, so `routed` asks the local model
+            raise OSError("Hosted model: an empty answer")
         done = Answer("".join(answer))
         sent = sum(usage.get(name) or 0 for name in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
         done.timing = {"model": model, "prompt_tokens": sent, "gen_tokens": usage.get("output_tokens") or 0,

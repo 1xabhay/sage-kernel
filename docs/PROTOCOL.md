@@ -421,6 +421,14 @@ after a conversation, never during a turn:
   and each writer answer a `written` row with what was refused and why. At
   most 200 are kept; a `day` or `thread` record older than 14 days is left
   out of every prompt and read-back, and dropped at the next writer commit.
+  A record the kernel drops for its age or for room leaves a `forget` row
+  from `kernel` with its `id` and `why` (`old`, `full`).
+- Memory is read only by its owner. The prompt of a line marked
+  `Sage-Speaker: guest` holds no record at all, so no wording reads one
+  back, and "what do you remember?" from a guest is answered by the kernel
+  that it keeps that for its person. A device that sends no speaker mark
+  cannot tell voices apart: every voice is its person's there, so the
+  privacy starts when the device has a voiceprint and marks each line.
   A fact from a checkpoint before records loads as an `owner` `person`
   record.
 - The system message ends with at most 600 characters of them: up to 5

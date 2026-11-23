@@ -63,6 +63,12 @@ STALE_S = 14 * 86400.0  # a day line or an open thread older than this is droppe
 DAY_LINES = 7  # day lines kept, newest; only the last is in the block
 READ_BACK = 5  # records read aloud when asked what it remembers
 MEMORY, UNPLACED, NOTHING_YET = _PROMPT["memory"], _PROMPT["memory_unplaced"], _PROMPT["memory_none"]
+# In place of the block on a guest's turn (owner, 2026-11-23: memory is the owner's; a guest cannot read it back).
+# ponytail: wording unmeasured on any model; whatever the model makes of it, the records are not in its prompt.
+WITHHELD = _PROMPT["memory_withheld"]
+# A record that says the person's name: first in the block. ponytail: the word "name", English in the default
+# character file; a "name" kind for the writer if a name is ever told without it.
+NAMES = re.compile(_RULES["names"], re.IGNORECASE)
 RECALLED, AS_KIND = _PROMPT["recalled"], _PROMPT["recall_kinds"]
 WRITER = {key: _PROMPT[key] for key in ("writer", "writer_known", "writer_said", "writer_answered")}
 FORGETS, ASKS_MEMORY = re.compile(_RULES["forgets"]), re.compile(_RULES["asks_memory"])
@@ -764,7 +770,12 @@ def compile_prompt(state: Companion, device: str, declared: dict, now: float | N
     resort answered is left out: those are not the model's words, and it would say them again as its own.
     """
     persona, examples, typed = medium(declared)
-    state = replace(state, facts=_fresh(state.facts, now))
+    # Memory is the owner's: a turn the body says a guest spoke is compiled with none of it, block or ride-along,
+    # so no phrasing can read it back. A body that sends no mark cannot tell voices apart (no voiceprint
+    # enrolled): every voice is its person's there, as it was before voiceprints, or the owner would lose
+    # their own memory. ponytail: the model server re-reads the prompt after a guest's turn (the system text changed).
+    mine = state.turn.speaker != "guest"
+    state = replace(state, facts=_fresh(state.facts, now) if mine else ())
 
     def framed(line: str, input: dict | None = None, newest: bool = False) -> str:
         when = f"[{input['when']}]\n" if input and input.get("when") else ""
@@ -786,7 +797,8 @@ def compile_prompt(state: Companion, device: str, declared: dict, now: float | N
                     + _notes(state) + _recalled(state)
                     + reminder(declared) + "".join("\n\n" + REPAIRS[name] for name in repairs(state, device))})
     # Memory last: it changes only between conversations, and then the rest of the prefix stays cached.
-    system = persona + "\n\n" + examples + "\n\n" + manifest.describe(device, declared) + "\n\n" + recall(state.facts)
+    system = persona + "\n\n" + examples + "\n\n" + manifest.describe(device, declared) + "\n\n" + (
+        recall(state.facts) if mine else WITHHELD)
     return CompiledPrompt(system, tuple(context), manifest.format_schema(declared["tools"], manifest.max_chars(declared)))
 
 
@@ -980,9 +992,11 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
 
 def _ranked(facts) -> tuple[list[dict], list[dict]]:
     """Records, most worth saying first, as (core, rest). Core: who they are and what they like (the owner's
-    first, CORE_KNOWN at most), the last day line, and what is still open; newest first within each."""
+    first, their name before the rest of who they are, that before likes; CORE_KNOWN at most), the last day
+    line, and what is still open; newest first within each."""
     newest = sorted(facts, key=lambda r: -r["at"])
-    known = sorted((r for r in newest if r["kind"] in ("person", "like")), key=lambda r: r["who"] != "owner")
+    known = sorted((r for r in newest if r["kind"] in ("person", "like")),  # a name never loses its place to likes
+                   key=lambda r: (r["who"] != "owner", not NAMES.search(r["text"]), r["kind"] != "person"))
     days = [r for r in newest if r["kind"] == "day"]
     held = [r for r in newest if r["kind"] in ("thread", "promise")]
     return known[:CORE_KNOWN] + days[:1] + held, known[CORE_KNOWN:] + days[1:]
@@ -1014,12 +1028,17 @@ def recall(facts) -> str:
 
 def _recalled(state: Companion) -> str:
     """Up to RECALL_EXTRA records that match the newest line and are not in the block, on that line only (like
-    notes): however few there are, one the block left out is still found by asking for it."""
+    notes): however few there are, one the block left out is still found by asking for it. As in the block,
+    what a voice it could not place said is listed apart, under the same note."""
     if state.turn.text.startswith("["):
         return ""
     shown = [r["id"] for r in _core(state.facts)]
-    found = relevant(tuple(_told(r) for r in state.facts if r["id"] not in shown), state.turn.text, RECALL_EXTRA)
-    return "\n\n" + RECALLED + "".join(f"\n- {text}" for text in found) if found else ""
+    left = [r for r in state.facts if r["id"] not in shown]
+    found = relevant(tuple(_told(r) for r in left), state.turn.text, RECALL_EXTRA)
+    found = [r for r in left if _told(r) in found][:RECALL_EXTRA]
+    return "".join("\n\n" + head + "".join(f"\n- {_told(r)}" for r in part)
+                   for head, part in ((RECALLED, [r for r in found if r["who"] == "owner"]),
+                                      (UNPLACED, [r for r in found if r["who"] != "owner"])) if part)
 
 
 def _record(facts, who: str, kind: str, text: str, at: float, source: int | None) -> dict:
@@ -1035,17 +1054,22 @@ def _fresh(facts, now: float | None) -> tuple[dict, ...]:
     return tuple(r for r in facts if now is None or not (r["kind"] in ("day", "thread") and now - r["at"] > STALE_S))
 
 
-def _kept(facts, record: dict | None, now: float) -> tuple[dict, ...]:
+def _kept(facts, record: dict | None, now: float, source: str = "kernel"):
     """`facts` with `record`, if there is one, added or put in place of the one with its id; then without day
     lines and open threads past STALE_S, day lines past the newest DAY_LINES, and whatever is over MAX_RECORDS
-    (never who the person is while anything else is left; oldest first)."""
+    (never who the person is while anything else is left; oldest first). With them the rows to journal: the
+    record's `remember`, from `source`, and a `forget` from the kernel for each one dropped, saying why
+    ("old", "full"), so nothing leaves memory without a trace."""
     known = record and any(r["id"] == record["id"] for r in facts)
     facts = [record if r["id"] == record["id"] else r for r in facts] if known else [*facts, *([record] if record else ())]
     days = [r["id"] for r in facts if r["kind"] == "day"][:-DAY_LINES]
-    facts = [r for r in _fresh(facts, now) if r["id"] not in days]
-    while len(facts) > MAX_RECORDS:
-        facts.remove(next((r for r in facts if r["kind"] != "person"), facts[0]))
-    return tuple(facts)
+    kept = [r for r in _fresh(facts, now) if r["id"] not in days]
+    old = [r for r in facts if r not in kept]
+    while len(kept) > MAX_RECORDS:
+        kept.remove(next((r for r in kept if r["kind"] != "person"), kept[0]))
+    return tuple(kept), (*([Row("remember", source, None, record)] if record else ()),
+                         *(Row("forget", "kernel", None, {"id": r["id"], "why": "old" if r in old else "full"})
+                           for r in facts if r not in kept))
 
 
 def records(facts) -> tuple[dict, ...]:
@@ -1143,22 +1167,24 @@ def written(state: Companion, end: int | None, lines, output: str | None, now: f
         else:
             record = ({**old, "who": who if who == "owner" else old["who"], "text": text, "at": now, "from": op["from"]}
                       if op["op"] == "update" else _record(facts, who, op["kind"], text, now, op["from"]))
-            facts = _kept(facts, record, now)
-            rows.append(Row("remember", "writer", None, record))
+            facts, kept = _kept(facts, record, now, "writer")
+            rows += kept
     if lines and (day := _clean(answer.get("day"))):
         record = _record(facts, "owner" if all(who == "owner" for who in who_said.values()) else "unknown", "day",
                          day, now, lines[0][0])
-        facts = _kept(facts, record, now)
-        rows.append(Row("remember", "writer", None, record))
-    rows.append(Row("written", "kernel", None, {"through": end, "output": output, "refused": refused}))
-    return replace(state, facts=_kept(facts, None, now), cursor=max(state.cursor, end), due=max(0, state.due - 1)), tuple(rows)
+        facts, kept = _kept(facts, record, now, "writer")
+        rows += kept
+    facts, kept = _kept(facts, None, now)
+    rows += [*kept, Row("written", "kernel", None, {"through": end, "output": output, "refused": refused})]
+    return replace(state, facts=facts, cursor=max(state.cursor, end), due=max(0, state.due - 1)), tuple(rows)
 
 
 def remembering(state: Companion, device: str, head: int, cap: int = manifest.MAX_REPLY, now: float | None = None):
     """The kernel's own answer when `device`'s newest line asks it to forget, or what it remembers: (state,
     rows, words), no model asked; words "" for any other line. Only for a line said to Sage, clearly heard, and
     not by a guest; a forget from any other line changes nothing and is answered that nothing was forgotten, and
-    why: the model cannot forget, and may say it did. Forgetting drops every record that holds all the words
+    why: the model cannot forget, and may say it did. A guest who asks what it remembers is told it keeps that
+    for its person (a short line of the owner's own can score as a guest's, so it asks for it once more). Forgetting drops every record that holds all the words
     named, and lets go of everything said up to now (`head`, the journal's newest row): the writer never reads
     it, so what was just said cannot come back as a memory. ponytail: patterns (the character's), English in the
     default file; "forget it" meaning "never mind" costs this conversation's memories, on the side of forgetting."""
@@ -1169,8 +1195,9 @@ def remembering(state: Companion, device: str, head: int, cap: int = manifest.MA
     found = FORGETS.search(plain)
     refused = ("kept_aside" if not turn.addressed else "kept_guest" if turn.speaker == "guest"
                else "kept_unclear" if misheard(turn.text, turn.input) else "")
-    if refused:
-        return state, (), _LINES[refused] if found else ""
+    if refused:  # a guest asking what it remembers is told why not, in the kernel's words (the prompt holds none either)
+        asks = turn.speaker == "guest" and ASKS_MEMORY.search(plain)
+        return state, (), _LINES[refused] if found else _LINES["remembers_guest"] if asks else ""
     if found:
         named = set(_terms(" ".join(w for w in (found["what"] or "").split() if w not in FORGET_THAT)))
         gone = [r for r in state.facts if named and named <= set(_terms(r["text"]))]
@@ -1210,7 +1237,8 @@ def amend(state: Companion, op: str, now: float, id: int | None = None, text: st
         return replace(state, facts=tuple(r for r in state.facts if r is not old)), (Row("forget", "owner", None, {"id": id}),)
     record = ({**old, "who": "owner", "text": text, "at": now} if op == "edit"
               else _record(state.facts, "owner", "person", text, now, None))
-    return replace(state, facts=_kept(state.facts, record, now)), (Row("remember", "owner", None, record),)
+    facts, rows = _kept(state.facts, record, now, "owner")
+    return replace(state, facts=facts), rows
 
 
 def failed(state: Companion, turn_id: str, prompt: CompiledPrompt, reason: str):

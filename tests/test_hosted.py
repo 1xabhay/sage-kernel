@@ -340,6 +340,8 @@ BROKEN = (
     ("an error event with no error", PLAIN + sse(START, {"type": "error", "error": None}), "silent"),
     ("a refusal", PLAIN + sse(START, {"type": "message_delta", "delta": {"stop_reason": "refusal"}, "usage": {}}, {"type": "message_stop"}), "close"),
     ("the vendor overloaded", b"HTTP/1.1 529 Overloaded\r\nContent-Length: 0\r\n\r\n", "close"),
+    ("an answer that ends as it should with no text", PLAIN + sse(START, *END), "close"),
+    ("an answer of empty pieces", PLAIN + sse(START, text(""), *END), "close"),
 )
 
 
@@ -386,6 +388,59 @@ class CutStreams(unittest.TestCase):
             raise Abandoned
         with self.assertRaises(Abandoned):
             self.hosted(PLAIN + sse(START, text('{"reply": "Hi"}'), *END), "close")(prompt_for(), heard)
+
+
+def ndjson(*chunks):
+    return b"".join(json.dumps(c).encode() + b"\n" for c in chunks)
+
+
+class CutLocalStreams(unittest.TestCase):
+    """The local model's stream, cut or malformed, fails as an OSError: the kernel's model failure, not half an answer."""
+
+    PIECE = ndjson({"message": {"role": "assistant", "content": '{"reply": "Mount '}, "done": False})
+    DONE = ndjson({"message": {"role": "assistant", "content": 'Everest."}'}, "done": True})
+    NDJSON = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n"
+
+    def local(self, wire, then="close"):
+        fake = Wire(wire, then)
+        self.addCleanup(fake.close)
+        return model.provider(fake.url, "qwen3:4b")
+
+    def test_a_whole_stream_is_the_answer(self):
+        heard = []
+        answer = self.local(self.NDJSON + b"\r\n" + self.PIECE + self.DONE)(prompt_for(), heard.append)
+        self.assertEqual((answer, "".join(heard)), ('{"reply": "Mount Everest."}',) * 2)
+
+    def test_a_cut_or_malformed_stream_is_an_oserror_never_an_answer_cut_short(self):
+        chunked, plain = self.NDJSON + b"Transfer-Encoding: chunked\r\n\r\n", self.NDJSON + b"\r\n"
+        for name, wire in (("cut inside a chunk", chunked + chunk(self.PIECE) + b'400\r\n{"message": {"ro'),
+                           ("cut between chunks", chunked + chunk(self.PIECE)),
+                           ("ended with no done", plain + self.PIECE),
+                           ("an empty body", plain),
+                           ("a line that is not JSON", plain + self.PIECE + b'{"message": {"cont\n'),
+                           ("a line that is not an object", plain + self.PIECE + b"7\n"),
+                           ("a message that is null", plain + ndjson({"message": None, "done": False})),
+                           ("bytes that are no text", plain + b"\xff\xfe\n")):
+            with self.subTest(name), self.assertRaises(OSError):
+                self.local(wire)(prompt_for(), lambda piece: None)
+
+    def test_a_hosted_failure_answered_by_a_cut_local_stream_fails_the_turn_as_an_oserror(self):
+        marks = model.Addressed()
+        marks.mark("reachy", "What is the tallest mountain?", True)
+        hosted = Wire(PLAIN, "close")
+        self.addCleanup(hosted.close)
+        local = self.local(self.NDJSON + b"Transfer-Encoding: chunked\r\n\r\n" + chunk(self.PIECE) + b"400\r\n{")
+        with self.assertRaises(OSError):
+            model.routed(local, model.hosted(KEY, url=hosted.url, stall_s=0.3), marks, deadline_s=5)(prompt_for(), lambda p: None)
+
+    def test_what_the_kernel_raises_while_hearing_a_piece_is_not_taken_for_a_bad_stream(self):
+        class Abandoned(Exception):
+            pass
+
+        def heard(piece):
+            raise Abandoned
+        with self.assertRaises(Abandoned):
+            self.local(self.NDJSON + b"\r\n" + self.PIECE + self.DONE)(prompt_for(), heard)
 
 
 if __name__ == "__main__":

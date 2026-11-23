@@ -26,8 +26,8 @@ manifest lines scored; a row missing any of them is refused. Dataset scorers tak
         scored against its top-k closest owner enrollment clips. Refuses fewer than 2 owner
         sessions or no impostor clip.
     uv run python eval/score.py addressed <set> --hyp hyp.jsonl | --stt-url URL [--aliases Reachy]
-        Name hits (clips whose line names the robot that the app's Addressed filter passes)
-        with false wakes per hour (every other clip it passes, per hour of that audio).
+        Name hits (clips whose line names the robot that the gate answers for its name)
+        with false wakes per hour (every other clip it answers so, per hour of that audio).
     uv run python eval/score.py pipeline <set> --stt-url URL [--turn-end-ms 450]
         WER of the app's path (Silero segments with pre-roll and stop tail, each to the STT)
         beside the oracle WER of the whole clip: what segmentation costs.
@@ -373,23 +373,20 @@ def silero_segmenter(turn_end_ms: int) -> Callable:
 
 def addressed_report(clips: list[dict], transcribe: Callable[[str], str],
                      aliases: tuple[str, ...] = ("Reachy",)) -> dict:
-    """Return name hits and false wakes per hour of the app's own ``Addressed`` filter.
+    """Return name hits and false wakes per hour of the gate's name rule (``gate.attend``).
 
-    Each transcript goes through a fresh ``Addressed(aliases)``, no face and no exchange window:
-    the name alone decides, as for a first turn. A clip whose reference says "Sage" or "Reachy"
-    should pass (a name hit); any other clip, the owner's or TV, music, impostors, should not
+    Each transcript meets a closed gate, no face and no conversation, that knows "Sage" and
+    ``aliases``: the name alone decides, as for a first turn. A clip whose reference says "Sage" or
+    "Reachy" should pass (a name hit); any other clip (the owner, TV, music, impostors) should not
     (a false wake), counted per hour of that audio. Paired metrics: neither means much alone.
     """
-    import asyncio
+    from sage_device.gate import Attention, Signals, attend
 
-    from pipecat.frames.frames import TranscriptionFrame
-
-    from reachy_sage_voice.addressed import Addressed
-
+    names = {"sage", *(alias.lower() for alias in aliases)}
     for clip in clips:
         clip["named"] = bool(set(normalize(clip.get("text") or "").split()) & set(NAMES))
-        frame = TranscriptionFrame(transcribe(clip["path"]), "eval", "")
-        clip["woke"] = asyncio.run(Addressed(aliases)(frame))
+        heard = Signals(0.0, named=names.__contains__)
+        clip["woke"] = attend(transcribe(clip["path"]), heard, Attention())[1].startswith("name")
         clip["seconds"] = duration_s(clip["path"])
     rows = []
     for group, members in _groups(clips):
@@ -753,7 +750,7 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--speaker", default="owner",
                        help="whose clips: owner, or replay (eval/replay.py)")
     pipeline.add_argument("--stt-url", required=True, help="the live STT each segment goes to")
-    addressed.add_argument("--aliases", default="Reachy", help="as SAGE_VOICE_ALIASES: comma-separated")
+    addressed.add_argument("--aliases", default="Reachy", help="other names, comma-separated")
     pipeline.add_argument("--turn-end-ms", type=int, default=None)
     paired.add_argument("--a", required=True, help="option A: a jsonl of {wav, text}, or a channel")
     paired.add_argument("--b", required=True, help="option B: a jsonl of {wav, text}, or a channel")

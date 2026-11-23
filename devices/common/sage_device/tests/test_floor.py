@@ -1,5 +1,6 @@
 """The floor: lines written to the shapes the STT produces, none of them recorded speech."""
 
+import inspect
 import math
 
 import pytest
@@ -14,7 +15,6 @@ from sage_device.floor import (
     MEDIA_WAIT_S,
     MUST_GAP_S,
     MUST_WAIT_S,
-    OPEN_S,
     SPEAK,
     WAIT,
     half_heard,
@@ -23,7 +23,6 @@ from sage_device.floor import (
     overheard,
     taken,
 )
-from sage_device.hearing import UNSURE, decide
 
 
 def test_a_voice_going_now_has_the_floor():
@@ -62,7 +61,6 @@ def test_distress_waits_less_than_any_other_reply():
 ])
 def test_a_statement_cut_off_is_half_heard(line):
     assert half_heard(line)
-    assert decide(line, half=half_heard(line)) == UNSURE
 
 
 @pytest.mark.parametrize(("line", "why"), [
@@ -100,12 +98,12 @@ def test_a_cut_off_statement_is_doubted_up_to_twelve_words_and_no_further():
     "I think they shipped the second model last spring.",  # opens with "I", but is about them
 ])
 def test_talk_that_opens_mid_thought_or_about_others_after_a_quiet_is_overheard(line):
-    assert overheard(line, OPEN_S)
-    assert overheard(line, float("inf"))
+    assert overheard(line)
 
 
-def test_in_a_running_exchange_nothing_is_overheard():
-    assert not overheard("And then the whole team came along.", OPEN_S - 0.1)
+def test_the_words_alone_decide_it_whether_or_not_a_conversation_is_open():
+    """The window's exemption is gone: ``gate.attend`` decides what an aside means, and when."""
+    assert set(inspect.signature(overheard).parameters) == {"line", "named"}
 
 
 @pytest.mark.parametrize("line", [
@@ -125,11 +123,7 @@ def test_in_a_running_exchange_nothing_is_overheard():
     "",
 ])
 def test_a_line_that_might_be_for_it_is_never_overheard(line):
-    assert not overheard(line, float("inf"), named=lambda word: word == "sage")
-
-
-def test_whatever_comes_back_after_it_asked_is_for_it():
-    assert not overheard("And they left.", float("inf"), asked=True)
+    assert not overheard(line, named=lambda word: word == "sage")
 
 
 # --- watching: the TV never yields, so a reply waits for a gap in it (watch/academic.md rule 2) ---

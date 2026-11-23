@@ -1,15 +1,9 @@
 """Tilt or talk: lines written to the shapes the STT produces, none of them recorded speech."""
 
-import math
 
 import pytest
 
 from sage_device.hearing import (
-    COOLDOWN_S,
-    PASS,
-    QUIET,
-    UNSURE,
-    decide,
     trustworthy,
     unfinished,
 )
@@ -63,33 +57,9 @@ def test_the_name_is_never_swallowed():
     assert trustworthy("Sage, the", named)
 
 
-def test_a_line_worth_answering_passes_whatever_the_body_is_doing():
-    assert decide("We had soup for dinner.", math.inf) == PASS
-    assert decide("We had soup for dinner.", 0.0, busy=True) == PASS
-
-
-def test_noise_is_unsure_when_the_body_can_show_it():
-    assert decide("So the", math.inf) == UNSURE
-    assert decide("So the", COOLDOWN_S) == UNSURE
-
-
-def test_noise_within_the_cooldown_or_on_a_busy_body_is_quiet():
-    assert decide("So the", COOLDOWN_S - 0.1) == QUIET
-    assert decide("So the", math.inf, busy=True) == QUIET
-    # A statement the caller found cut off: no tilt over a dance or its own voice.
-    assert decide("We went over to the place and uh.", math.inf, busy=True, half=True) == QUIET
-
-
-def test_anything_answers_a_question_just_asked():
-    assert decide("Teapot.", math.inf, asked=True) == PASS
-    assert decide("So the", math.inf, asked=True) == PASS
-    assert decide("Somewhat like the", asked=True, half=True) == PASS  # however cut off
-
-
 def test_nothing_heard_is_not_unsure():
     assert trustworthy("")
     assert trustworthy("  ...  ")
-    assert decide("") != UNSURE
 
 
 @pytest.mark.parametrize("text", [

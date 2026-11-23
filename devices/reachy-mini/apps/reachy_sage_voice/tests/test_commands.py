@@ -10,6 +10,7 @@ run on the executor and are reported.
 import asyncio
 import logging
 from itertools import pairwise
+from types import SimpleNamespace
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -18,17 +19,17 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.tests.utils import SleepFrame, run_test
-from sage_device import choice, names
+from sage_device import gate, names
 from test_sage_processor import TURN, FakeSession, acts, aside, delta, heard, reply, run, spoken
 
 from reachy_sage_voice.executor import Result
 from reachy_sage_voice.expressions import MOVES_LINE, REACTIONS
-from reachy_sage_voice.manifest import EMOTIONS
 from reachy_sage_voice.plan import Step, dump
 from reachy_sage_voice.sage import (
     ACKS,
     NOT_FOUND_EMOTE,
     NOT_FOUND_LINE,
+    UNSURE_CLIP,
     Playback,
     SageProcessor,
 )
@@ -499,18 +500,10 @@ def test_commands_and_longer_lines_never_gesture():
 STATEMENT = "The sun is out today."
 
 
-class Heads:
-    """A chooser that always draws a move."""
-
-    @staticmethod
-    def random():
-        return 0.0
-
-
 def choosing(emotes, features=("acted",), executor=None, **kwargs):
     session = FakeSession()
     session.features = frozenset(features)
-    return session, gesturing(session, executor or FakeExecutor(), emotes, rng=Heads, **kwargs)
+    return session, gesturing(session, executor or FakeExecutor(), emotes, **kwargs)
 
 
 def lately(*frames):
@@ -518,120 +511,155 @@ def lately(*frames):
     return [BotStartedSpeakingFrame(), SleepFrame(0.01), *frames]
 
 
-def test_a_statement_can_be_answered_by_a_muted_move_with_no_kernel_turn_and_no_words():
+ASIDE = "And then the whole team came along."
+UNSEEN = {"face": False}
+
+
+def test_a_statement_from_someone_in_view_is_a_kernel_turn_and_never_a_move_of_the_bodys_own():
+    """The coin is gone (design 1-gate): words or a nod is the kernel's to choose."""
+    emotes = []
+    session, processor = choosing(emotes)
+    run(processor, lately(heard(STATEMENT), SleepFrame(0.05)))
+    assert emotes == [] and [t for _, t, _ in session.started] == [STATEMENT]
+    assert not hasattr(processor, "_rng")
+
+
+def test_unsure_a_line_was_for_it_it_looks_and_says_nothing_and_no_model_is_asked(caplog):
     emotes, executor = [], FakeExecutor()
     session, processor = choosing(emotes, executor=executor)
-    down, _ = run(processor, lately(heard(STATEMENT), SleepFrame(0.05)))
-    assert session.started == [] and spoken(down) == []
-    ((clip, sound),) = emotes
-    assert clip in REACTIONS["agree"] and sound is False
+    with caplog.at_level("INFO", logger="reachy_sage_voice.sage"):
+        down, _ = run(processor, [heard(STATEMENT, **UNSEEN), SleepFrame(0.05)])
+    assert session.started == [] and spoken(down) == [] and acts(session) == []
+    assert emotes == [(UNSURE_CLIP, False)]  # the look: a muted tilt
     assert "think" not in executor.log  # no reply is coming, so no thought to show
+    assert "gate: ack (unsure)" in caplog.messages and "unsure: tilted" in caplog.messages
+
+
+def test_the_line_after_a_look_is_answered_and_carries_the_line_it_looked_at():
+    emotes, clock = [], [1000.0]
+    session, processor = choosing(emotes, now=lambda: clock[0])
+    run(processor, [heard("Is it raining.", **UNSEEN), SleepFrame(0.02),
+                    heard("The rain, outside.", **UNSEEN), SleepFrame(0.05)])
+    assert [t for _, t, _ in session.started] == ["Is it raining. The rain, outside."]
+    assert len(emotes) == 1
+
+
+def test_looks_come_at_most_one_per_cooldown_and_never_from_a_busy_body(caplog):
+    emotes, clock = [], [1000.0]
+    session, processor = choosing(emotes, now=lambda: clock[0])
+    processor._attention = gate.Attention(open=True, at=1000.0)
+    scrap = "Garden"  # unclear, in a conversation: a look each time
+    with caplog.at_level("INFO", logger="reachy_sage_voice.sage"):
+        run(processor, [heard(scrap), SleepFrame(0.02), heard(scrap), SleepFrame(0.05)])
+    assert len(emotes) == 1 and session.started == []
+    assert [m for m in caplog.messages if m.startswith("unsure")] == ["unsure: tilted",
+                                                                      "unsure: quiet"]
+    speaking, emotes = Playback(), []
+    speaking.speaking = True
+    run(choosing(emotes, playback=speaking)[1], [heard(STATEMENT, **UNSEEN), SleepFrame(0.05)])
+    assert emotes == []
 
 
 def test_overheard_talk_gets_no_turn_no_words_no_move_and_the_kernel_is_never_told(caplog):
     emotes, executor = [], FakeExecutor()
     session, processor = choosing(emotes, executor=executor)
     with caplog.at_level("INFO", logger="reachy_sage_voice.sage"):
-        down, _ = run(processor, [heard("And then the whole team came along."), SleepFrame(0.05)])
+        down, _ = run(processor, [heard(ASIDE, **UNSEEN), SleepFrame(0.05)])
     assert session.started == [] and spoken(down) == [] and emotes == [] and acts(session) == []
     assert "think" not in executor.log
     assert "overheard: quiet" in caplog.text
 
 
-def test_the_same_words_inside_an_exchange_are_not_overheard(caplog):
-    session, processor = choosing([])
+def test_inside_a_conversation_the_same_words_are_listened_to_and_do_not_keep_it_open(caplog):
+    emotes, clock = [], [1000.0]
+    session, processor = choosing(emotes, now=lambda: clock[0])
+    processor._attention = opened = gate.Attention(open=True, at=1000.0)
     with caplog.at_level("INFO", logger="reachy_sage_voice.sage"):
-        run(processor, lately(heard("And then the whole team came along."), SleepFrame(0.05)))
-    assert "overheard" not in caplog.text and "chose: move" in caplog.text
+        run(processor, [heard(ASIDE, **UNSEEN), SleepFrame(0.05)])
+    assert session.started == [] and emotes == [] and "gate: listen (aside)" in caplog.messages
+    assert processor._attention.at == opened.at  # only an answer refreshes it
 
 
-def test_a_cold_statement_may_get_a_move_after_a_long_quiet():
-    emotes = []
-    session, processor = choosing(emotes)
-    processor._spoke_at = processor._now() - 100.0
+def test_a_tv_alone_never_holds_the_conversation_open():
+    """Live: the old window refreshed on every heard line, and one chain ran 447 lines."""
+    emotes, clock = [], [1000.0]
+    session, processor = choosing(emotes, now=lambda: clock[0])
+
+    async def main():
+        original = processor._submit
+
+        async def stepped(said, hold=True):
+            await original(said, hold)
+            clock[0] += 10.0  # a line every 10 s, as a broadcast runs
+        processor._submit = stepped
+        await run_test(processor, frames_to_send=[
+            heard("Can you hear me?", **UNSEEN), SleepFrame(0.02),
+            *[frame for _ in range(12) for frame in (heard(ASIDE, **UNSEEN), SleepFrame(0.01))]])
+    asyncio.run(main())
+    assert [t for _, t, _ in session.started] == ["Can you hear me?"]
+    assert not processor._attention.open
+
+
+def test_the_stts_low_confidence_steps_an_answer_down_to_a_look():
+    def scored(mean):
+        frame = heard(STATEMENT)
+        frame.result = SimpleNamespace(confidence={"mean": mean}, similarity=None)
+        return frame
+    for mean, turns in ((0.9, 1), (0.1, 0)):
+        session, processor = choosing([])
+        run(processor, [scored(mean), SleepFrame(0.05)])
+        assert len(session.started) == turns, mean
+    session, processor = choosing([], low_confidence=0.05)  # the body's own floor
+    run(processor, [scored(0.1), SleepFrame(0.05)])
+    assert len(session.started) == 1
+
+
+def test_an_answered_turn_is_marked_addressed_and_tells_the_kernel_no_score():
+    """The kernel refuses unknown input fields and reads any confidence under 0.9 as misheard."""
+    session, processor = choosing([])
     run(processor, [heard(STATEMENT), SleepFrame(0.05)])
-    assert session.started == [] and len(emotes) == 1
+    assert session.addressed == [True] and session.inputs == [{"medium": "speech"}]
 
 
-def test_a_chosen_move_tells_the_kernel_the_words_and_says_none_itself():
-    emotes = []
-    session, processor = choosing(emotes)
-    run(processor, lately(heard(STATEMENT), SleepFrame(0.05)))
-    assert acts(session) == [{"kind": "acted", "origin": "reflex", "what": "body_plan",
-                              "status": "done", "reason": f"heard: {STATEMENT}",
-                              "input": {"steps": [{"skill": "emote", "arg": emotes[0][0]}]}}]
+def test_the_voiceprint_says_whose_voice_a_turn_was_and_without_one_nobody_s():
+    """The kernel remembers what the owner says to it, a guest for one conversation (v1.6)."""
+    for similarity, speaker in ((0.8, "owner"), (0.2, "guest"), (None, "")):
+        frame = heard(STATEMENT)
+        frame.result = SimpleNamespace(confidence={"mean": 0.9}, similarity=similarity)
+        session, processor = choosing([])
+        run(processor, [frame, SleepFrame(0.05)])
+        assert session.speakers == [speaker], similarity
 
 
-def test_the_kernel_hears_a_chosen_move_while_the_clip_plays_so_before_the_next_line():
-    session, seen = FakeSession(), []
-    session.features = frozenset(("acted",))
-
-    async def play_emote(name, sound):
-        await asyncio.sleep(0.02)
-        seen.append(len(session.acts))
-    processor = SageProcessor(session, play_emote, Playback(), executor=FakeExecutor(), rng=Heads)
-    run(processor, lately(heard(STATEMENT), SleepFrame(0.05)))
-    assert seen == [1]
-
-
-def test_after_two_moves_in_a_row_it_speaks_and_words_begin_the_count_again():
-    emotes, clock = [], [1000.0]
-    session, processor = choosing(emotes, now=lambda: clock[0])
-    session.polls.append({"turn": {"turn_id": TURN, "run_status": "completed"}})  # the third's
-
-    async def main():
-        original = processor._submit
-
-        async def stepped(said, hold=True):
-            await original(said, hold)
-            clock[0] += 7.0  # past the cooldown, within the minute
-        processor._submit = stepped
-        await run_test(processor, frames_to_send=lately(
-            *[frame for _ in range(3) for frame in (heard(STATEMENT), SleepFrame(0.05))],
-            BotStartedSpeakingFrame(), SleepFrame(0.02), heard(STATEMENT), SleepFrame(0.02)))
-    asyncio.run(main())
-    assert len(emotes) == 3 and [t for _, t, _ in session.started] == [STATEMENT]
+def test_a_command_opens_a_conversation_and_a_stop_closes_it():
+    for line in ("Reachy, look for me.", "Good morning."):  # a command, a greeting it waves back at
+        session, processor = choosing([])
+        run(processor, [heard(line, **UNSEEN), SleepFrame(0.05)])
+        assert processor._attention.open and session.started == [], line
+    session, processor = choosing([])
+    processor._attention = gate.Attention(open=True, at=processor._now())
+    run(processor, [heard("Stop.", **UNSEEN), SleepFrame(0.05)])
+    assert not processor._attention.open
 
 
-def test_a_gesture_counts_as_a_move_in_a_row():
-    emotes, clock = [], [1000.0]
-    session, processor = choosing(emotes, now=lambda: clock[0])
-
-    async def main():
-        original = processor._submit
-
-        async def stepped(said, hold=True):
-            await original(said, hold)
-            clock[0] += 7.0
-        processor._submit = stepped
-        await run_test(processor, frames_to_send=lately(
-            heard("Hi Sage."), SleepFrame(0.02), heard(STATEMENT), SleepFrame(0.02),
-            heard(STATEMENT), SleepFrame(0.02)))
-    asyncio.run(main())
-    assert len(emotes) == 2 and [t for _, t, _ in session.started] == [STATEMENT]
+def test_what_it_says_of_its_own_accord_opens_a_conversation():
+    session = FakeSession([{"effects": [reply(7, "Nice morning.") | {"turn_id": "kernel-1"}],
+                            "turn": {"turn_id": "kernel-1", "run_status": "completed"}}], idle=True)
+    processor = gesturing(session, FakeExecutor(), [])
+    run(processor, [SleepFrame(0.1)])
+    assert processor._attention.open
 
 
-def test_words_when_the_move_could_not_show_or_the_kernel_could_not_be_told():
+def test_a_line_for_it_gets_a_kernel_turn_whatever_the_body_is_doing():
     busy = FakeExecutor()
     busy.reflex_block = "dancing"
     speaking = Playback()
     speaking.speaking = True
-    for kwargs in ({"executor": busy}, {"playback": speaking}, {"features": ()}):
+    for kwargs in ({"executor": busy}, {"playback": speaking}, {"features": ()}, {}):
         emotes = []
         session, processor = choosing(emotes, **kwargs)
         run(processor, lately(heard(STATEMENT), SleepFrame(0.02)))
         assert emotes == [] and [t for _, t, _ in session.started] == [STATEMENT], kwargs
-
-    emotes = []  # it has not spoken yet: the owner hears it first
-    session, processor = choosing(emotes)
-    run(processor, [heard(STATEMENT), SleepFrame(0.02)])
-    assert emotes == [] and len(session.started) == 1
-
-    emotes = []  # no chooser: a body that never chooses
-    session = FakeSession()
-    session.features = frozenset(("acted",))
-    run(gesturing(session, FakeExecutor(), emotes), lately(heard(STATEMENT), SleepFrame(0.02)))
-    assert emotes == [] and len(session.started) == 1
 
 
 def test_a_cooling_gesture_means_words_not_a_second_clip():
@@ -658,32 +686,6 @@ def test_a_reply_to_its_own_question_gets_words():
     assert emotes == [] and [t for _, t, _ in session.started] == [STATEMENT]
 
 
-def test_the_choice_is_logged_with_none_of_the_words(caplog):
-    with caplog.at_level(logging.INFO, logger="reachy_sage_voice.sage"):
-        run(choosing([])[1], lately(heard(STATEMENT), SleepFrame(0.02)))
-        run(choosing([])[1], lately(heard("Is it raining."), SleepFrame(0.02)))
-    logged = [r.getMessage() for r in caplog.records if r.getMessage().startswith("chose: ")]
-    assert logged == ["chose: move", "chose: speak"]
-
-
-def test_a_statement_that_could_not_be_a_move_says_why_not(caplog):
-    """The log tells words forced by a body not free from words the odds chose (live 2026-11-07)."""
-    executor = FakeExecutor()
-    executor.reflex_block = "emote"
-    with caplog.at_level(logging.INFO, logger="reachy_sage_voice.sage"):
-        run(choosing([], executor=executor)[1], lately(heard(STATEMENT), SleepFrame(0.02)))
-    assert "chose: speak (body not free)" in caplog.messages
-
-
-def test_the_clips_for_a_chosen_move_are_declared_and_none_of_them_droops():
-    """L4, L5: an answer to a statement or a goodbye never reads as hurt, bored or sent away."""
-    droops = {"lonely1", "sad1", "sad2", "downcast1", "impatient1", "impatient2", "boredom1",
-              "boredom2", "tired1", "no_sad1", "yes_sad1", "go_away1", "uncertain1"}
-    for reaction in (choice.COMFORT, choice.AGREE):
-        assert set(REACTIONS[reaction]) <= set(EMOTIONS)
-        assert not set(REACTIONS[reaction]) & droops
-
-
 def test_a_clip_is_commanded_as_the_transcript_lands_on_the_fake_clock(caplog):
     """Default 600 ms stop, 280 ms STT (p50, 622 logged turns): the clip goes at 880 ms."""
     times, played = iter([0.6]), []
@@ -705,3 +707,36 @@ def test_a_turn_that_ends_without_audio_ends_the_thought():
     executor = FakeExecutor()
     run(make(session, executor), [heard("Tell me a story."), SleepFrame(0.05)])
     assert executor.ended_thought
+
+
+def test_every_transcript_leaves_one_gate_line_naming_the_rule_and_the_result(caplog):
+    """The labelled set reads it (eval/noise.py): one line per transcript, none of the words."""
+    def gated(frames, executor=None, **kwargs):
+        caplog.clear()
+        processor = choosing([], executor=executor, **kwargs)[1]
+        with caplog.at_level(logging.INFO, logger="reachy_sage_voice.sage"):
+            run(processor, [*frames, SleepFrame(0.05)])
+        return [m for m in caplog.messages if m.startswith("gate: ")]
+
+    assert gated([heard(STATEMENT)]) == ["gate: answer (face)"]
+    assert gated([heard("Sage, is it raining.", **UNSEEN)]) == ["gate: answer (name)"]
+    assert gated([heard("Can you hear me?", **UNSEEN)]) == ["gate: answer (direct)"]
+    assert gated([heard("Good morning.", **UNSEEN)]) == ["gate: move (route)"]
+    assert gated([heard(STATEMENT, **UNSEEN)]) == ["gate: ack (unsure)"]
+    assert gated([heard(ASIDE, **UNSEEN)]) == ["gate: overheard (aside)"]
+    assert gated([heard("Somewhat like getting those back for")]) == ["gate: ack (face, unclear)"]
+    assert gated([heard("Somewhat like getting those back for", **UNSEEN)]) == [
+        "gate: listen (unsure, unclear)"]
+    assert gated([heard("Reachy, look for me.")]) == ["gate: command (route)"]
+    assert gated([heard("Remind me to call"), SleepFrame(0.1), heard("my sister tonight.")],
+                 hold_s=0.3) == ["gate: held (hearing.unfinished)", "gate: answer (face)"]
+    assert gated([heard("Tell me a story."), SleepFrame(0.02), heard("About a fox.")]) == [
+        "gate: answer (face)", "gate: answer (open, replaced)"]
+
+
+def test_its_own_words_in_the_mic_leave_a_gate_line_too(caplog):
+    processor = choosing([])[1]
+    processor._recent.append("The sun is out today, I think.")
+    with caplog.at_level(logging.INFO, logger="reachy_sage_voice.sage"):
+        run(processor, [heard("The sun is out today, I think."), SleepFrame(0.05)])
+    assert [m for m in caplog.messages if m.startswith("gate: ")] == ["gate: echo (speech)"]

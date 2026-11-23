@@ -12,11 +12,9 @@ from huggingface_hub.errors import LocalEntryNotFoundError
 from reachy_mini.motion.recorded_move import DEFAULT_EMOTIONS_DATASET, RecordedMoves
 
 from reachy_sage_voice.manifest import (
-    DESCRIPTIONS,
     EMOTIONS,
     NO_SOUND,
     STATE_MOVES,
-    describe_move,
     load_moves,
     manifest,
 )
@@ -75,19 +73,3 @@ def test_every_variant_of_an_offered_move_is_offered_too(library):
     assert not missing
 
 
-def test_every_override_replaces_a_real_offered_move(library):
-    for name in DESCRIPTIONS:
-        assert name in library.list_moves() and name in EMOTIONS, name
-
-
-def test_no_description_names_another_move(library, moves):
-    names = library.list_moves()
-    for name, move in moves.items():
-        line = describe_move(name, move)
-        others = [o for o in names if o != name and re.search(rf"\b{re.escape(o)}\b", line)]
-        assert not others, f"{name}: {line!r} mentions {others}"
-
-
-def test_no_description_is_a_recording_timestamp(moves):
-    for name, move in moves.items():
-        assert not describe_move(name, move).startswith("Recorded "), name

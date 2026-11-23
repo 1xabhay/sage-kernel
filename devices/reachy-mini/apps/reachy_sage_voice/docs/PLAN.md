@@ -49,7 +49,7 @@ Eval lane (eval/*):
 | E2 script extensions | name-dense block, command block, takes with TTS overlap, 10 s song clips; counts asserted |
 | E3 paired stats | McNemar and paired-bootstrap CI on a synthetic set with a known answer |
 | E4 speaker scorer fix | VAD-trimmed, onset-cropped windows, leave-one-session-out, top-k enrollment |
-| E5 addressed scorer | name hits and false wakes per hour, from transcripts run through `Addressed` |
+| E5 addressed scorer | name hits and false wakes per hour, from transcripts run through the gate's name rule (`gate.attend`) |
 | E6 pipeline-path STT score | replay through VAD + segmented STT; WER against the oracle on a fixture |
 | E7 eval split discipline | the speaker report refuses 1 session or 0 impostors; rows carry n, CI and manifest hash |
 

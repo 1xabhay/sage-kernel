@@ -24,16 +24,17 @@ from pathlib import Path
 APP = Path(__file__).resolve().parents[1]
 ROOT = Path(os.environ.get("SAGE_KERNEL_DIR") or APP.parents[3])  # the monorepo, with the kernel
 LABEL = "ai.sage.reachy-voice"
-#: What Sage says and does. The kernel cuts a reply longer than the voice's cap at a sentence.
-MAX_CHARS = 60
+#: What Sage says and the feeling it shows (the body picks the clip). The kernel cuts a reply
+#: longer than the voice's cap at a sentence.
+MAX_CHARS = 160
 BEATS = [
     (
         "Hi! You're home! I missed the sound of you.",
-        {"emote": {"name": "dance1"}, "voice_style": {"style": "excited"}},
+        {"emote": {"name": "excited"}, "voice_style": {"style": "excited"}},
     ),
     (
         "One thing: Maya's coming Saturday. Shall I remind you?",
-        {"emote": {"name": "attentive1"}, "voice_style": {"style": "warm"}},
+        {"emote": {"name": "attentive"}, "voice_style": {"style": "warm"}},
     ),
 ]
 assert all(len(line) <= MAX_CHARS for line, _ in BEATS), "a line is over the voice's cap"

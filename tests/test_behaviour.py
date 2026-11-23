@@ -5,6 +5,7 @@ a row whose status is `not-built` or `bug` is a strict expected failure. Every s
 
 import itertools
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -12,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sage import disposition, policy
+from sage import disposition, manifest, policy
 from sage.journal import Journal
 from sage.kernel import Kernel
 
@@ -27,7 +28,7 @@ FRIDAY = datetime(2026, 3, 6, 7, 5, tzinfo=ZONE)
 TURN = itertools.count()
 
 
-def move(name="calming1"):
+def move(name="calming"):
     return json.dumps({"reply": "", "emote": {"name": name}})
 
 
@@ -144,20 +145,28 @@ class Behaviour(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "k.sqlite3"
-        sage, _ = self.sage(json.dumps({"reply": "Hi Wren!", "remember": "Their name is Wren."}),
-                            *[f"Number {n}, noted." for n in range(policy.WINDOW + 1)], path=path)
-        self.hears(sage, "My name is Wren.")
-        for n in range(policy.WINDOW + 1):
-            self.hears(sage, f"Here is thing number {n} about my garden.")
+        now = [1000.0]
+
+        def write(prompt, heard):  # the writer, scripted: one record, from the line that said it
+            line = re.search(r"\[(\d+)\] My name is Wren\.", prompt.context[-1]["content"])[1]
+            return json.dumps({"operations": [{"op": "add", "kind": "person", "text": "Their name is Wren.",
+                                               "from": int(line)}], "day": ""})
+        sage, _ = self.sage("Hi Wren!", path=path, write=write, clock=lambda: now[0])
+        self.hears(sage, "My name is Wren.", {"medium": "text"})
+        self.assertEqual(sage.state.facts, ())  # nothing is written mid-conversation
+        now[0] += policy.SESSION_IDLE_S + 1
+        sage.tick()
+        deadline = time.monotonic() + 5
+        while not sage.state.facts and time.monotonic() < deadline:
+            time.sleep(0.01)
         again, prompts = self.sage("Wren!", path=path)
         self.hears(again, "Do you remember what I'm called?")
         self.assertIn("- Their name is Wren.", prompts[-1].system)
         self.assertNotIn("Wren", json.dumps(prompts[-1].context))  # from memory, not from the history
 
     def test_b13_a_name_said_aloud_in_a_short_sentence_reaches_the_model(self):
-        sage, prompts = self.sage(json.dumps({"reply": "Hi Wren!", "remember": "Their name is Wren."}))
+        sage, prompts = self.sage("Hi Wren!")
         self.assertEqual(self.says(sage, "My name is Wren.", HEARD), ["Hi Wren!"])
-        self.assertEqual(sage.state.facts, ("Their name is Wren.",))
         self.assertEqual(len(prompts), 1)
 
     def test_b14_what_the_tv_said_is_gone_by_the_next_line(self):
@@ -173,7 +182,7 @@ class Behaviour(unittest.TestCase):
     def test_b18_a_statement_can_be_answered_with_a_move_and_no_words(self):
         sage, prompts = self.sage(move())
         effects = self.hears(sage, "I had such a rough week at the workshop.", SURE)
-        self.assertEqual([(e["kind"], e.get("input")) for e in effects], [("emote", {"name": "calming1"})])
+        self.assertEqual([(e["kind"], e.get("input")) for e in effects], [("emote", {"name": "calming"})])
         self.assertEqual((len(prompts), sage.view("body")["turn"]["run_status"]), (1, "completed"))
 
     # --- social timing --------------------------------------------------------------------------------
@@ -189,16 +198,14 @@ class Behaviour(unittest.TestCase):
 
     # --- owner rules ----------------------------------------------------------------------------------
 
-    def test_b29_a_fragment_or_a_stray_yeah_gets_a_move_and_the_model_is_never_asked(self):
+    def test_b29_a_stray_yeah_gets_a_move_and_the_model_is_never_asked(self):
         sage, prompts = self.sage("Sage! Want to hear a tune?", "Here it comes.")
-        for line in ("And then we", "Yeah."):
-            with self.subTest(line):
-                self.assertEqual([e["kind"] for e in self.hears(sage, line, HEARD)], ["emote"])
+        self.assertEqual([e["kind"] for e in self.hears(sage, "Yeah.", HEARD)], ["emote"])
         self.assertEqual(prompts, [])
         self.says(sage, "What's your name?", HEARD)
         self.assertEqual(self.says(sage, "Yeah.", HEARD), ["Here it comes."])  # an answer to its own question
 
-    def test_b32_asked_for_quiet_it_starts_nothing_and_an_unanswered_nudge_is_not_repeated(self):
+    def test_b32_asked_for_quiet_it_starts_nothing_and_an_unanswered_nudge_is_not_followed_at_once(self):
         now = [1000.0]
         timings = disposition.Timings(greet_on_start=False, nudge_after_idle_s=60, nudge_gap_s=60, engaged_s=10,
                                       quiet_s=3600)
@@ -214,7 +221,7 @@ class Behaviour(unittest.TestCase):
         sage, prompts = self.sage("Still here if you want me.", "Nice morning.", "Hm?", clock=lambda: now[0],
                                   timings=timings)
         sage.event("body", {"kind": "presence", "state": "seen", "confidence": 0.9})
-        for _ in range(5):  # one nudge, never answered
+        for _ in range(5):  # one nudge, still unanswered (tests/test_disposition.py: each doubles the wait)
             now[0] += 120
             sage.tick()
             self.settle(sage)
@@ -234,14 +241,14 @@ class Behaviour(unittest.TestCase):
                 sage.event("body", {"kind": "presence", "state": "seen", "confidence": 0.9, **who})
         self.assertEqual(prompts, [])
 
-    def test_b38_an_answer_cut_at_the_body_s_80_characters_is_spoken_back_to_a_whole_sentence(self):
-        cap = VOICE["output"]["max_chars"]
+    def test_b38_an_answer_cut_at_the_reply_cap_is_spoken_back_to_a_whole_sentence(self):
+        cap = manifest.MAX_REPLY
         ramble = ("Oh, plenty. I counted raindrops on the window. " + "Then I hummed the tune from the radio. " * 3)[:cap]
         self.assertNotIn(ramble[-1], ".!? ")  # as the model server's decoder cuts it: mid-word
         sage, _ = self.sage(ramble, ramble)
         [reply] = self.says(sage, "What did you do this morning?", SURE)
         self.assertLessEqual(len(reply), cap)
-        self.assertEqual(reply, "Oh, plenty. I counted raindrops on the window.")
+        self.assertTrue(reply.startswith("Oh, plenty. I counted raindrops on the window.") and reply.endswith("radio."))
 
 
 class Table(unittest.TestCase):

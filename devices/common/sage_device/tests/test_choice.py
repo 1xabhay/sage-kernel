@@ -1,10 +1,8 @@
-"""Whether a heard line gets words or a move alone: decided here with no body or kernel in sight."""
+"""Whether a heard line needs words: decided from the words alone, no body or kernel in sight."""
 
 import ast
 import importlib
 import inspect
-import math
-import random
 import sys
 from pathlib import Path
 
@@ -13,26 +11,8 @@ import pytest
 from sage_device import choice
 
 
-class Odds:
-    """A chooser that always draws the same number."""
-
-    def __init__(self, drawn):
-        self.drawn = drawn
-
-    def random(self):
-        return self.drawn
-
-
-ALWAYS, NEVER = Odds(0.0), Odds(1.0)
-
-
 def named(word):
     return word in ("sage", "reachy")
-
-
-def choose(line, rng=ALWAYS, **kwargs):
-    """Decide ``line`` when nothing but the line could stop a move: it spoke a moment ago."""
-    return choice.speak_or_move(line, rng, **{"since_spoken": 5.0, "named": named, **kwargs})
 
 
 QUESTIONS = [
@@ -78,76 +58,26 @@ FAREWELLS = ["I'm heading out now.", "See you later.", "I'll be back tomorrow.",
 
 
 @pytest.mark.parametrize("line", QUESTIONS + DISTRESS + NAMED + ASKING_FOR + TEACHING)
-def test_a_line_that_needs_words_is_never_a_move_however_the_odds_fall(line):
-    assert choose(line) is None
+def test_a_line_that_needs_words_says_why(line):
     assert choice.must_speak(line, named)
 
 
 @pytest.mark.parametrize("line", STATEMENTS + FAREWELLS)
-def test_a_plain_statement_may_be_a_move(line):
+def test_a_plain_statement_needs_none(line):
     assert choice.must_speak(line, named) == ""
-    assert choose(line) in (choice.COMFORT, choice.AGREE)
-    assert choose(line, NEVER) is None
 
 
-def test_comfort_for_a_bad_day_and_agreement_otherwise():
-    assert choose("I had such a long day.") == choice.COMFORT
-    assert choose("I'm so tired today.") == choice.COMFORT
-    assert choose("The sun is out today.") == choice.AGREE
-
-
-def test_a_reply_to_what_it_just_asked_gets_words():
-    assert choose("The sun is out today.", asked=True) is None
-
-
-def test_never_more_than_two_moves_in_a_row():
-    assert choose("The sun is out today.", moves_in_row=choice.MAX_MOVES - 1) == choice.AGREE
-    assert choose("The sun is out today.", moves_in_row=choice.MAX_MOVES) is None
-
-
-def test_a_line_the_kernel_could_not_be_told_whole_gets_words():
+def test_a_line_the_kernel_could_not_be_told_whole_is_too_long():
     """A move-only line reaches memory as an acted reason of at most 64 characters."""
     longest = "I " + "x" * (choice.TOLD_CHARS - 3) + "."
     assert len(longest) == choice.TOLD_CHARS and len("heard: " + longest) <= 64
-    assert choose(longest) == choice.AGREE
-    assert choose("I " + "x" * (choice.TOLD_CHARS - 2) + ".") is None
+    assert choice.must_speak(longest) == ""
+    assert choice.must_speak("I " + "x" * (choice.TOLD_CHARS - 2) + ".") == "too long"
 
 
-def test_about_forty_percent_of_statements_are_moves():
-    rng, moves, in_row, made = random.Random(7), 0, 0, 20000
-    for _ in range(made):
-        moved = choose("The sun is out today.", rng, moves_in_row=in_row)
-        moves, in_row = moves + bool(moved), in_row + 1 if moved else 0
-        assert in_row <= choice.MAX_MOVES
-    assert 0.35 <= moves / made <= 0.45
-
-
-def test_given_the_same_draws_it_decides_the_same():
-    def run():
-        rng = random.Random(3)
-        return [choose("The sun is out today.", rng) for _ in range(50)]
-    assert run() == run()
-
-
-# --- ethics (flow/ethics.md): written before the logic ------------------------------------
-
-@pytest.mark.parametrize("since", [choice.SPOKEN_S, 61.0, 3600.0, 7 * 86400.0, math.inf])
-@pytest.mark.parametrize("line", [STATEMENTS[0], FAREWELLS[0]])
-def test_after_any_long_quiet_it_answers_in_words_the_same_after_an_hour_or_a_week(line, since):
-    """Never feel ignored, and no mood from absence (L5): quiet only ever pulls toward words."""
-    assert choose(line, since_spoken=since) is None
-
-
-@pytest.mark.parametrize("line", STATEMENTS + FAREWELLS)
-def test_within_the_window_how_long_it_has_been_changes_nothing(line):
-    moves = {choose(line, since_spoken=since) for since in (0.0, 1.0, 30.0, choice.SPOKEN_S - 0.1)}
-    assert len(moves) == 1
-
-
-def test_no_input_could_carry_absence_or_a_reward():
-    """L1, L2, L5: what it decides from is the line and these, and nothing else can reach it."""
-    assert set(inspect.signature(choice.speak_or_move).parameters) == {
-        "line", "rng", "asked", "since_spoken", "moves_in_row", "cold", "named"}
+def test_no_name_in_the_code_could_carry_absence_or_a_reward():
+    """L1, L2, L5 (flow/ethics.md): it decides from the line, and nothing else can reach it."""
+    assert set(inspect.signature(choice.must_speak).parameters) == {"line", "named"}
     tree = ast.parse(inspect.getsource(choice))  # what the code names, not what its comments say
     names = {str(getattr(node, key, "")).lower() for node in ast.walk(tree)
              for key in ("id", "arg", "attr", "name")}
@@ -156,13 +86,9 @@ def test_no_input_could_carry_absence_or_a_reward():
         assert not [name for name in names if word in name], word
 
 
-def test_it_decides_a_move_or_nothing_and_never_a_line_to_say():
-    """L4: no guilt line can come from here, for a goodbye or anything else: no words at all."""
-    for line in STATEMENTS + FAREWELLS + DISTRESS:
-        for since in (1.0, 3600.0):
-            for in_row in range(choice.MAX_MOVES + 1):
-                got = choose(line, since_spoken=since, moves_in_row=in_row)
-                assert got in (None, choice.COMFORT, choice.AGREE), line
+def test_the_coin_that_swapped_words_for_a_nod_is_gone():
+    """Design 1-gate: whether a line is for it is the gate's; words or a nod, the kernel's."""
+    assert not hasattr(choice, "speak_or_move") and not hasattr(choice, "MOVE_ODDS")
 
 
 @pytest.mark.parametrize("line", QUESTIONS + DISTRESS)
@@ -177,20 +103,3 @@ def test_the_distress_and_question_patterns_are_the_kernels():
     kernel = vars(importlib.import_module("sage.policy"))
     assert choice._KERNEL_DISTRESS.pattern == kernel["DISTRESS"].pattern
     assert choice._KERNEL_QUESTION.pattern == kernel["QUESTION"].pattern
-
-
-def test_a_long_quiet_means_words_unless_nobody_has_been_talking_to_it():
-    line = "The rain stopped around noon."
-    assert choice.speak_or_move(line, ALWAYS, since_spoken=math.inf) is None
-    assert choice.speak_or_move(line, ALWAYS, since_spoken=math.inf, cold=True) == choice.AGREE
-
-
-@pytest.mark.parametrize("line", ["Good morning.", "Hey.", "Why is it raining?", "Sage."])
-def test_a_greeting_or_a_line_needing_words_still_gets_them_when_cold(line):
-    assert choice.speak_or_move(line, ALWAYS, since_spoken=math.inf, cold=True, named=named) is None
-
-
-def test_cold_lifts_only_the_long_quiet_not_the_limit_on_moves_in_a_row():
-    line = "The rain stopped around noon."
-    assert choice.speak_or_move(line, ALWAYS, since_spoken=math.inf, cold=True,
-                                moves_in_row=choice.MAX_MOVES) is None

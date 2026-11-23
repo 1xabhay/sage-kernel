@@ -23,8 +23,9 @@ PROTOCOLS = (1,)
 MAX_WAIT_S = 25.0
 MIN_CONFIDENCE = 0.5  # a seen edge below this is journaled but is no arrival (lead, 2026-10-20)
 NOTHING = {"senses": (), "tools": ()}
+WRITER_RETRY_S = 60.0  # after a writer call that failed (its model down), before the next; ponytail: a guess
 # What this kernel serves beyond v1's core, so a device can degrade gracefully instead of probing (v1.1).
-FEATURES = ("acted", "body", "done_text", "health", "input", "moves", "notes", "presence", "saw", "search")
+FEATURES = ("acted", "body", "done_text", "health", "input", "notes", "presence", "saw", "search")
 
 Decide = Callable[[CompiledPrompt, Callable[[str], None]], str]
 
@@ -49,11 +50,16 @@ class Kernel:
     def __init__(self, journal: Journal, decide: Decide, fresh_s: float = 10.0, clock=time.time,
                  timings: disposition.Timings = disposition.DEFAULT, warm: Decide | None = None,
                  tz: tzinfo | None = None, place: str = "",
-                 search: Callable[[str], list[str]] | None = None):
+                 search: Callable[[str], list[str]] | None = None, write: Decide | None = None,
+                 idle_s: float = policy.SESSION_IDLE_S):
         self.journal, self.decide, self.fresh_s, self.clock = journal, decide, fresh_s, clock
         self.tz, self.place = tz, place  # the person's zone (None: this machine's) and where they are, if said
         self.warm = warm  # a one-token call that fills the model server's prompt cache; None: never warm
         self.search = search  # query -> passages, bounded by its own timeout; None: the web is never asked
+        # The memory writer: a model call of the same shape, made between conversations and dropped for any
+        # turn (`write.hang_up()`, if it has one, ends a call in flight at once). None: nothing is written.
+        self.write, self.idle_s, self.writing, self.write_after = write, idle_s, False, 0.0
+        self.hung = False  # the writer's call in flight was dropped for a turn
         # Presence is not kept across restarts, so the first seen after one is an arrival; quiet is kept.
         self.timings = timings
         self.disposition = disposition.Disposition(quiet_until=journal.state.quiet_until)
@@ -69,6 +75,8 @@ class Kernel:
 
     @property
     def state(self) -> policy.Companion:
+        """The state every step starts from, with what the owner's `python -m sage memory` changed meanwhile."""
+        self.journal.refresh()
         return self.journal.state
 
     def local(self) -> datetime:
@@ -146,7 +154,16 @@ class Kernel:
             return
         print(f"sage: warmed the model for {source} in {time.monotonic() - started:.1f} s", file=sys.stderr)
 
-    def event(self, source: str, data: dict) -> dict:
+    def _hang_up(self) -> None:
+        """A turn is starting: the writer's call ends now, not at its next piece. Talking always wins."""
+        if self.writing and not self.hung:
+            self.hung = True
+            if hang_up := getattr(self.write, "hang_up", None):
+                hang_up()
+
+    def event(self, source: str, data: dict, addressed: bool = False, speaker: str = "unknown") -> dict:
+        """`addressed`, `speaker`: the body's marks on a submitted line (the Sage-Addressed and Sage-Speaker
+        headers, PROTOCOL.md §3); they mean nothing on any other event."""
         with self.lock:
             if data.get("kind") != "stop":  # a body can always be stopped
                 allowed, self.buckets[source], retry_after = policy.take(self.buckets.get(source), time.monotonic())
@@ -155,12 +172,17 @@ class Kernel:
                                   retry_after=retry_after)
             kind = policy.check_event(data)
             state, rows = policy.sweep(self.state, self.clock())
+            if kind == "submitted":
+                state, closed = policy.rest(state, self.clock(), self.idle_s)  # a long quiet ended the last conversation
+                rows += closed
             turn_id, text, timing = data.get("turn_id"), data.get("text"), policy.check_timing(data.get("timing"))
             status, reason = data.get("status"), data.get("reason")
             if kind == "submitted":
                 state, more = policy.submit(state, source, turn_id, text, timing, self.journal.seen(source, turn_id),
-                                            data.get("input"), when=self._when())
+                                            data.get("input"), when=self._when(), addressed=addressed,
+                                            speaker=speaker, now=self.clock())
                 if more:  # the person spoke to the kernel: it may start or end quiet
+                    self._hang_up()
                     self.disposition, _ = disposition.step(self.disposition, "spoke", self.clock(), text, self.timings)
                     state = replace(state, quiet_until=self.disposition.quiet_until)
             elif kind == "presence":
@@ -190,7 +212,8 @@ class Kernel:
                 prompt = policy.compile_prompt(state, source, declared)
                 # A body may say its lines never go to the web (manifest.search false): a notebook's file stays.
                 web = self.search and declared.get("search", True)
-                query = policy.needs_search(text, data.get("input"), state.facts) if web else ""
+                known = tuple(record["text"] for record in state.facts)
+                query = policy.needs_search(text, data.get("input"), known) if web else ""
                 threading.Thread(target=self._think, args=(source, turn_id, prompt, declared, query),
                                  daemon=True).start()
             return {"sequence": self.journal.head, **self.view(source)}
@@ -208,7 +231,12 @@ class Kernel:
     def tick(self) -> None:
         """Start a greeting or a nudge if one is due and its body is free: no turn of its own running, not acting."""
         with self.lock:
-            state = self.state
+            state, rows = policy.rest(self.state, self.clock(), self.idle_s)
+            self._commit(state, rows)
+            if (self.write and state.due and state.spoke_at is None and not self.writing and not self._running()
+                    and self.clock() >= self.write_after):
+                self.writing, self.hung = True, False
+                threading.Thread(target=self._write, daemon=True).start()
             due = self.greet_for or self.seen_by  # the body a greeting or nudge would go to waits on its own lane
             if due and (policy.lane(state, due).status in ("active", "unknown") or self.written.get(due)
                         or any(effect.target == due for effect in state.open)):
@@ -227,6 +255,7 @@ class Kernel:
             turn_id = "kernel-" + uuid.uuid4().hex
             state, rows = policy.start_proactive(state, device, turn_id, reason, when=self._when())
             self._commit(state, rows)
+            self._hang_up()
             declared = self.manifests.get(device, NOTHING)
             prompt = policy.compile_prompt(state, device, declared)
             threading.Thread(target=self._think, args=(device, turn_id, prompt, declared), daemon=True).start()
@@ -239,10 +268,53 @@ class Kernel:
             except (OSError, sqlite3.Error) as caught:
                 print(f"sage: could not start a proactive turn: {caught}", file=sys.stderr)
 
-    def _ask(self, source: str, turn_id: str, prompt: CompiledPrompt, declared: dict, recent, cut=True) -> str:
+    def _write(self) -> None:
+        """Read one closed conversation into memory: the lines said to Sage in it go to the writer, and what it
+        answers is checked and kept (policy.written). Dropped the moment a turn runs, and run again from the
+        same cursor once the next conversation has closed; a conversation with no such line asks no model."""
+        def heard(piece: str) -> None:
+            with self.lock:
+                if self.hung or self._running():
+                    raise Abandoned("writer")
+
+        try:
+            with self.lock:
+                end, said = self.journal.session(self.state.cursor)
+                lines = [(sequence, who, body["text"], reply) for sequence, body, reply in said
+                         if (who := policy.memorable(body))]
+                prompt = policy.writer_prompt(self.state.facts, lines) if lines else None
+                before = self.state.facts
+            try:
+                output = self.write(prompt, heard) if prompt else None
+            except Abandoned:
+                return
+            except Exception as caught:  # noqa: BLE001 -- memory can wait: the conversation stays unread
+                with self.lock:
+                    if not self.hung:  # hung up for a turn is no failure
+                        self.write_after = self.clock() + WRITER_RETRY_S
+                        print(f"sage: could not write memory: {type(caught).__name__}: {caught}"[:300], file=sys.stderr)
+                return
+            with self.lock:
+                state, rows = policy.written(self.state, end, lines, output, self.clock())
+                self._commit(state, rows)
+                kept = sum(row.kind in ("remember", "forget") for row in rows)
+                changed = [source for source in self.manifests if state.facts != before]
+            if prompt:
+                print(f"sage: memory: lines read {len(lines)}, changes kept {kept}", file=sys.stderr)
+            for source in changed if self.warm else ():  # a new system prompt, cold in the model server's cache
+                threading.Thread(target=self._warm, args=(source,), daemon=True).start()
+        except (OSError, sqlite3.Error) as caught:  # the journal: likewise, later
+            self.write_after = self.clock() + WRITER_RETRY_S
+            print(f"sage: could not write memory: {caught}", file=sys.stderr)
+        finally:
+            with self.lock:
+                self.writing = False
+
+    def _ask(self, source: str, turn_id: str, prompt: CompiledPrompt, declared: dict, recent, again=(), cut=True) -> str:
         """One model call. Its reply streams as it decodes, held back while it could repeat one of `recent`
-        or opens with what could be a claim of a sense the body lacks. With `cut`, a held-back answer a guard
-        will surely reject ends the call there, and the answer so far is returned."""
+        or opens with what could be a claim of a sense the body lacks, and without the sentences that go round
+        a loop `again` (policy.repairs). With `cut`, a held-back answer a guard will surely reject ends the
+        call there, and the answer so far is returned."""
         labels, names, senses = manifest.labels(declared["tools"]), self._names(declared), declared["senses"]
         pieces = []
 
@@ -255,13 +327,12 @@ class Kernel:
             reply, closed = speech.partial_reply("".join(pieces))
             reply = (speech.whole_sentences if closed else speech.near_cap)(reply, prompt.max_reply)
             # Never a trailing space: the final reply is trimmed, and what streams must be its prefix.
-            said = speech.speakable(reply, labels, closed, names).rstrip()
+            said = policy.moved_on(speech.speakable(reply, labels, closed, names).rstrip(), again, closed)
             if (policy.may_repeat(recent, said) or (closed and policy.repeats(recent, said))
                     or policy.may_claim(said, senses)):
                 # Certain only on whole words: a last word still streaming may grow ("see" into "seem").
                 sure = said if closed else said.rpartition(" ")[0]
-                if cut and not self._streamed(source) and (policy.opens_like(recent, sure) or policy.claims_life(sure)
-                                                           or policy.false_senses(sure, senses)):
+                if cut and not self._streamed(source) and (policy.claims_life(sure) or policy.false_senses(sure, senses)):
                     raise Guarded(turn_id)
                 return
             with self.lock:
@@ -279,9 +350,9 @@ class Kernel:
     def _names(declared: dict) -> tuple[str, ...]:
         return tuple(tool["name"] for tool in declared["tools"])
 
-    def _said(self, output: str, declared: dict) -> str:
-        return speech.speakable(speech.parse_output(output)[0], manifest.labels(declared["tools"]), True,
-                                self._names(declared))
+    def _said(self, output: str, declared: dict, again=()) -> str:
+        return policy.moved_on(speech.speakable(speech.parse_output(output)[0], manifest.labels(declared["tools"]), True,
+                                                self._names(declared)), again)
 
     def _streamed(self, source: str) -> str:
         with self.lock:
@@ -317,41 +388,46 @@ class Kernel:
         except Abandoned:
             return
         with self.lock:
-            line = policy.lane(self.state, source).text
-            # Asked what it just said, saying it again is the honest answer.
-            recent = () if policy.asks_to_repeat(line) else policy.recent_replies(self.state, source)
+            turn = policy.lane(self.state, source)
+            line, words = turn.text, policy.needs_words(turn.text, turn.input)
+            # Asked what it just said, saying it again is the honest answer; so is the same answer to a question
+            # asked again. Only where silence would do is a repeat left unsaid.
+            recent = () if words or policy.asks_to_repeat(line) else policy.recent_replies(self.state, source)
+            again = policy.repairs(self.state, source)
+            quiet = policy.move_only(self.state, source, declared["tools"])
+            # "Forget that", "what do you remember": the kernel's own, exact, and done before any model could err.
+            state, rows, memory = policy.remembering(policy.focus(self.state, source), source, self.journal.head,
+                                                     prompt.max_reply)
+            self._commit(state, rows)
         try:
+            if memory:
+                raise _Exact(json.dumps({"reply": memory}))
             if exact := policy.clock_answer(line, self.local()):  # never guessed by the model
                 raise _Exact(json.dumps({"reply": exact}))
-            with self.lock:
-                quiet = policy.quiet_move(line, policy.lane(self.state, source).input,
-                                          policy.last_replies(self.state, source), self._names(declared),
-                                          policy.clips(declared["tools"]))
-            if quiet:  # no one said it to Sage: a move, and the model is not asked
+            if quiet:  # nothing to answer: a move, and the model is not asked
                 raise _Exact(quiet)
             # A guard retries only while the device has heard nothing of the answer: a retry is new words, and
             # what already streamed must stay the reply's start. Past that, the answer stands (`decided` repairs
             # a claim), rather than a second call whose answer is then cut back to the streamed piece.
-            output = self._ask(source, turn_id, prompt, declared, recent)
-            if (policy.repeats(recent, said := self._said(output, declared))  # retried once; never silence
-                    and not self._streamed(source)):
+            output = self._ask(source, turn_id, prompt, declared, recent, again)
+            if policy.repeats(recent, self._said(output, declared, again)) and not self._streamed(source):
+                # Its move alone, never a second call: asked again, the model paraphrased itself, 373 times in
+                # 96 h, each a slower turn and one more wording of the same sentence in its context (journal 11-20).
                 self._reject(source, turn_id, prompt, output, "repeat of a recent reply")
-                prompt = policy.retry_prompt(prompt, policy.repeat_note(said))
-                output = self._ask(source, turn_id, prompt, declared, ())
+                output = policy.wordless(output)
             if ((claimed := policy.false_senses(self._said(output, declared), senses))  # retried once, then fixed
                     and not self._streamed(source)):
                 self._reject(source, turn_id, prompt, output, "claims a sense this body lacks: " + ", ".join(claimed))
                 prompt = policy.retry_prompt(prompt, policy.sense_note(claimed))
-                output = self._ask(source, turn_id, prompt, declared, (), cut=False)  # no guard after it
+                output = self._ask(source, turn_id, prompt, declared, (), again, cut=False)  # no guard after it
             if policy.claims_life(self._said(output, declared)) and not self._streamed(source):  # likewise
                 self._reject(source, turn_id, prompt, output, "claims to be alive or to have feelings")
                 prompt = policy.retry_prompt(prompt, policy.ALIVE_NOTE)
-                output = self._ask(source, turn_id, prompt, declared, (), cut=False)
-            if (not self._said(output, declared) and policy.needs_words(line, policy.lane(self.state, source).input)  # retried once, then `decided` speaks
-                    and not self._streamed(source)):
+                output = self._ask(source, turn_id, prompt, declared, (), again, cut=False)
+            if not self._said(output, declared, again) and words and not self._streamed(source):  # retried once, then `decided` speaks
                 self._reject(source, turn_id, prompt, output, "silent on a line that needs words")
                 prompt = policy.retry_prompt(prompt, policy.NEEDS_WORDS)
-                output = self._ask(source, turn_id, prompt, declared, (), cut=False)
+                output = self._ask(source, turn_id, prompt, declared, (), again, cut=False)
             error = ""
         except _Exact as answer:
             output, error = answer.output, ""

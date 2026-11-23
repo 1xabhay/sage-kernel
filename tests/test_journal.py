@@ -94,7 +94,7 @@ class EarlierJournal(unittest.TestCase):
         device = old.turn.source or next((x.device for x in reversed(old.exchanges) if x.device), "reachy")
         before = self.system(old, device)
         self.assertIn("You are Sage", before)
-        self.assertTrue(all(fact in before for fact in old.facts))
+        self.assertTrue(all(fact["text"] in before for fact in old.facts))
 
         kernel = Kernel(journal, lambda prompt, heard: json.dumps({"reply": "Hello from the phone."}))
         kernel.hello("phone", {"protocols": [1], "manifest": {"senses": [], "tools": []}})

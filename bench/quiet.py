@@ -99,8 +99,9 @@ def replay(lines: list, declared: dict, decide) -> list[dict]:
             cursor = effects["sequence"]
             for effect in effects["effects"]:  # performed at once: a timeout would be told to the model as a failure
                 send({"kind": "result", "sequence": effect["sequence"], "status": "done"})
-            exchange = kernel.state.exchanges[-1]
-            done.append({"line": line, "reply": exchange.reply, "tools": [call.name for call in exchange.calls],
+            got = effects["effects"]  # the kernel keeps no exchange for a turn answered with no words
+            done.append({"line": line, "reply": next((e["text"] for e in got if e["kind"] == "reply"), ""),
+                         "tools": [e["kind"] for e in got if e["kind"] not in ("reply", "stop")],
                          "first_ms": first[0], **label})
             print(json.dumps(done[-1]), file=sys.stderr)
         return done

@@ -127,8 +127,8 @@ def test_b24_watching_a_reply_is_spoken_at_a_gap_in_the_tv_and_never_over_it(mon
 def test_b28_talk_between_other_people_gets_no_turn_no_words_and_no_move():
     emotes, body = [], FakeExecutor()
     session, processor = choosing(emotes, executor=body)
-    down, _ = run(processor, [heard("And then her cousin carried the whole lot upstairs."),
-                              SleepFrame(0.05)])
+    aside = heard("And then her cousin carried the whole lot upstairs.", face=False)
+    down, _ = run(processor, [aside, SleepFrame(0.05)])
     assert (turns(session), spoken(down), emotes, acts(session)) == ([], [], [], [])
     assert "think" not in body.log  # not even the look of an answer coming
 

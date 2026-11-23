@@ -51,13 +51,17 @@ class FakeSession:
         self.stops: list[str] = []
         self.offsets: list[int] = []
         self.inputs: list[dict | None] = []  # each turn's submitted.input
+        self.addressed: list[bool] = []  # whether each turn went as one the gate answered
+        self.speakers: list[str] = []  # whose voice each turn went as: owner, guest, "" (unknown)
         self.acts: list[dict] = []
         self.watching = False
 
-    async def start(self, turn_id, text, timing, input=None):
+    async def start(self, turn_id, text, timing, input=None, addressed=False, speaker=""):
         if self.admit == "outage":
             raise KernelUnavailableError("refused")
         self.started.append((turn_id, text, timing))
+        self.addressed.append(addressed)
+        self.speakers.append(speaker)
         self.inputs.append(input)
         return self.admit
 
@@ -111,8 +115,11 @@ def emote(sequence, name):
             "stale": False}
 
 
-def heard(text):
-    return TranscriptionFrame(text=text, user_id="you", timestamp="")
+def heard(text, face=True):
+    """Return a transcript, from someone in view unless told (the gate's cases: ``face=False``)."""
+    frame = TranscriptionFrame(text=text, user_id="you", timestamp="")
+    frame.face = face
+    return frame
 
 
 def run(processor, frames):
@@ -621,7 +628,7 @@ def test_a_short_emote_finishes_through_a_new_turn_and_is_reported_done():
 def test_a_long_emote_is_still_cut_by_a_new_turn():
     session = FakeSession([{"effects": [emote(41, "sad1"), reply(42, "")]}])
     run(make(session, [], move_s=0.3, finish=frozenset({"yes1"})),
-        [heard("hi"), SleepFrame(0.1), heard("And then we ate."), SleepFrame(0.4)])
+        [heard("hi"), SleepFrame(0.1), heard("Then we had lunch."), SleepFrame(0.4)])
     assert [r["status"] for r in session.results if r.get("sequence") == 41] == ["interrupted"]
 
 

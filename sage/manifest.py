@@ -8,15 +8,13 @@ RESERVED = {"reply", "reply_delta", "stop"}
 MAX_TOOLS = 64
 # Senses a body may have; any it does not declare is stated as missing, so the model never claims it.
 SENSES = {"vision": "see", "speech": "hear", "touch": "feel touch"}
-MAX_REPLY = 160  # characters: one or two short spoken sentences, enforced by the decoder
+# Characters of a reply, enforced by the decoder: two spoken sentences of about 14 words, about 10 s aloud at the
+# 16 characters a second the voice measured (1,581 utterances, voice logs to 11-20). The design guessed 220 (14 s).
+# ponytail: a guess until the model replay; raise it if evals/companion.py shows over 2% of replies cut at the cap.
+MAX_REPLY = 160
 MEDIA = ("speech", "text")  # how a body puts out a reply (manifest output); speech when it does not say
 MAX_CHARS = 4000  # the most a body may ask for in one reply, as much as a submitted line holds
-MAX_FACT = 120  # characters of one remembered fact
 MAX_BODY = 300  # characters of a body's own description: its parts, including ones it cannot use yet
-# The kernel's own answer fields, after the device's tools; a device tool of the same name is the device's.
-MEMORY = {"remember": {"type": "string", "maxLength": MAX_FACT}, "forget": {"type": "string", "maxLength": MAX_FACT}}
-# What a body may declare a move for (manifest moves); the kernel teaches silence with them, knowing no move by name.
-MOVE_ROLES = ("comfort", "agree", "unsure")
 TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
 
 
@@ -57,28 +55,12 @@ def check_manifest(manifest) -> dict:
             raise ValueError(f"Tool {name}: interruptible must be true or false")
     if not isinstance(manifest.get("search", True), bool):
         raise ValueError("manifest.search must be true or false")
-    if "moves" in manifest:
-        _check_moves(manifest["moves"], tools)
     return {"senses": tuple(senses),
             "tools": tuple({key: tool[key] for key in ("name", "description", "inputSchema", "max_s", "interruptible")
                             if key in tool} for tool in tools),
-            **({"moves": manifest["moves"]} if "moves" in manifest else {}),
             **({"body": manifest["body"]} if "body" in manifest else {}),
             **({"search": manifest["search"]} if "search" in manifest else {}),
             **({"output": dict(output)} if "output" in manifest else {})}
-
-
-def _check_moves(moves, tools) -> None:
-    """Each declared move is an answer's tool calls this body itself declared, so it can always be performed."""
-    if not (isinstance(moves, dict) and moves and set(moves) <= set(MOVE_ROLES)
-            and all(isinstance(move, dict) and move and not authorized(move, tools) for move in moves.values())):
-        raise ValueError("manifest.moves maps " + ", ".join(MOVE_ROLES) + " to tool calls the body declares: "
-                         '{"role": {"tool": input}}')
-
-
-def authorized(move: dict, tools) -> str:
-    """Why one of `move`'s tool calls cannot be done, or ""."""
-    return next((problem for name, value in move.items() if (problem := authorize(name, value, tools))), "")
 
 
 def max_chars(manifest: dict) -> int:
@@ -87,11 +69,11 @@ def max_chars(manifest: dict) -> int:
 
 
 def format_schema(tools, max_chars: int = MAX_REPLY) -> dict:
-    """The Ollama `format` the model answers in: the reply first, one optional property per tool, then MEMORY."""
-    own = {tool["name"]: tool["inputSchema"] for tool in tools}
+    """The Ollama `format` the model answers in: the reply first, then one optional property per tool. Memory is
+    not the model's to write mid-turn: it is written after the conversation (policy.written)."""
     return {"type": "object",
-            "properties": {"reply": {"type": "string", "maxLength": max_chars}, **own,
-                           **{name: schema for name, schema in MEMORY.items() if name not in own}},
+            "properties": {"reply": {"type": "string", "maxLength": max_chars},
+                           **{tool["name"]: tool["inputSchema"] for tool in tools}},
             "required": ["reply"], "additionalProperties": False}
 
 

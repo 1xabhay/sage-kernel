@@ -7,6 +7,7 @@ from typing import NamedTuple
 
 from sage_device.kernel import KernelUnavailableError
 
+from reachy_sage_voice.expressions import INTENTS
 from reachy_sage_voice.manifest import EMOTIONS, manifest
 
 # --- manifest -----------------------------------------------------------------
@@ -30,18 +31,23 @@ def test_manifest_offers_emote_as_an_mcp_tool_over_the_declared_moves():
     assert emote["name"] == "emote"
     assert emote["inputSchema"]["type"] == "object"
     assert emote["inputSchema"]["required"] == ["name"]
-    assert emote["inputSchema"]["properties"]["name"]["enum"] == list(EMOTIONS)
+    assert emote["inputSchema"]["properties"]["name"]["enum"] == list(INTENTS)  # never clips
+    # The feelings the kernel's examples name, and the one of its listening move.
+    assert {"happy", "curious", "calming", "attentive"} <= set(INTENTS)
     assert len(EMOTIONS) == len(set(EMOTIONS)) and "cheerful1" in EMOTIONS
     assert emote["interruptible"] is True
     assert re.fullmatch(r"[a-z][a-z0-9_]{0,63}", emote["name"])
 
 
-def test_the_moves_it_declares_are_moves_it_offers_and_replies_stay_short():
+def test_it_declares_no_silence_teaching_moves_and_takes_the_kernels_reply_length():
     m = manifest(MOVES)
-    assert set(m["moves"]) == {"comfort", "agree", "unsure"}
-    for move in m["moves"].values():
-        assert move["emote"]["name"] in m["tools"][0]["inputSchema"]["properties"]["name"]["enum"]
-    assert m["output"] == {"medium": "speech", "max_chars": 60}  # the 12-word target
+    assert "moves" not in m and "output" not in m  # speech, at the kernel's 160 characters
+
+
+def test_a_feeling_with_no_clip_on_this_body_is_not_offered():
+    few = {name: MOVES[name] for name in ("cheerful1", "yes1")}
+    enum = manifest(few)["tools"][0]["inputSchema"]["properties"]["name"]["enum"]
+    assert enum == ["yes", "cheerful"]
 
 
 def test_max_s_fits_the_longest_declared_move_with_a_second_to_spare():
@@ -50,12 +56,12 @@ def test_max_s_fits_the_longest_declared_move_with_a_second_to_spare():
     assert manifest(short)["tools"][0]["max_s"] == 3  # ceil(2.0) + 1
 
 
-def test_each_name_carries_the_first_line_of_its_library_description():
-    name = manifest(MOVES)["tools"][0]["inputSchema"]["properties"]["name"]
-    assert "boredom1: You're about to fall asleep because the conversation is boring." \
-        in name["description"]
-    assert "2 minutes" not in name["description"]  # one line each: the bench's finding
-    assert all(f"{n}:" in name["description"] for n in EMOTIONS)
+def test_the_prompt_carries_feelings_not_clips_or_a_line_on_each():
+    """The 59 clip names and descriptions were most of the system prompt (journal 11-20)."""
+    tool = manifest(MOVES)["tools"][0]
+    told = json.dumps(tool)
+    assert "description" not in tool["inputSchema"]["properties"]["name"]
+    assert not any(clip in told for clip in EMOTIONS) and len(told) < 700
 
 
 def test_the_schema_stays_in_the_subset_the_kernel_and_ollama_check():
@@ -65,7 +71,7 @@ def test_the_schema_stays_in_the_subset_the_kernel_and_ollama_check():
     name through. Ollama's format grammar takes enum. Descriptions are plain text.
     """
     name = manifest(MOVES)["tools"][0]["inputSchema"]["properties"]["name"]
-    assert set(name) == {"type", "enum", "description"} and name["type"] == "string"
+    assert set(name) == {"type", "enum"} and name["type"] == "string"
     assert json.loads(json.dumps(manifest(MOVES))) == manifest(MOVES)
 
 

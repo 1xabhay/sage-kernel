@@ -84,9 +84,9 @@ def start(env, fail_wake=False, fail_track=False):
     calls, ran = [], {}
 
     async def run(media, play_emote, moves, env, play_sound=None, presence=None, observers=(),
-            face=None, recover=None, executor=None):
+            recover=None, executor=None):
         ran.update(media=media, moves=moves, env=env, play_sound=play_sound, presence=presence,
-                   observers=observers, face=face, recover=recover, executor=executor)
+                   observers=observers, recover=recover, executor=executor)
         await play_emote("cheerful1", True)
         if recover:
             await recover(1)
@@ -131,7 +131,8 @@ def test_a_muted_clip_starts_no_sound():
 
 def test_face_tracking_is_off_unless_presence_is_reported():
     """Owner (2026-10-22): following a face is a command, not the default. Presence still needs the
-    tracker on (live run 5: the daemon reported no face ever, because nothing switched it on)."""
+    tracker on (live run 5: the daemon reported no face ever, because nothing switched it on).
+    """
     calls, _ = start({**ENV, "SAGE_VOICE_WATCH": "0"})
     assert "track" not in [c[0] for c in calls]
     calls, _ = start({**ENV, "SAGE_VOICE_PRESENCE": "1"})
@@ -241,17 +242,6 @@ def test_presence_is_unknown_while_the_tracker_is_paused():
     ran["presence"](), ran["presence"]()
     ran["executor"].mini.start_head_tracking(weight=0.0)  # weight 0 stops the detector
     assert not ran["presence"]().fresh
-
-
-def test_the_face_tracker_is_handed_to_the_voice_for_addressing():
-    calls, ran = start({**ENV, "SAGE_VOICE_PRESENCE": "1"})
-    assert ran["face"]() is True
-    assert ("face", False) in calls
-
-
-def test_a_face_with_the_detector_off_does_not_address():
-    _, ran = start({**ENV, "SAGE_VOICE_WATCH": "0"})  # not tracking nor watching: detector off
-    assert [ran["face"]() for _ in range(3)] == [False] * 3
 
 
 def test_the_executor_counts_a_face_only_while_the_detector_runs(monkeypatch):
@@ -548,7 +538,7 @@ def test_a_robot_gone_five_minutes_is_waited_for_with_a_line_a_minute(caplog):
 
     def robot(**kw):
         tries.append(kw)
-        if 1 < len(tries) and sum(waits) < 300:
+        if len(tries) > 1 and sum(waits) < 300:
             raise OSError(51, "Network is unreachable")
         return Robot(calls, **kw)
 

@@ -71,10 +71,17 @@ class Nudging(unittest.TestCase):
         self.assertGreaterEqual(nudges[0], d.RESTLESS_S)
         self.assertTrue(all(b - a >= d.NUDGE_COOLDOWN_S for a, b in pairwise(nudges)))
 
-    def test_an_unanswered_nudge_is_never_followed_by_another(self):
+    def test_at_most_one_nudge_in_twenty_minutes_and_an_ignored_one_doubles_the_wait(self):
+        self.assertEqual(d.NUDGE_COOLDOWN_S, 20 * MIN)
         events = [("seen", 0)] + [("tick", t * MIN) for t in range(1, 300)]  # five hours, nobody answers
         _, said = run(events)
-        self.assertEqual([name for name, _ in said], ["greet", "nudge"])
+        self.assertEqual(said, [("greet", 0), ("nudge", 10 * MIN), ("nudge", 50 * MIN), ("nudge", 130 * MIN),
+                                ("nudge", 290 * MIN)])
+
+    def test_once_the_person_speaks_the_wait_is_twenty_minutes_again(self):
+        state, _ = run([("seen", 0)] + [("tick", t * MIN) for t in range(1, 60)])  # nudged at 10 and 50, ignored
+        _, more = run([("spoke", 60 * MIN, "Hm.")] + [("tick", t * MIN) for t in range(61, 100)], start=state)
+        self.assertEqual(more, [("nudge", 70 * MIN)])
 
     def test_after_the_person_speaks_a_later_nudge_may_come(self):
         state, said = run([("seen", 0)] + [("tick", t * MIN) for t in range(1, 30)])
@@ -142,17 +149,17 @@ class Properties(unittest.TestCase):
             for index, at in enumerate(nudges):
                 self.assertLessEqual(sum(at <= other < at + 3600 for other in nudges[index:]), d.NUDGE_BUDGET)
 
-    def test_the_person_speaks_between_any_two_nudges(self):
+    def test_an_ignored_nudge_is_followed_only_after_twice_the_gap(self):
         for events in self.sequences():
-            spoke_since = True
-            state = Disposition()
+            last, spoke_since, state = None, True, Disposition()
             for kind, at, *text in events:
                 state, out = d.step(state, kind, at, *text)
                 if kind == "spoke":
                     spoke_since = True
                 if "nudge" in out:
-                    self.assertTrue(spoke_since, "a nudge followed an unanswered one")
-                    spoke_since = False
+                    if last is not None:
+                        self.assertGreaterEqual(at - last, d.NUDGE_COOLDOWN_S * (1 if spoke_since else 2))
+                    last, spoke_since = at, False
 
     def test_never_a_proactive_turn_in_quiet(self):
         for events in self.sequences():

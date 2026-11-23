@@ -178,9 +178,8 @@ missing one stops the app with its name.
 | `SAGE_VOICE_IDLE_SCALE` | `1` | Multiplies every idle amplitude (head about 12° yaw, 6° pitch, 4° roll, body sway 8°, antennas), within fixed limits: `0.5` calmer, `1.5` livelier, `0` still |
 | `SAGE_VOICE_MOTION_SPEED` | `1` | With the motion arbiter (the default; `SAGE_VOICE_ARBITER=0` rolls back to the old path): how fast moves go (looks, turns, glances, home; at `1` the body turns at most 45°/s, the head 90°/s), from `0.25` to `2`: `0.5` slower and softer, `2` twice as fast |
 | `SAGE_VOICE_LISTEN_CUES` | `1` | `0`: no thinking glance between your turn and the reply |
-| `SAGE_VOICE_ADDRESSED` | `0` | `1`: answer only when addressed: a face is tracked, its name is said, or it spoke in the last few seconds. Other speech (lyrics, TV) is not sent |
-| `SAGE_VOICE_ALIASES` | `Reachy` | Names besides Sage it answers to, comma-separated |
-| `SAGE_VOICE_EXCHANGE_S` | `8` | Seconds after it spoke during which no name or face is needed |
+| `SAGE_VOICE_FACE_S` | `3` | A face seen within this many seconds counts as in view when you speak: with one, any clear line starts a conversation; without, a greeting, a request or a question to "you" does, and anything else gets a look first |
+| `SAGE_VOICE_LOW_CONFIDENCE` | `0.28` | Speech-to-text confidence under which a line is taken one step down (an answer becomes a look, a look becomes nothing shown), unless it has the name, distress, or answers Sage's own question |
 | `SAGE_VOICE_RECORD_DIR` | off | A local folder: save each utterance as a WAV |
 | `SAGE_VOICE_NAMES` | none | Names to hear and say right, `written:spoken:heard\|heard`, comma-separated: e.g. `Mika:Mee-kah:Micah\|Mica` corrects the STT's mishearings before the kernel and has the voice say it as respelled |
 | `SAGE_VOICE_RESEARCH_URL` | off | The song research service (`http://127.0.0.1:8783`): Sage can listen to a song and answer questions about it. Needs a kernel with notes (protocol §10) |

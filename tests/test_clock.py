@@ -104,75 +104,45 @@ class KernelClock(unittest.TestCase):
 
 
 class QuietMoves(unittest.TestCase):
-    """Replay, 11-09 evening: a misheard fragment or a bare "Yeah." no one said to Sage got words from the 4B
-    model ("Tomorrow? Let's see what happens."), and those words became what it then "remembered". A move only,
-    decided by the kernel, never by the model."""
-    TOOLS = ("emote",)
+    """Replay, 11-09 evening: a bare "Yeah." no one said to Sage got words from the 4B model, and those words
+    became what it then "remembered". A move only, decided by the kernel, never by the model. Who a fragment
+    was for is the body's to judge before it sends one (tests/test_companion.py has what the kernel does then)."""
 
-    def test_fragments_and_unsure_lines_get_a_move_and_no_words(self):
-        for line in ("How", "How do you", "And", "How about", "I was gonna.", "Rain keeping cage."):
-            with self.subTest(line):
-                out = json.loads(policy.quiet_move(line, {"medium": "speech"}, ("sounds good!",), self.TOOLS))
-                self.assertEqual(out["reply"], "")
+    def quiet(self, line, input, declared, last="Sounds good!"):
+        state = Companion(exchanges=(policy.Exchange("Hm.", last, device="body"),))
+        state = policy.submit(state, "body", "t1", line, {}, False, input)[0]
+        return state, policy.move_only(state, "body", declared["tools"])
 
     def test_a_bare_yeah_or_no_gets_words_only_when_sage_just_asked(self):
         for line in ("Yeah.", "No.", "Mm-hmm.", "Yeah, yeah, yeah.", "Hmm."):
             with self.subTest(line):
-                self.assertTrue(policy.quiet_move(line, {"medium": "speech"}, ("sounds good!",), self.TOOLS))
-                self.assertEqual(policy.quiet_move(line, {"medium": "speech"}, ("want to hear a song?",), self.TOOLS), "")
+                self.assertTrue(self.quiet(line, {"medium": "speech"}, VOICE)[1])
+                self.assertEqual(self.quiet(line, {"medium": "speech"}, VOICE, "Want to hear a song?")[1], "")
 
     def test_questions_distress_typed_lines_and_whole_sentences_go_to_the_model(self):
         for line, input in (("What's going on?", {"medium": "speech"}), ("Help me!", {"medium": "speech"}),
                             ("ok", {"medium": "text"}), ("That's what I'm going to do.", {"medium": "speech"}),
+                            ("My name's Lena.", {"medium": "speech"}), ("How do you", {"medium": "speech"}),
                             ("Call me Micah", {"medium": "speech", "confidence": 0.3,  # PROTOCOL: the model picks
-                                               "alternatives": ["Call me Mika"]}),
-                            ("[The person is back.]", {})):
+                                               "alternatives": ["Call me Mika"]})):
             with self.subTest(line):
-                self.assertEqual(policy.quiet_move(line, input, (), self.TOOLS), "")
-
-    def test_a_short_whole_statement_said_to_sage_goes_to_the_model(self):
-        """ "My name's Lena." is the persona's own example of a name to remember. The voice sends no confidence,
-        so a short line is the model's when it is whole and said to someone: it names Sage, says I or you, or
-        starts as a request."""
-        for line in ("My name's Lena.", "Call me Mika.", "I'm sad.", "I love you.", "Look at me.", "Sing a song.",
-                     "Good night, Sage.", "Sage, count for me.", "Wake up."):
-            with self.subTest(line):
-                self.assertEqual(policy.quiet_move(line, {"medium": "speech"}, (), self.TOOLS), "")
-
-    def test_the_pet_s_name_heard_a_little_wrong_still_goes_to_the_model(self):
-        """Owner, 11-17: called "Sage", the speech-to-text heard "age", and the call got a head tilt and no answer.
-        A near-miss hearing of the name counts as the name when it is the whole line or opens or closes it."""
-        for line in ("Age.", "Hey age.", "Age, come here.", "Come here age.", "Saige!", "Good night, Sarge.",
-                     "Sayge, look."):
-            with self.subTest(line):
-                self.assertEqual(policy.quiet_move(line, {"medium": "speech"}, (), self.TOOLS), "")
-
-    def test_a_near_miss_of_the_name_in_the_middle_or_another_word_like_it_still_gets_a_move(self):
-        for line in ("Old age home.", "Middle age spread.", "Stage left.", "Next page.", "Age of the."):
-            with self.subTest(line):
-                self.assertTrue(policy.quiet_move(line, {"medium": "speech"}, (), self.TOOLS))
-
-    def test_a_short_line_said_to_no_one_or_left_hanging_still_gets_a_move(self):
-        for line in ("Only the kettle.", "Come on.", "I'm just gonna.", "You and the.", "Nice day today."):
-            with self.subTest(line):
-                self.assertTrue(policy.quiet_move(line, {"medium": "speech"}, (), self.TOOLS))
+                self.assertEqual(self.quiet(line, input, VOICE)[1], "")
 
     def test_the_quiet_move_is_one_the_body_declared(self):
-        """A body whose emote has no "attentive1" has the kernel's own move refused, and the model is then told
+        """A body whose emote has no "attentive" has the kernel's own move refused, and the model is then told
         its body "could not do emote: invalid input"."""
         emote = {"name": "emote", "inputSchema": {"type": "object", "properties": {"name": {"enum": ["nod1"]}}}}
         declared = manifest.check_manifest({"senses": ["speech"], "tools": [emote]})
-        state = policy.submit(Companion(), "body", "t1", "How do you", {}, False, {"medium": "speech"})[0]
-        quiet = policy.quiet_move("How do you", {"medium": "speech"}, (), ("emote",), policy.clips(declared["tools"]))
-        state, rows = policy.decided(state, "t1", policy.compile_prompt(state, "body", declared), quiet,
-                                     declared["tools"], 10, 1.0)
-        self.assertEqual([call.outcome for call in state.exchanges[-1].calls], [""])  # nothing it could not do
+        state, quiet = self.quiet("Yeah.", {"medium": "speech"}, declared)
+        self.assertEqual(json.loads(quiet), {"reply": "", "emote": {"name": "nod1"}})
+        rows = policy.decided(state, "t1", policy.compile_prompt(state, "body", declared), quiet, declared["tools"], 10, 1.0)[1]
         self.assertEqual([row.kind for row in rows], ["decided", "emote", "completed"])
 
     def test_a_body_without_emote_gets_silence_alone(self):
-        self.assertEqual(json.loads(policy.quiet_move("How do you", {"medium": "speech"}, (), ())), {"reply": ""})
+        still = manifest.check_manifest({"senses": ["speech"], "tools": []})
+        self.assertEqual(json.loads(self.quiet("Yeah.", {"medium": "speech"}, still)[1]), {"reply": ""})
 
-    def test_the_kernel_never_asks_the_model_for_a_fragment(self):
+    def test_the_kernel_never_asks_the_model_for_a_stray_yeah(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         prompts = []
@@ -182,7 +152,7 @@ class QuietMoves(unittest.TestCase):
             return json.dumps({"reply": "Tomorrow? Let's see what happens."})
         kernel = Kernel(Journal(Path(directory.name) / "k.sqlite3"), decide, clock=lambda: SUNDAY.timestamp(), tz=EAST)
         kernel.hello("reachy", {"protocols": [1], "manifest": RAW})
-        kernel.event("reachy", {"kind": "submitted", "turn_id": "t1", "text": "How do you", "timing": {},
+        kernel.event("reachy", {"kind": "submitted", "turn_id": "t1", "text": "Yeah.", "timing": {},
                                 "input": {"medium": "speech"}})
         deadline = time.monotonic() + 5
         while kernel.state.turn.status == "active" and time.monotonic() < deadline:

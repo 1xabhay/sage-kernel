@@ -449,6 +449,9 @@ class Executor:
         self.idle, self.cues = idle, cues
         self._cue: asyncio.Task | None = None  # a glance or a thought
         self._hearing: set[asyncio.Task] = set()  # the "heard:" log lines being read (attend)
+        #: The last speech onset's direction of arrival, degrees as its "heard:" line, or None:
+        #: pipeline's ``stt:`` line takes it, so a transcript costs the daemon no read of its own.
+        self.heard_doa: float | None = None
         self._doa_read = asyncio.Lock()  # one read at a time: speech_detected is the last read's
         self._away = None  # the head pose a thought glanced away from
         self._moved_at = -math.inf  # when the head last moved, for the glance's cooldown
@@ -1024,6 +1027,7 @@ class Executor:
             face = await self._see(self._peek)
         if angle is not None:
             angle = math.degrees(angle)
+        self.heard_doa = angle
         voice = None if head is None or angle is None else head + 90 - angle  # as the glance's
 
         def deg(value: float | None, spec: str = "+.0f") -> str:

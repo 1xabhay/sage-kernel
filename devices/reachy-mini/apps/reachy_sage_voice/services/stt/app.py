@@ -7,9 +7,10 @@ beside it for the noise trace (eval/noise.py), and old clients ignore them. The 
 accepted and ignored: this server has one model.
 Adapted from an earlier Pipecat voice bot's STT service.
 
-Owner only: with a voiceprint at SAGE_VOICEPRINT (`make enroll`), a segment in any other voice,
-or music, comes back as no text, and POST /v1/speaker/verify says whether a clip is the owner
-(the voice's barge-in asks it). The speaker model is WeSpeaker ResNet34-LM through onnx-asr.
+With a voiceprint at SAGE_VOICEPRINT (`make enroll`), every segment is still transcribed and
+`similarity` ranks its voice against the owner's: a guest is never silenced here (owner decision
+2026-11-21). POST /v1/speaker/verify says whether a clip is the owner (the voice's barge-in asks
+it). The speaker model is WeSpeaker ResNet34-LM through onnx-asr.
 """
 import io
 import os
@@ -27,8 +28,9 @@ MODEL = "nemo-parakeet-tdt-0.6b-v2"
 SPEAKER_MODEL = "Wespeaker/wespeaker-voxceleb-resnet34-LM"
 RATE = 16000
 VOICEPRINT = Path(os.environ.get("SAGE_VOICEPRINT", "/profiles/owner.npy"))
-# Cosine similarity to the voiceprint that counts as the owner. ponytail: 0.5 is WeSpeaker's usual
-# range on clean audio; calibrate on the robot's mic with `make enroll` (it prints each recording's).
+# Cosine similarity to the voiceprint that counts as the owner, for /v1/speaker/verify only
+# (transcripts carry the raw score). ponytail: 0.5 is a GUESS, never measured: WeSpeaker's usual
+# range on clean audio. Measure on the robot's mic: eval/score.py speaker, owner and impostor clips.
 THRESHOLD = float(os.environ.get("SAGE_SPEAKER_THRESHOLD", "0.5"))
 MIN_ENROLL_S = 1.0  # shorter recordings say too little about a voice
 _model = _speaker = _voiceprint = None
@@ -90,9 +92,6 @@ def transcribe(file: UploadFile = File(...), model: str = Form(""), language: st
     if not len(audio):
         return {"text": ""}
     score = None if _voiceprint is None else round(similarity(audio), 3)
-    if score is not None and score < THRESHOLD:
-        print(f"stt: not the owner's voice ({score:.2f}), not transcribed", file=sys.stderr)
-        return {"text": "", "confidence": None, "similarity": score}
     # The same decode as recognize(), with each token's log-probability kept: the noise trace's
     # strongest cue. ponytail: max-probability confidence; NeMo's entropy measure needs the logits.
     result = _model.with_timestamps().recognize(audio, sample_rate=RATE)

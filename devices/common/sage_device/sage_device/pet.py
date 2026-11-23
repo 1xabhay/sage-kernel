@@ -175,22 +175,7 @@ def misheard(line: str) -> bool:
     sentences = (re.findall(r"[\w']+", part) for part in re.split(r"[.!?]", line.lower()))
     repeating = any(w[i:i + n] == w[i + n:i + 2 * n] for w in sentences
                     for n in (1, 2, 3) for i in range(len(w) - 2 * n + 1))
-    unsure = len(said) <= 4 and end != "?" and not _said_to_sage(said)
-    return end not in ".!?" or unsure or repeating
-
-
-def _said_to_sage(said: list[str]) -> bool:
-    return said[-1] not in _HANGING and (
-        bool(_TO_SAGE & set(said)) or said[0] in _REQUESTS
-        or bool(_NEAR_SAGE & {said[0], said[-1]}))
-
-
-_TO_SAGE = {"sage", "i", "i'm", "i've", "i'll", "i'd", "me", "my", "you", "your", "you're", "we",
-            "us", "our", "let's"}
-_NEAR_SAGE = frozenset({"age", "saige", "sayge", "sarge"})  # "Sage", heard a little wrong
-_REQUESTS = {"sing", "tell", "dance", "count", "show", "play", "wake", "search", "find"}
-_HANGING = {"gonna", "to", "the", "a", "an", "and", "but", "or", "so", "just", "of", "because",
-            "if", "that", "was", "is", "i", "i'm", "my", "your", "you're"}
+    return end not in ".!?" or repeating
 
 
 _COMMON = {"hi", "hello", "hey", "hi there", "hello there", "okay", "ok", "yes", "no", "yeah",

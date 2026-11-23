@@ -1,7 +1,7 @@
-"""Whether a transcript is worth answering, for any body: ``PASS``, ``UNSURE`` or ``QUIET``.
+"""Whether a transcript is worth answering, for any body (``trustworthy``, ``unfinished``).
 
 The STT writes something for every noise, and a confident answer to noise is worse than none.
-``UNSURE`` is what a pet that did not catch you shows; what it looks like is the body's own.
+What a body does with a doubted line is ``gate.attend``'s to say; what a look is, the body's own.
 Precision first: ignoring someone who spoke clearly is the failure that matters, so a line is
 only doubted when it is a cut-off scrap, a lone word that answers nothing, or a stuck decoder.
 Questions, exclamations, distress and the body's names are never doubted. Ported from the archived
@@ -11,13 +11,11 @@ row: its total counts doubted real talk that says "like" four times.
 ponytail: lexical; STT confidence or n-best would do better, if the STT ever sends them.
 """
 
-import math
 import re
 from collections.abc import Callable
 
-PASS, UNSURE, QUIET = "pass", "unsure", "quiet"
-#: At most one ``UNSURE`` this often, in seconds: others are ``QUIET``. Its motors can make the
-#: next noise, and this bounds that loop. ponytail: tune live.
+#: At most one look (``gate.ACK``) this often, in seconds: others show nothing. Its motors can make
+#: the next noise, and this bounds that loop. ponytail: tune live.
 COOLDOWN_S = 8.0
 #: Most words in a cut-off line still doubted: longer ones are mostly real speech the VAD clipped.
 SCRAP_WORDS = 3
@@ -77,15 +75,3 @@ def trustworthy(line: str, named: Callable[[str], bool] = lambda word: False) ->
         return True
     return not (len(words) == 1 or (len(words) <= SCRAP_WORDS and unfinished(line)))
 
-
-def decide(line: str, since_unsure: float = math.inf, busy: bool = False, asked: bool = False,
-           named: Callable[[str], bool] = lambda word: False, half: bool = False) -> str:
-    """Return what the body does with ``line``: ``PASS`` it on, show ``UNSURE``, or stay ``QUIET``.
-
-    ``since_unsure``: seconds since it last showed it. ``busy``: voice or body has something else
-    to do. ``asked``: it just asked a question, so whatever comes back is the answer.
-    ``half``: the caller found it cut off (``floor.half_heard``).
-    """
-    if asked or (trustworthy(line, named) and not half):
-        return PASS
-    return QUIET if busy or since_unsure < COOLDOWN_S else UNSURE

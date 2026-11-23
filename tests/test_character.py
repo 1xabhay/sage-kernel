@@ -23,7 +23,6 @@ print(json.dumps({"system": prompt.system, "line": prompt.context[-1]["content"]
                   "distress": policy.needs_words("Help me!"), "question": policy.needs_words("Why is it dark?"),
                   "alive": policy.honest("I am alive.", ("speech",)),
                   "clock": policy.clock_answer("What day is it?", __import__("datetime").datetime(2026, 1, 5, 9, 30)),
-                  "named": policy.misheard("Mono."), "old_name": policy.misheard("Age."),
                   "copied": speech.speakable("Hi. [Stay Momo: short.]", (), True)}))
 """
 
@@ -37,7 +36,7 @@ print(json.dumps({"distress": [policy.needs_words("Hilfe!"), policy.needs_words(
                   "question": policy.needs_words("Warum ist es dunkel."),
                   "quiet": [disposition.asks_for_quiet("Ruhe bitte."), disposition.asks_for_quiet("Be quiet.")],
                   "day": policy.clock_answer("Welcher Tag ist heute?", monday), "when": policy.situation(monday),
-                  "misheard": [policy.misheard("Hallo."), policy.misheard("Hello."), policy.misheard("Tanz mal.")],
+                  "misheard": [policy.misheard("Hallo"), policy.misheard("Hello"), policy.misheard("Tanz mal.")],
                   "repeat": [policy.asks_to_repeat("Wie bitte?"), policy.asks_to_repeat("Say that again.")],
                   "alive": policy.claims_life("Ich bin lebendig."),
                   "sees": policy.false_senses("Ich sehe dich.", ("speech",)),
@@ -73,7 +72,7 @@ class CharacterFile(unittest.TestCase):
 
     def test_another_file_is_another_pet(self):
         momo = self.character
-        momo["name"], momo["name_misheard"], momo["never_said"] = "Momo", ["mono"], ["stay momo"]
+        momo["name"], momo["never_said"] = "Momo", ["stay momo"]
         momo["prompt"].update(persona="You are Momo, a cat.", stay="[Stay Momo: short.]", examples=["Hi. -> {\"reply\": \"Mrow.\"}"])
         momo["lines"].update(distress="Momo is here.", question="Momo does not know.", alive="Momo is a toy.")
         momo["templates"]["clock_day"] = "Today is {day}."
@@ -87,16 +86,13 @@ class CharacterFile(unittest.TestCase):
         self.assertEqual(got["question"], "Momo does not know.")
         self.assertEqual(got["alive"], "Momo is a toy.")
         self.assertEqual(got["clock"], "Today is Monday.")
-        self.assertFalse(got["named"], "its own name, nearly heard, is said to it")
-        self.assertTrue(got["old_name"], "another pet's name is no name here")
         self.assertEqual(got["copied"], "Hi.")
 
     def test_with_no_file_named_the_pet_is_sage(self):
         shown = python("-c", SHOW)
         self.assertEqual(shown.returncode, 0, shown.stderr)
         got = json.loads(shown.stdout)
-        self.assertTrue(got["system"].startswith("You are Sage, a small robot friend"))
-        self.assertEqual((got["named"], got["old_name"]), (True, False))
+        self.assertTrue(got["system"].startswith("You are Sage, a small robot companion"))
 
     def test_a_file_missing_a_key_stops_the_start_and_names_it(self):
         del self.character["prompt"]["persona"]
@@ -121,7 +117,7 @@ class CharacterFile(unittest.TestCase):
                                   alive=[r"\bich bin lebendig\b"], interruption=[r"\bunterbrochen\b"],
                                   suffix=["(en|e|n)$"])
         german["patterns"]["claims"]["vision"] = [r"\bich sehe dich\b"]
-        german["words"].update(common=["hallo"], requests=["tanz"], stopwords=["der", "die", "das", "und"])
+        german["words"].update(common=["hallo"], stopwords=["der", "die", "das", "und"])
         shown = python("-c", READS, character=self.write())
         self.assertEqual(shown.returncode, 0, shown.stderr)
         got = json.loads(shown.stdout)

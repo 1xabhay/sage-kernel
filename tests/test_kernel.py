@@ -219,61 +219,19 @@ class RepeatGuard(unittest.TestCase):
         decide, prompts = answers(*answered, consumed=consumed)
         return started(self, decide), prompts
 
-    def test_a_repeat_is_retried_once_with_a_note_and_the_new_reply_is_delivered(self):
+    def test_a_repeat_where_silence_would_do_is_left_unsaid_and_the_model_is_not_asked_again(self):
+        """Asked again, the model paraphrased itself (tests/test_companion.py has a repeat's move, and a question's)."""
         kernel, prompts = self.kernel("Hello there.", "Hello there!", "Nice to see you.")
         say(kernel, "r1")
-        self.assertEqual([e["text"] for e in say(kernel, "r2")], ["Nice to see you."])
-        self.assertEqual(len(prompts), 3)
-        self.assertEqual(prompts[2].context[:-1], prompts[1].context[:-1])
-        self.assertIn('"Hello there!"', prompts[2].context[-1]["content"])  # the note quotes the repeat
-        self.assertEqual(rejected(kernel), ["repeat of a recent reply"])
+        self.assertEqual(say(kernel, "r2"), [])
+        self.assertEqual((len(prompts), rejected(kernel)), (2, ["repeat of a recent reply"]))
+        self.assertEqual([e["text"] for e in say(kernel, "r3")], ["Nice to see you."])
 
     def test_a_repeat_after_a_streamed_piece_is_delivered_whole_with_no_second_call(self):
         kernel, prompts = self.kernel("It is good to hear you.", ['{"reply": "Oh wow! ', 'It is good to hear you."}'])
         say(kernel, "r1")
         self.assertEqual([e["text"] for e in say(kernel, "r2")], ["Oh wow! It is good to hear you."])
         self.assertEqual((len(prompts), rejected(kernel)), (2, []))
-
-    def test_a_template_repeat_held_back_ends_its_call_after_four_words_and_retries_at_once(self):
-        consumed = []
-        kernel, prompts = self.kernel(
-            "It is good to hear you.",
-            ['{"reply": "', "It ", "is ", "good ", "to ", "hear ", "from ", "you ", 'again."}'],
-            "Nice to see you.", consumed=consumed)
-        say(kernel, "r1")
-        self.assertEqual([e["text"] for e in say(kernel, "r2")], ["Nice to see you."])
-        self.assertEqual((len(prompts), rejected(kernel)), (3, ["repeat of a recent reply"]))
-        self.assertEqual(consumed[1], 6)  # ended once "to" was whole, not run on to "again."
-
-    def test_a_second_repeat_is_delivered_anyway(self):
-        kernel, prompts = self.kernel("Hello there.", "Hello there.", "hello, there")
-        say(kernel, "r1")
-        self.assertEqual([e["text"] for e in say(kernel, "r2")], ["hello, there"])
-        self.assertEqual(len(prompts), 3)
-
-
-class Remembering(unittest.TestCase):
-    def test_a_name_outlives_the_window_and_a_restart(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        path, prompts = Path(directory.name) / "k.sqlite3", []
-        queue = [json.dumps({"reply": "Hi Juno!", "remember": "Their name is Juno."})]
-        lines = policy.WINDOW + 1  # enough that the window has dropped the first exchange
-        queue += [json.dumps({"reply": f"Reply number {n}."}) for n in range(lines)]
-
-        def decide(prompt, heard):
-            prompts.append(prompt)
-            return queue.pop(0)
-        for n, text in enumerate(["My name is Juno."] + [f"Line {n}." for n in range(lines)]):
-            if n in (0, lines):  # the last exchange after a restart
-                kernel = Kernel(Journal(path), decide)
-                kernel.hello("reachy", {"protocols": [1], "manifest": VOICE})
-            say(kernel, f"r{n}", text)
-        self.assertIn("- Their name is Juno.", prompts[-1].system)
-        self.assertNotIn("Juno", json.dumps(prompts[-1].context))
-        with closing(sqlite3.connect(path)) as connection:
-            self.assertEqual(connection.execute("SELECT body, target FROM journal WHERE kind = 'remember'").fetchall(),
-                             [('{"fact": "Their name is Juno."}', None)])
 
 
 class Prewarm(unittest.TestCase):

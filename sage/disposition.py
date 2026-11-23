@@ -15,7 +15,9 @@ GREET_AFTER_S = 5 * 60  # an absence at least this long makes the next sighting 
 ENGAGED_S = 60.0
 RESTLESS_S = 10 * 60
 NUDGE_BUDGET = 3  # per hour
-NUDGE_COOLDOWN_S = 15 * 60
+# At most one unprompted remark in this long, and twice as long after each one the person did not answer (owner,
+# 2026-11-21). ponytail: 20 minutes is a guess; count nudges answered within a minute in the journal to tune it.
+NUDGE_COOLDOWN_S = 20 * 60
 QUIET_S = 30 * 60
 # ponytail: a lexical rule until the System 1 classifier replaces it.
 QUIET = re.compile(character.CHARACTER["patterns"]["quiet"])
@@ -25,8 +27,8 @@ QUIET = re.compile(character.CHARACTER["patterns"]["quiet"])
 class Timings:
     """The settings, configurable: SAGE_GREET_AFTER_ABSENT_S, SAGE_NUDGE_AFTER_IDLE_S, SAGE_QUIET_S,
     SAGE_NUDGE_GAP_S, SAGE_NUDGES_PER_HOUR, SAGE_GREET_ON_START and SAGE_ENGAGED_S. A nudge counts against
-    the budget and the gap when it is decided, so one answered with silence counts too (lead), and no
-    other follows until the person has spoken since (owner rule: never repeat one that went unanswered)."""
+    the budget and the gap when it is decided, so one answered with silence counts too (lead), and each one
+    the person has not spoken since doubles the gap before the next (owner, 2026-11-21: back off when ignored)."""
     greet_after_s: float = GREET_AFTER_S
     nudge_after_idle_s: float = RESTLESS_S
     quiet_s: float = QUIET_S
@@ -47,7 +49,8 @@ class Disposition:
     last_activity: float | None = None  # the last thing that happened between them: arrival, a turn, a greet, a nudge
     quiet_until: float | None = None
     nudges: tuple[float, ...] = ()  # within the last hour
-    last_nudge: float | None = None  # the person must speak after it before another (never a repeat unanswered)
+    last_nudge: float | None = None
+    ignored: int = 0  # nudges since the person last spoke: each doubles the gap before the next
 
 
 def asks_for_quiet(text: str) -> bool:
@@ -80,13 +83,12 @@ def step(d: Disposition, kind: str, now: float, text: str = "", t: Timings = DEF
         return replace(d, present=False, absent_since=now), ()
     if kind == "spoke":
         until = now + t.quiet_s if asks_for_quiet(text) else None  # speaking to it ends quiet; asking starts it
-        return replace(d, last_spoke=now, last_activity=now, quiet_until=until), ()
+        return replace(d, last_spoke=now, last_activity=now, quiet_until=until, ignored=0), ()
     if kind != "tick":
         raise ValueError(f"unknown disposition event {kind!r}")
     recent = tuple(at for at in d.nudges if now - at < 3600)
     d = replace(d, nudges=recent)
-    answered = d.last_nudge is None or (d.last_spoke is not None and d.last_spoke > d.last_nudge)
-    if (state(d, now, t) == "restless" and answered and len(recent) < t.nudges_per_hour
-            and (not recent or now - recent[-1] >= t.nudge_gap_s)):
-        return replace(d, nudges=recent + (now,), last_nudge=now, last_activity=now), ("nudge",)
+    waited = d.last_nudge is None or now - d.last_nudge >= t.nudge_gap_s * 2 ** d.ignored
+    if state(d, now, t) == "restless" and waited and len(recent) < t.nudges_per_hour:
+        return replace(d, nudges=recent + (now,), last_nudge=now, last_activity=now, ignored=d.ignored + 1), ("nudge",)
     return d, ()

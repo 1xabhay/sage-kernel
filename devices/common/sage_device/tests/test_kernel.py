@@ -397,3 +397,38 @@ def test_notes_go_out_with_their_topic_and_passages_and_a_refusal_is_an_outage(k
     asyncio.run(go())
     assert kernel.events("notes")[0] == {
         "kind": "notes", "topic": "a made-up song", "passages": passages}
+
+
+def test_a_turn_the_gate_answered_says_so_in_a_header_and_the_event_gains_no_field(kernel):
+    """Protocol v1.5 §3: ``Sage-Addressed: 1``. Kernels refuse unknown fields; old ones skip it."""
+    hello_v11(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+    s = session(kernel)
+
+    async def go():
+        await s.start("reachy-1", "hi", {}, {"medium": "speech"}, addressed=True)
+        await s.start("reachy-2", "what a goal", {}, {"medium": "speech"})  # the TV's moment
+    asyncio.run(go())
+    sent = [{k.lower(): v for k, v in r["headers"].items()}.get("sage-addressed")
+            for r in kernel.requests if r["path"] == "/v1/events"]
+    assert sent == ["1", None]
+    assert [set(e) for e in kernel.events()] == [{"kind", "turn_id", "text", "input"}] * 2
+
+
+def test_whose_voice_it_was_goes_in_a_header_and_none_when_the_body_cannot_tell(kernel):
+    """Protocol v1.6 §3: ``Sage-Speaker: owner`` or ``guest``; no guest's line is remembered."""
+    hello_v11(kernel)
+    kernel.script("POST", "/v1/events", (200, {"sequence": 41}))
+    s = session(kernel)
+
+    async def go():
+        heard = {"medium": "speech"}
+        await s.start("reachy-1", "hi", {}, heard, addressed=True, speaker="owner")
+        await s.start("reachy-2", "hello", {}, heard, addressed=True, speaker="guest")
+        await s.start("reachy-3", "hey", {}, heard, addressed=True)  # no voiceprint enrolled
+    asyncio.run(go())
+    sent = [{k.lower(): v for k, v in r["headers"].items()}
+            for r in kernel.requests if r["path"] == "/v1/events"]
+    assert [(h.get("sage-addressed"), h.get("sage-speaker")) for h in sent] == [
+        ("1", "owner"), ("1", "guest"), ("1", None)]
+    assert [set(e) for e in kernel.events()] == [{"kind", "turn_id", "text", "input"}] * 3

@@ -9,8 +9,68 @@ and every protocol change is listed under **Protocol**.
 
 ## [Unreleased]
 
+### Changed
+
+- Memory is written after the conversation, not by the model mid-turn (owner, 2026-11-21: only what
+  is said to Sage; a guest for one conversation; overheard speech never). `remember` and `forget`
+  are gone from the answer's schema, the prompt and the examples. A conversation ends 5 minutes
+  after the last line said to Sage (`SAGE_SESSION_IDLE_S`) or at 40 such lines; its context is then
+  emptied, where it used to run on for hundreds of lines. Between conversations a local model
+  (`SAGE_WRITER_MODEL`, default the talking one; `off` for none) reads only the lines said to Sage,
+  not by a guest and clearly heard, and proposes at most 5 changes and a line about the day; the
+  kernel refuses any that cites no such line. The call is dropped the moment a turn starts.
+- `facts` in the checkpoint are records `{id, who, kind, text, at, from}`. A checkpoint of an earlier
+  kernel loads with every fact kept (`who` unknown, `kind` person). At most 200, was 20.
+- The system prompt ends with at most 600 characters of memory (who they are, the last day, what is
+  open), records from an unknown voice apart and never greeted by name from; past 20 records, 2 more
+  that match ride on the newest line. The greeting may ask after one open thing, never more.
+- "Forget about …" and "what do you remember?", said to Sage, are answered by the kernel with no
+  model call. A forget also keeps everything said so far in that conversation from the writer.
+- Character keys added: `prompt.memory_none`, `memory_unplaced`, `recalled`, `recall_kinds`, `writer`,
+  `writer_known`, `writer_said`, `writer_answered`, `lines.forgot_none`, `remembers`, `remembers_none`,
+  `templates.forgot`, `remembers_more`, `patterns.forgets`, `asks_memory`, `words.forget_that`;
+  `prompt.memory` and `proactive.greet` reworded. A custom character file needs the new keys.
+- Sage is a companion on every speaking body (owner, 2026-11-21). The "mostly a move" persona, its
+  examples and the kernel's guess at who a short line was said to are gone; the character file's
+  persona asks for one or two short spoken sentences, the answer first, with a feeling alongside.
+  An example's tool call is shown only to a body that can perform it. Character keys removed:
+  `name_misheard`, `prompt.moving_persona`, `moving_stay`, `move_lines`, `spoken_examples`,
+  `no_repeat`, `templates.repeat`, `words.addressed`, `requests`, `hanging`. Added: `prompt.text_stay`,
+  `unclear_again`, `unknown_again`, `asked_last`, `lines.move_on`, `patterns.admits`, `asks_again`.
+- Not knowing and not hearing are each handled once, in code: a line only partly heard is marked
+  "(unclear)" on the newest message alone; a second one running adds a note not to ask again, and a
+  third gets a move with no model call. After a reply that said it did not know, a note says not to
+  say so again, a sentence that does is dropped, and the last resort is a line that moves on, never
+  a second "don't know". After its own question, a note asks for none. The last resort for a
+  question is "I'm not sure about that one.", and a garbled question never gets it.
+- Context keeps only the turns Sage spoke in: a turn answered with no words, or interrupted before
+  one, is not kept, and an exchange the kernel's last resort answered is not shown to the model.
+- The repeat guard matches only the same words (of 373 rejections in 96 h of the live journal, 151
+  were exact and 222 were the same four opening words), and asks the model nothing again: where
+  silence would do, the repeat becomes its move alone; a question asked again gets its answer again.
+- Nudges: at most one in 20 minutes (`SAGE_NUDGE_GAP_S` 1200, was 900), and each one left unanswered
+  doubles the wait, replacing "never twice unanswered".
+- `evals/companion.py` scores the conversation design on a journal's lines: as recorded, the recorded answers through this kernel
+  (no model), and, with `--model`, answered again.
+
 ### Added
 
+- `python -m sage memory list | forget ID | edit ID "text" | add "text"`: what Sage remembers, each
+  record with the line it came from, for its owner to see and fix while the kernel runs.
+- **Protocol** (v1.6, additive): a `submitted` request may carry `Sage-Speaker: owner` or `guest`
+  beside `Sage-Addressed: 1`; both marks are journaled on the line's row. A line with no
+  `Sage-Addressed` mark that was not typed is never part of a conversation or of memory.
+  `sage_device` sends the speaker when told one, and the Reachy voice sends the voiceprint's verdict.
+- `evals/memory.py`: `sessions <journal>` counts conversations under the rule and the writer's share
+  of lines (no model); `writer --model <name>` scores the writer on scripted conversations.
+- A hosted model for addressed turns, off by default. `SAGE_HOSTED=anthropic` with `ANTHROPIC_API_KEY`
+  sends the prompt of a line its device marked as addressed to `SAGE_HOSTED_MODEL` (default
+  `claude-haiku-5-5`); every other line stays on the local model. No first piece within
+  `SAGE_HOSTED_DEADLINE_S` (default 2.5), or any failure before words were heard, and the local model
+  answers the turn instead; the decided row's `model_timing` names the hosted `model`, or the `fallback`.
+  Text only, and the key is never logged. SECURITY.md says exactly what leaves. Unset: no change.
+- **Protocol** (v1.5, additive): a `submitted` request may carry the header `Sage-Addressed: 1`. A kernel
+  that does not know it ignores it; no event field changes.
 - The pet's character is a file: its name and the near-misses of it, the persona, the examples, the notes
   to the model and the fixed spoken lines moved from `sage/policy.py` to `sage/character.json`.
   `SAGE_CHARACTER` names another file, read once at start; one missing a key, or with a key of the wrong
@@ -79,6 +139,12 @@ and every protocol change is listed under **Protocol**.
   to such a line is never a miss.
 
 ### Protocol
+
+- **Changed** (v1.5): the manifest's `moves` field is ignored and `moves` is no longer listed in
+  `features`; a line is framed `heard (unclear): "…"`, on the newest message only, and without a
+  `confidence` only an unfinished or repeating line is; an exact repeat where no words are needed
+  is delivered as its tool effects alone, with no reply; a turn with no reply is not kept in the
+  model's context; `SAGE_NUDGE_GAP_S` defaults to 1200 and doubles per unanswered nudge.
 
 - v1.2, per-device turn lanes (§1, §3, §5, §7): each device has its own turn.
   Another body's turn no longer makes a device `busy`; a turn cut off by a

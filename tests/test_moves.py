@@ -1,5 +1,5 @@
 """A turn that ends with a move and no words, and the lines where silence is never allowed, on any body
-(docs/PROTOCOL.md "Moves")."""
+(docs/PROTOCOL.md "Moves"). How a companion talks is tests/test_companion.py."""
 
 import json
 import tempfile
@@ -12,11 +12,10 @@ from sage.journal import Journal
 from sage.kernel import Kernel
 from sage.policy import Companion
 
-SOOTHE, AGREE, UNSURE = {"wave": {"how": "slow"}}, {"wave": {"how": "nod"}}, {"wave": {"how": "tilt"}}
+SOOTHE = {"wave": {"how": "slow"}}
 WAVE = {"name": "wave", "description": "Move.", "max_s": 3,
         "inputSchema": {"type": "object", "properties": {"how": {"enum": ["slow", "nod", "tilt"]}}, "required": ["how"]}}
-MOVES = {"comfort": SOOTHE, "agree": AGREE, "unsure": UNSURE}
-MOVING = {"senses": ["speech"], "tools": [WAVE], "moves": MOVES}
+MOVING = {"senses": ["speech"], "tools": [WAVE]}
 STILL = {"senses": ["speech"], "tools": []}
 
 
@@ -29,41 +28,8 @@ def prompt_for(declared, text="Hi"):
     return policy.compile_prompt(state, "body", manifest.check_manifest(declared))
 
 
-class Declared(unittest.TestCase):
-    def test_a_manifest_keeps_valid_moves(self):
-        self.assertEqual(manifest.check_manifest(MOVING)["moves"], MOVES)
-        self.assertNotIn("moves", manifest.check_manifest(STILL))
-
-    def test_moves_must_be_answers_this_body_can_perform(self):
-        for moves in ({"comfort": {"fly": {}}}, {"comfort": {"wave": {"how": "spin"}}}, {"comfort": {}},
-                      {"dance": SOOTHE}, {}, "wave", {"comfort": "wave"}, {"comfort": {"reply": "Hi"}}):
-            with self.subTest(moves=moves), self.assertRaises(ValueError):
-                manifest.check_manifest({**MOVING, "moves": moves})
-
-
 class Prompt(unittest.TestCase):
-    def test_a_body_with_moves_is_taught_silence_with_its_own_moves(self):
-        prompt = prompt_for(MOVING)
-        lines = prompt.system.split("\n\n")[1].splitlines()[1:]
-        shown = [json.loads(line.split(" -> ", 1)[1]) for line in lines]
-        for move in MOVES.values():
-            self.assertIn({"reply": "", **move}, shown)
-        self.assertTrue(any(example["reply"] for example in shown))  # a direct question still gets words
-        self.assertTrue(all(next(iter(example)) == "reply" for example in shown))  # reply first
-        self.assertIn(policy.MOVING_STAY, prompt.context[-1]["content"])
-        for chatty in ("ask them", "their name", "something back"):
-            self.assertNotIn(chatty, policy.MOVING_PERSONA)
-
-    def test_the_kernel_names_no_body_s_parts_or_moves(self):
-        for name in ("calming1", "confused1", "emote", "antenna", "reachy"):
-            self.assertNotIn(name, (policy.MOVING_PERSONA + policy.MOVING_STAY).lower())
-
-    def test_only_the_roles_a_body_declares_become_examples(self):
-        system = prompt_for({**MOVING, "moves": {"unsure": UNSURE}}).system
-        self.assertIn('"tilt"', system.split("\n\n")[1])
-        self.assertNotIn('"slow"', system.split("\n\n")[1])
-
-    def test_a_body_without_moves_keeps_the_old_prompt(self):
+    def test_a_body_with_no_tools_gets_the_persona_and_every_example_less_its_feelings(self):
         prompt = prompt_for(STILL)
         self.assertTrue(prompt.system.startswith(policy.PERSONA + "\n\n" + policy.EXAMPLES))
         self.assertIn(policy.STAY, prompt.context[-1]["content"])
@@ -71,9 +37,9 @@ class Prompt(unittest.TestCase):
     def test_a_text_body_keeps_its_prompt_whatever_it_declares(self):
         prompt = prompt_for({**MOVING, "output": {"medium": "text"}})
         self.assertTrue(prompt.system.startswith(policy.TEXT_PERSONA))
-        self.assertIn(policy.STAY, prompt.context[-1]["content"])
+        self.assertIn(policy.TEXT_STAY, prompt.context[-1]["content"])
 
-    def test_the_prefix_is_byte_stable_across_silent_and_spoken_turns(self):
+    def test_the_prefix_is_byte_stable_across_silent_and_spoken_turns_and_keeps_only_the_spoken(self):
         declared = manifest.check_manifest(MOVING)
         state, silent, seen = Companion(), answer("", **SOOTHE), []
         for n, (line, raw) in enumerate((("One.", silent), ("Two.", answer("Hm.")), ("Three.", silent))):
@@ -82,9 +48,8 @@ class Prompt(unittest.TestCase):
             seen.append(prompt)
             state = policy.decided(state, f"t{n}", prompt, raw, declared["tools"], 10 + 10 * n, 1.0)[0]
         self.assertEqual({prompt.system for prompt in seen}, {seen[0].system})
-        self.assertEqual(seen[2].context[:3], seen[1].context)
-        self.assertEqual(seen[2].context[3]["content"], answer("Hm."))
-        self.assertEqual(seen[1].context[1]["content"], silent)  # silence in history, as the model answered it
+        self.assertEqual(seen[2].context[:1], seen[1].context)  # "One." got a move and no words: not conversation
+        self.assertEqual(seen[2].context[1]["content"], answer("Hm."))
 
 
 class NeedsWords(unittest.TestCase):
@@ -121,8 +86,7 @@ class Decided(unittest.TestCase):
         self.assertEqual([row.kind for row in rows], ["decided", "wave", "completed"])
         self.assertEqual(rows[0].body["output"], raw)
         self.assertEqual(rows[1].body, {"input": SOOTHE["wave"]})
-        self.assertEqual(state.exchanges[-1].reply, "")
-        self.assertIsNone(state.exchanges[-1].reply_sequence)
+        self.assertEqual(state.exchanges, ())  # not kept as conversation; the move's result is still awaited
         self.assertEqual([o.kind for o in state.open], ["wave"])
 
     def test_a_question_still_silent_gets_the_last_resort_and_keeps_its_move(self):

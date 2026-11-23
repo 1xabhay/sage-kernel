@@ -30,6 +30,10 @@ def acted(act_id: str, what: str, status: str, input: dict | None = None,
     return {k: v for k, v in event.items() if v is not None}
 
 
+#: Sent with a ``submitted`` the body's gate answered (protocol v1.5 §3).
+ADDRESSED = {"Sage-Addressed": "1"}
+
+
 class KernelUnavailableError(Exception):
     """The kernel could not be reached, or answered nonsense.
 
@@ -53,10 +57,10 @@ class KernelClient:
         """Declare protocol 1 and what this body can do."""
         return self._call("POST", "/v1/hello", {"protocols": [1], "manifest": manifest})
 
-    def event(self, body: dict) -> tuple[int, dict]:
+    def event(self, body: dict, headers: dict | None = None) -> tuple[int, dict]:
         """Send one event, waiting out ``rate_limited`` (``stop`` is never limited)."""
         for _ in range(self.RATE_LIMIT_TRIES):
-            status, answer = self._call("POST", "/v1/events", body)
+            status, answer = self._call("POST", "/v1/events", body, headers=headers)
             if answer.get("code") != "rate_limited":
                 break
             self.sleep(float(answer.get("retry_after", 1)))
@@ -68,9 +72,9 @@ class KernelClient:
         return self._call("GET", path, timeout_s=wait + self.timeout_s)
 
     def _call(self, method: str, path: str, body: dict | None = None,
-              timeout_s: float | None = None) -> tuple[int, dict]:
+              timeout_s: float | None = None, headers: dict | None = None) -> tuple[int, dict]:
         data = json.dumps(body).encode() if body is not None else None
-        headers = {"Authorization": f"Bearer {self.token}"}
+        headers = {"Authorization": f"Bearer {self.token}", **(headers or {})}
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.url + path, data, headers, method=method)
@@ -128,10 +132,16 @@ class Session:
         self.features = frozenset(body.get("features", ()))  # none: a plain v1 kernel
 
     async def start(self, turn_id: str, text: str, timing: dict,
-                    input: dict | None = None) -> str:
+                    input: dict | None = None, addressed: bool = False, speaker: str = "") -> str:
         """Submit a turn: "admitted", "busy" (gave up after ``retry_s``), or "refused".
 
         ``input`` says how the line came in (v1.1), for a kernel whose features have it.
+        ``addressed``: the body's gate answered it (``gate.ANSWER``). It goes as the header
+        ``Sage-Addressed: 1`` (protocol v1.5 §3): the kernel refuses an unknown field, and an
+        older kernel ignores a header.
+        ``speaker``: whose voice it was, "owner" or "guest", as ``Sage-Speaker`` (v1.6 §3); "" when
+        the body cannot tell (no voiceprint), and then nothing is sent. The kernel writes to memory
+        only lines said to it, and never a guest's.
         """
         await self._connect()
         event = {"kind": "submitted", "turn_id": turn_id, "text": text}
@@ -141,7 +151,9 @@ class Session:
             event["input"] = input
         deadline, acknowledged = self.clock() + self.retry_s, False
         while True:
-            status, body = await self._io(self.client.event, event)
+            marks = {**(ADDRESSED if addressed else {}),
+                     **({"Sage-Speaker": speaker} if speaker else {})}
+            status, body = await self._io(self.client.event, event, marks)
             if status == 200:
                 return "admitted"
             code = body.get("code")

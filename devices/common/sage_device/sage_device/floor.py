@@ -9,14 +9,13 @@ A statement with no end is half-heard, whatever its length up to ``HALF_WORDS``:
 wait for the rest (``hold_s``) has already run out by then. A line needing words is never that.
 
 Talk not meant for it: real logs are full of the owner on a call, a podcast, people in the room.
-Always on, no wake word: nothing here asks to be addressed, a line must show it was not. It opens
-after a quiet in the middle of a thought, or about other people, and nothing in it says the person,
-the body or a need. When unsure it answers: ignoring its person is the failure that matters.
+``overheard`` reads the words alone: a line that opens in the middle of a thought, or is about other
+people, with nothing in it that says the person, the body or a need. What that means for a line,
+inside a conversation or out of one, is ``gate.attend``'s.
 
 ponytail: lexical, as ``hearing``; STT confidence would do better, if the STT ever sends it.
 """
 
-import math
 import re
 from collections.abc import Callable
 
@@ -35,9 +34,6 @@ GRACE_S = 1.0
 HALF_WORDS = 12
 #: A cut-off statement leads whatever the person says next within this, in seconds: nothing lost.
 CARRY_S = 8.0
-#: After this long with no exchange, in seconds, a line can be overheard; inside one it never is.
-#: ponytail: tune live; real replay, one session: 15 s catches 9 lines, 30 s 8, 120 s 3.
-OPEN_S = 30.0
 _CONTINUING = frozenset(("and", "but", "because"))  # not "so": people open with it
 _OTHERS = frozenset(("he", "he's", "she", "she's", "they", "they're", "they've", "him", "his",
                      "her", "them", "their"))
@@ -86,15 +82,13 @@ def half_heard(line: str, named: Callable[[str], bool] = lambda word: False) -> 
             and opening not in ASKING and must_speak(line, named) in ("", "too long"))
 
 
-def overheard(line: str, since_exchange: float = math.inf, *, asked: bool = False,
-              named: Callable[[str], bool] = lambda word: False) -> bool:
-    """Whether ``line`` is talk it should keep out of: no words, no move, nothing told the kernel.
+def overheard(line: str, named: Callable[[str], bool] = lambda word: False) -> bool:
+    """Whether ``line`` reads as talk between others: mid-thought or about them, no need in it.
 
-    ``since_exchange``: seconds since it last answered anything or spoke. ``asked``: it just asked.
+    The words alone: whether a conversation is open, and what that makes of it, is the gate's.
     """
     words = re.findall(r"[\w'-]+", line.lower().replace("\u2019", "'"))
-    if (asked or since_exchange < OPEN_S or not words or COMMON.issuperset(words)
-            or must_speak(line, named) not in ("", "too long")
+    if (not words or COMMON.issuperset(words) or must_speak(line, named) not in ("", "too long")
             or not (_YOU | _OWN).isdisjoint(words) or _BAD_DAY.search(line.lower())):
         return False
     short_feeling = words[0] in ("i", "i'm") and len(words) <= _FEELING_WORDS  # "I miss her."

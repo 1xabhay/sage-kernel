@@ -112,7 +112,7 @@ own latest turn (v1.2: each device has its own), and appears once it has one.
 
 **Features** (v1.1) name what the kernel serves beyond v1's core, so a device
 degrades gracefully instead of probing with `invalid`: `acted`, `body`,
-`done_text`, `health`, `input`, `moves`, `notes`, `presence`, `saw`, `search`. A device ignores names it
+`done_text`, `health`, `input`, `notes`, `presence`, `saw`, `search`. A device ignores names it
 does not know; a kernel without `features` is v1.
 
 **Health** (v1.1) changes nothing and is never rate-limited. `ok` is true when
@@ -165,8 +165,8 @@ No `reply` effect is longer, whoever wrote it (the model, or a line of the
 kernel's own): a longer one is cut back to its last whole sentence within
 `max_chars`, or with none to its last whole word, never mid-word.
 For `text` the model is told it is chatting by text: no spoken-reply rule, no
-robot or "in front of you" wording, and no line is ever framed "(may be
-misheard)", whatever its `submitted.input`.
+robot or "in front of you" wording, and no line is ever framed "(unclear)",
+whatever its `submitted.input`.
 
 **Search** (v1.4). A manifest may carry `"search": false`: the kernel never
 asks the web for a line this body submitted, whatever the line says. Other
@@ -174,7 +174,7 @@ bodies are unchanged. Anything but true or false is `invalid`. A kernel that
 heeds it lists `search` in `features`; a body whose words must not leave the
 machine checks for that before it sends any.
 
-**Moves** (v1.1, feature `moves`). A turn may end with tool effects and no
+**Moves** (v1.1). A turn may end with tool effects and no
 words, on any body: the model answers `{"reply": "", "<tool>": {...}}`, the
 answer format is unchanged (`reply` stays a required string), and the journal
 holds `decided`, the tool effects and `completed`, with no `reply` and no
@@ -187,23 +187,31 @@ holds `decided`, the tool effects and `completed`, with no `reply` and no
   device that only ends a turn on `reply` waits forever: it must treat
   `completed` without a `reply` as the end, whatever it declared, since the
   model may choose silence on any body.
-- **A body with moves** may declare `moves` in its manifest:
-  `"moves": {"comfort": {"emote": {"name": "calming1"}}, "unsure": {"emote":
-  {"name": "confused1"}}}`. Each key is a role, `comfort`, `agree` or `unsure`
-  (when the person shares something hard, says something the body agrees with,
-  or may be misheard); each value is tool calls by name, checked against the
-  body's own `tools`, or `invalid`. They are the only way a kernel learns what a
-  body's moves mean: it shows them to the model as examples of answering with
-  a move and no words, leaning that speech body's persona to moves over words.
-  A kernel that does not serve `moves` ignores the field.
-- **A body with none** keeps the prompt it had. It gets a reply, or silence if
-  the model chooses it. A `text` body keeps its prompt, whatever it declares.
+- **A speaking body is a companion**, whatever it can do with itself: its
+  persona asks for one or two short spoken sentences, with a feeling shown on
+  the body alongside. The `moves` field a manifest could declare (v1.1 to
+  v1.4: a move per role, taught to the model as answers with no words) is
+  ignored, and `moves` is no longer a feature. A `text` body keeps its prompt.
+- **The kernel answers with a move and no words, and asks no model**, on a
+  `speech` line that is a bare "yeah" or "okay" when Sage had not just asked,
+  and on a third unclear line in a row. If the body's `emote` lists
+  `attentive` that is the move; else the first name it lists.
+- **A repeat is left unsaid.** Where no words are needed, an answer that says
+  one of the last three replies again, word for word, is delivered as its tool
+  effects alone and journaled as `rejected`; the model is not asked again. The
+  same answer to a question asked again is said again.
+- **Nothing is said twice running that goes nowhere.** Right after a reply that
+  said Sage did not know, a sentence saying so again is dropped from the next
+  one, and on a second unclear line in a row a sentence asking to hear it again
+  is dropped; what else the reply says is said.
 - **Words are never optional** for a direct question or a line of distress
   (a person hurt, scared or in danger), on any body. If the model is silent on
   one, the kernel asks again once, journaling the silent answer as `rejected`;
-  if it is silent again, the kernel says a short line of its own. This holds
+  if it is silent again, the kernel says a short line of its own (after a reply
+  that said it did not know, one that moves on instead). This holds
   whatever the manifest says, and for a broken answer too. A kernel note
-  (a greeting, a nudge) may always get silence.
+  (a greeting, a nudge) may always get silence, and so may a question that
+  was only partly heard: the model asks about that, never the kernel's line.
 
 Each device's turns offer exactly that device's manifest tools, identical on
 every turn of that device, so the start of the prompt never changes and stays
@@ -217,9 +225,9 @@ does not use native tool calls. It calls Ollama's native `/api/chat`
 (streamed NDJSON, `think: false`) with `format`, a JSON Schema derived from the
 turn's device's manifest: an object whose first property is `reply` (a
 string), followed by one optional property per tool, named by the tool and
-shaped by its `inputSchema`, then the kernel's own optional `remember` and
-`forget` (a short fact about the person; a device tool of that name is the
-device's). Nothing else. Reply first, so speech streams
+shaped by its `inputSchema`. Nothing else: memory is not the turn's to write
+(§3, Memory; until v1.6 the answer also held the kernel's own `remember` and
+`forget`). Reply first, so speech streams
 before any action is chosen. The kernel validates the output against the
 schema and the manifest before acting. The history is one memory across
 bodies: the turn's own device's past exchanges appear in full, and each
@@ -290,15 +298,16 @@ so is any field a kind does not list below. `turn_id` ≤ 128 chars, `text` ≤
 `medium` is `speech` or `text` and is required; `confidence`, a number from 0
 to 1, is the device's own trust in the transcript; `alternatives` is a list of
 at most 3 other hearings, each a non-blank text of at most 4000 characters.
-Any other field or value is `invalid`. The kernel shows the model a line that
-may be misheard as `heard (may be misheard): "…"`, followed by
-`(or "…", "…")` when there are alternatives. A `text` line, or one with
-`confidence` ≥ 0.9, is never marked. A `speech` line with a lower `confidence`
-is marked, unless it is a common reply ("Okay"). Without `confidence` (or
-without `input`, as in v1), the kernel guesses from the words: a line that is
-unfinished, of 4 words or fewer and no question, or repeating itself like song
-lyrics is marked. `input` is journaled with the line and kept with its
-exchange, so the history renders the same on every turn.
+Any other field or value is `invalid`. The kernel shows the model a newest
+line that was only partly heard as `heard (unclear): "…"`, followed by
+`(or "…", "…")` when there are alternatives; in the history every line is
+plain. A `text` line, or one with `confidence` ≥ 0.9, is never marked. A
+`speech` line with a lower `confidence` is marked, unless it is a common reply
+("Okay"). Without `confidence` (or without `input`, as in v1), a line that is
+unfinished (no end mark) or repeating itself like song lyrics is marked. The
+kernel no longer guesses who a short line was said to: a body sends the lines
+that are for Sage. `input` is journaled with the line and kept with its
+exchange.
 
 **Acts** (v1.1). A body reports each plan it ran by itself (a reflex or a
 grammar command) and each line it spoke outside a turn ("I'm listening"):
@@ -349,6 +358,80 @@ always be stopped.
 device at any time, never limited, journaled with its sender (owner).
 **Decided (lead, 2026-10-25):** `input` and `acted` as above (LAYERS §2.3, §2.5); the 0.9 confidence
 line, 3 alternatives, and 4 acts per exchange.
+
+**Addressed** (v1.5, additive). A device that judges a line was said to the
+kernel's character may say so on that line's `submitted` request, with one
+request header:
+
+```
+Sage-Addressed: 1
+```
+
+It is a header, not a field of the event, so that it is safe to send to any
+kernel: one that does not know it ignores it, where an unknown field would be
+`invalid` and the turn lost. No `features` name announces it, and a device
+need not check. The header changes nothing in the event, the prompt or the
+turn. It has two uses. A kernel started with a hosted model
+(`SAGE_HOSTED`, [SECURITY.md](../SECURITY.md)) sends the prompt of a marked
+line to that model, and the prompt of every other line to the local one. And
+only a marked line is part of a conversation and may be remembered (Memory,
+below). Any other value, or no header, is "not marked": the line stays on the
+kernel's machine and is never written to memory. The mark belongs to that one
+line; the device's next `submitted` replaces it. A page in a browser cannot
+send it yet (the header is not in the CORS allow list of §1). A typed line
+(`input.medium` `text`) is said to the kernel by its nature, and counts as
+marked for memory, never for the hosted model.
+
+**Speaker** (v1.6, additive). A device that can tell whose voice a line was
+in says so the same way, on the same request:
+
+```
+Sage-Speaker: owner
+```
+
+`owner` or `guest`. No header, or any other value, is an unknown voice: what
+a body with no voiceprint enrolled sends. Like `Sage-Addressed`, it is safe
+to send to any kernel. The kernel journals both marks on the line's
+`submitted` row (`"addressed": true`, `"speaker": "owner"`; each left out
+when not marked or unknown).
+
+**Memory** (v1.6; not wire protocol beyond the two headers, and the suite
+checks it through its fake model). What the kernel remembers is written
+after a conversation, never during a turn:
+
+- A conversation opens with a line said to the kernel and ends
+  `SAGE_SESSION_IDLE_S` (default 300) after the last such line, or at 40 of
+  them. A `session` row is journaled, and the context is emptied (at 40: cut
+  to the last 5 exchanges), so the next conversation starts from memory.
+- When no conversation is open and no turn runs, the kernel asks a local
+  model (`SAGE_WRITER_MODEL`, default `SAGE_MODEL`; never the hosted one)
+  what to keep. It is shown only the conversation's lines that were said to
+  the kernel, not by a `guest`, not the TV's and not maybe misheard, each
+  with its journal sequence, with the kernel's replies and the records it
+  holds. It answers at most 5 operations (`add`, `update`, `drop`) and one
+  line about the day. The kernel refuses any operation that does not cite
+  one of those lines, and any change to an `owner` record from a line in an
+  unknown voice. The call is dropped the moment any turn starts and made
+  again after the next conversation; a conversation is never read twice.
+- A record is `{id, who, kind, text, at, from}`: `who` is `owner` or
+  `unknown` (the cited line's speaker; a guest is never stored), `kind` is
+  `person`, `like`, `thread`, `promise` or `day`, `from` the cited line's
+  sequence. Records live in the checkpoint; each change is a `remember` or
+  `forget` row whose source says who made it (`writer`, `owner`, `kernel`),
+  and each writer answer a `written` row with what was refused and why. At
+  most 200 are kept; a `day` or `thread` record is dropped after 14 days.
+- The system message ends with at most 600 characters of them: up to 5
+  `person` and `like` records, the last `day` line, open threads and
+  promises. Records from an unknown voice are listed apart, under a note
+  never to greet anyone by a name from them. Past 20 records, up to 2 more
+  that match the newest line ride on that line.
+- Said to the kernel by anyone but a guest, "forget about …" drops every
+  record holding those words at once, with no model call, and nothing said
+  in the conversation up to then is ever shown to the writer; "what do you
+  remember?" is answered from the records, up to 5 and a count of the rest.
+- The owner sees and fixes it from a terminal, while the kernel runs or not:
+  `python -m sage memory list`, `forget ID`, `edit ID "text"`, `add "text"`
+  (on `SAGE_STATE_DIR`; `list` shows each record's source line).
 
 ## 4. Effects and streaming
 
@@ -539,9 +622,10 @@ begins `kernel-`. Two reasons in v1:
   nudge starts a new idle period. No nudge within `SAGE_ENGAGED_S` (default
   60) after the person last spoke. At most once per idle period, at most
   `SAGE_NUDGES_PER_HOUR` (default 3) in any hour, and at least
-  `SAGE_NUDGE_GAP_S` (default 900) after the previous nudge. Never twice
-  unanswered: after a nudge, no other until the person has spoken to the
-  kernel (any `submitted` turn, from any device). It goes to the device that
+  `SAGE_NUDGE_GAP_S` (default 1200) after the previous nudge. Each nudge the
+  person has not answered doubles that gap for the next (20, 40, 80 minutes);
+  once the person speaks to the kernel (any `submitted` turn, from any device)
+  it is `SAGE_NUDGE_GAP_S` again. It goes to the device that
   most recently reported a counting `seen`.
 
 Its reply is an ordinary reply: delivered, streamed, results, interruptible,
@@ -564,7 +648,7 @@ now); the protocol carries nothing new for it.
 | `SAGE_GREET_AFTER_ABSENT_S` | 300 | Absence before a `seen` is an arrival |
 | `SAGE_GREET_ON_START` | 1 | The first counting `seen` after a start is an arrival (0: it is not) |
 | `SAGE_NUDGE_AFTER_IDLE_S` | 600 | Idle time before a nudge |
-| `SAGE_NUDGE_GAP_S` | 900 | Least time between two nudges |
+| `SAGE_NUDGE_GAP_S` | 1200 | Least time between two nudges; doubled by each one left unanswered |
 | `SAGE_NUDGES_PER_HOUR` | 3 | Most nudges in any hour |
 | `SAGE_ENGAGED_S` | 60 | No nudge this soon after the person spoke |
 | `SAGE_QUIET_S` | 1800 | How long quiet lasts if the person does not speak |
@@ -572,12 +656,14 @@ now); the protocol carries nothing new for it.
 | `SAGE_PLACE` | unset | Where the person is, a town, added to that line when set |
 | `SAGE_CHARACTER` | unset | A file with the pet's name, persona, lines and language rules, in place of `sage/character.json`; read once, at start, and a file missing a key stops the start |
 | `SAGE_SEARCH_URL` | empty | The research service for web search (§10); empty: never |
+| `SAGE_SESSION_IDLE_S` | 300 | Seconds after the last line said to the kernel before the conversation ends and memory is written (§3, Memory) |
+| `SAGE_WRITER_MODEL` | `SAGE_MODEL` | The local model that writes memory between conversations, on `SAGE_MODEL_URL`; `off`: conversations still end, nothing is written |
 
 All are read from the environment, so the suite can run them in seconds; it
 turns greetings off with a high absence and `SAGE_GREET_ON_START=0`.
 
 A nudge the model answers with silence still counts against the budget and
-the gap, and is never followed by another until the person speaks.
+the gap, and doubles the gap as one left unanswered does.
 
 **Decided (lead, 2026-10-20):** the defaults above, matching the kernel's
 disposition model (3 nudges an hour, 15 minutes apart); the first `seen`
@@ -587,7 +673,8 @@ most recently reported `seen`; `turn` shows a kernel turn to its device;
 quiet survives a restart; quiet is detected lexically, so no helper model;
 a turn, an arrival, a greeting or a nudge starts a new idle period; a silent
 nudge counts against the budget and the gap; the engaged window
-(`SAGE_ENGAGED_S`).
+(`SAGE_ENGAGED_S`). **Owner, 2026-11-21:** at most one nudge in 20 minutes,
+backing off when ignored; this replaces "never twice unanswered".
 
 ## 10. Notes (draft)
 
@@ -608,7 +695,7 @@ them. Notes never start a model call.
 (`POST /search {"q"}`, over its private SearXNG), the kernel itself asks the web
 for a line the model cannot know: a question (or "look it up") about something
 fresh (weather, news, scores, prices, "the latest", today) or a named person or
-thing ("Who is Taylor Swift?"). It never asks for a line that may be misheard. Only
+thing ("Who is Taylor Swift?"). It never asks for a line that was only partly heard. Only
 that line leaves the Mac, never memory or history, with any name capitalized in a
 remembered fact removed; nothing is left to ask, nothing is asked. The search has
 3 s; what comes back (at most 4 snippets, each tagged with its site) becomes

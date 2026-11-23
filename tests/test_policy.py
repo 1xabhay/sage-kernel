@@ -145,12 +145,12 @@ class Authorization(unittest.TestCase):
 
     def test_the_model_answers_in_a_reply_first_format_of_its_device_tools(self):
         schema = manifest.format_schema(TOOLS)
-        self.assertEqual(list(schema["properties"]), ["reply", "emote", "remember", "forget"])
+        self.assertEqual(list(schema["properties"]), ["reply", "emote"])  # memory is not the turn's to write
         # Brevity is decoded, not asked for; no pattern, so digits stay speakable.
         self.assertEqual(schema["properties"]["reply"], {"type": "string", "maxLength": 160})
         self.assertEqual(schema["properties"]["emote"], EMOTE["inputSchema"])
         self.assertEqual((schema["required"], schema["additionalProperties"]), (["reply"], False))
-        self.assertEqual(list(manifest.format_schema(())["properties"]), ["reply", "remember", "forget"])
+        self.assertEqual(list(manifest.format_schema(())["properties"]), ["reply"])
 
     def test_labels_are_the_declared_names_that_are_not_words(self):
         tools = (EMOTE, {"name": "look", "inputSchema": {"type": "object", "properties": {
@@ -176,9 +176,8 @@ class Results(unittest.TestCase):
         self.assertNotIn("five six", json.dumps(context))
         self.assertEqual(context[2], {"role": "tool", "content": '(the person interrupted you after: "One two")'})
         streamed, _ = policy.report_turn(asked("Count"), "reachy", "r1", None, "interrupted", "", None, {})
-        context = policy.compile_prompt(asked("Go on", turn_id="r2", state=streamed), "reachy", MANIFEST).context
-        self.assertEqual(json.loads(context[1]["content"])["reply"], "")
-        self.assertEqual(context[2]["content"], "(the person interrupted you before you said anything)")
+        early = policy.compile_prompt(asked("Go on", turn_id="r2", state=streamed), "reachy", MANIFEST).context
+        self.assertEqual([m["role"] for m in early], ["user"])  # cut off before a word: nothing was said, nothing is kept
         self.assertNotIn("interrupted", json.dumps([m for m in context if m["role"] == "assistant"]))
         self.assertEqual(policy.recent_replies(state, "reachy"), ("one two",))  # the mark is not speech
 
@@ -318,11 +317,10 @@ class Lanes(unittest.TestCase):
     def test_each_lane_completes_on_its_own_and_memory_is_shared(self):
         both = asked("My name is Mika.", "phone", "p1", asked("Hi", "reachy", "r1"))
         prompt = policy.compile_prompt(policy.focus(both, "phone"), "phone", MANIFEST)
-        done, rows = policy.decided(policy.focus(both, "phone"), "p1", prompt,
-                                    output("Hi Mika.", remember="Their name is Mika."), TOOLS, 10, 1.0)
+        done, rows = policy.decided(policy.focus(both, "phone"), "p1", prompt, output("Hi Mika."), TOOLS, 10, 1.0)
         self.assertEqual(kinds(rows)[-2:], [("reply", "phone"), ("completed", None)])
         self.assertEqual((self.lane(done, "phone").status, self.lane(done, "reachy").status), ("completed", "active"))
-        self.assertEqual(done.facts, ("Their name is Mika.",))
+        done, _ = policy.amend(done, "add", 1.0, text="Their name is Mika.")
         reachy = policy.compile_prompt(policy.focus(done, "reachy"), "reachy", MANIFEST)
         self.assertIn("Mika", reachy.system)
         self.assertTrue(reachy.context[-1]["content"].startswith("Hi"))  # reachy's own line, not the phone's
@@ -386,10 +384,10 @@ class Provenance(unittest.TestCase):
         system = policy.compile_prompt(asked("Hi"), "reachy", MANIFEST).system
         self.assertTrue(system.startswith(policy.PERSONA + "\n\n" + policy.EXAMPLES))
         examples = [json.loads(line.split(" -> ", 1)[1]) for line in policy.EXAMPLES.splitlines()[1:]]
-        self.assertTrue(2 <= len(examples) <= 4)
+        self.assertTrue(2 <= len(examples) <= 8)
         self.assertTrue(all(next(iter(example)) == "reply" for example in examples))  # reply first
-        self.assertEqual([key for example in examples for key in example if key != "reply"], ["remember"])
-        self.assertLess(len(policy.PERSONA), 700)
+        self.assertEqual([key for example in examples for key in example if key != "reply"], [])  # no tools, no fields
+        self.assertLess(len(policy.PERSONA), 1000)
 
     def test_the_prompt_keeps_a_short_window_of_exchanges_cut_back_in_blocks(self):
         """Ollama re-reads everything after the first changed message: a window sliding by one every turn
@@ -465,50 +463,19 @@ class Provenance(unittest.TestCase):
         state = policy.decode(old)
         self.assertEqual(body_notes(state), [("(your body could not do emote: interrupted; could not do wave: "
                                               "unavailable (this body has no such tool; use only the tools it lists))")])
-        self.assertTrue(policy.repeats(policy.recent_replies(state, "reachy"), "I'm curious! You said hello."))
+        self.assertTrue(policy.repeats(policy.recent_replies(state, "reachy"), "I'm curious! You said yo."))
         self.assertEqual(state.facts, ())  # from before remember
 
     def test_the_checkpoint_round_trips(self):
-        state, _ = answered(asked("Feel happy"), output("Yay!", emote={"name": "cheerful1"}, wave={}, remember="Likes tea."))
-        self.assertEqual(state.facts, ("Likes tea.",))
+        state, _ = answered(asked("Feel happy"), output("Yay!", emote={"name": "cheerful1"}, wave={}))
+        state, _ = policy.amend(state, "add", 5.0, text="Likes tea.")
+        state = replace(state, spoke_at=4.0, said=3, due=1, cursor=7)
+        self.assertEqual([r["text"] for r in state.facts], ["Likes tea."])
         self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
 
 
 class Memory(unittest.TestCase):
-    """Short stable facts the model keeps with remember and drops with forget, as Pollen's conversation app does."""
-
-    def test_a_remembered_fact_is_journaled_and_stays_in_the_fixed_prefix_past_the_window(self):
-        state, rows = answered(asked("My name is Juno."), output("Hi Juno!", remember="Their name is Juno."))
-        self.assertIn(("remember", None), kinds(rows))  # journaled, delivered to no device
-        for index in range(policy.WINDOW + 4):
-            state, _ = answered(asked(f"line {index}", turn_id=f"r{index}", state=state), output(f"Reply {index}."))
-        self.assertNotIn("My name is Juno.", [x.user for x in state.exchanges])
-        prompt = policy.compile_prompt(asked("What's my name?", turn_id="rx", state=state), "reachy", MANIFEST)
-        self.assertTrue(prompt.system.endswith("\n- Their name is Juno."), prompt.system)
-        self.assertNotIn("Juno", json.dumps(prompt.context))
-
-    def test_facts_are_capped_deduplicated_and_kept_in_the_order_they_were_learned(self):
-        state = Companion()
-        for index in range(policy.MAX_FACTS + 2):
-            state, _ = answered(asked(turn_id=f"r{index}", state=state), output("Okay.", remember=f"Fact  {index}. "))
-        state, _ = answered(asked(turn_id="again", state=state), output("Okay.", remember="fact 5."))
-        self.assertEqual(state.facts, tuple(f"Fact {i}." for i in range(2, policy.MAX_FACTS + 2)))
-        long, _ = answered(asked(), output("Okay.", remember="x" * 200))
-        self.assertEqual(long.facts, ("x" * manifest.MAX_FACT,))
-
-    def test_forget_drops_every_fact_holding_its_words_and_a_blank_one_drops_nothing(self):
-        state, _ = answered(asked(), output("Okay.", remember="Has a dog named Mochi."))
-        state, _ = answered(asked(turn_id="r2", state=state), output("Okay.", remember="Likes tea."))
-        state, rows = answered(asked(turn_id="r3", state=state), output("Done.", forget="mochi"))
-        self.assertEqual((state.facts, ("forget", None) in kinds(rows)), (("Likes tea.",), True))
-        state, rows = answered(asked(turn_id="r4", state=state), output("Hm.", forget=" "))
-        self.assertEqual((state.facts, ("forget", None) in kinds(rows)), (("Likes tea.",), False))
-        self.assertEqual(body_notes(state), [])
-
-    def test_the_model_sees_its_own_remember_in_its_past_answers(self):
-        state, _ = answered(asked("I'm Juno."), output("Hi Juno!", remember="Their name is Juno."))
-        assistant = policy.compile_prompt(asked(turn_id="r2", state=state), "reachy", MANIFEST).context[1]
-        self.assertEqual(json.loads(assistant["content"]), {"reply": "Hi Juno!", "remember": "Their name is Juno."})
+    """Memory is written after the conversation (tests/test_memory.py); a turn's answer has no field for it."""
 
     def test_a_device_tool_named_remember_is_the_device_s(self):
         own = {"name": "remember", "inputSchema": {"type": "object"}}
@@ -531,11 +498,8 @@ class Repeats(unittest.TestCase):
         self.assertTrue(policy.repeats(recent, "two plus two is FOUR"))
         self.assertTrue(policy.repeats(recent, "Hello"))
         self.assertFalse(policy.repeats(recent, "Good morning! What shall we do?"))  # four replies ago
-        self.assertTrue(policy.repeats(recent, "Two plus two is five."))  # the same opening template
-        self.assertFalse(policy.repeats(recent, "Two and two make five."))
-        self.assertFalse(policy.repeats(recent, "Night night, sleep well."))  # a short reply has no template
-        tail = policy.recent_replies(self.talked(["You said hi. I'm all ears."]), "reachy")
-        self.assertTrue(policy.repeats(tail, "You said hello. I'm all ears."))  # the same closing template
+        self.assertFalse(policy.repeats(recent, "Two plus two is five."))  # the same opening, new words
+        self.assertFalse(policy.repeats(recent, "Night night, sleep well."))
         self.assertFalse(policy.repeats(recent, ""))  # silence is never a repeat
         self.assertEqual(policy.recent_replies(state, "mock"), ())
 
@@ -556,18 +520,17 @@ class Repeats(unittest.TestCase):
         self.assertTrue(policy.may_repeat(recent, "Good "))
         self.assertTrue(policy.may_repeat(recent, "Good morning, "))
         self.assertFalse(policy.may_repeat(recent, "Good evening "))
-        template = policy.recent_replies(self.talked(["I'm curious! You said hi, and so on."]), "reachy")
-        self.assertTrue(policy.may_repeat(template, "I'm curious! You heard "))  # its opening is a template
+        self.assertFalse(policy.may_repeat(recent, "Good morning, friend. And "))  # it went on: new words
         self.assertFalse(policy.may_repeat((), "Good "))
 
     def test_the_retry_is_the_same_prompt_plus_a_note_and_the_rejection_is_journaled(self):
         state = asked("Hi")
         prompt = policy.compile_prompt(state, "reachy", MANIFEST)
-        again = policy.retry_prompt(prompt)
+        again = policy.retry_prompt(prompt, policy.NEEDS_WORDS)
         self.assertEqual((again.system, again.format, again.context[:-1]), (prompt.system, prompt.format,
                                                                            prompt.context[:-1]))
         self.assertTrue(again.context[-1]["content"].startswith(prompt.context[-1]["content"]))
-        self.assertEqual(policy.retry_prompt(prompt), again)  # deterministic
+        self.assertEqual(policy.retry_prompt(prompt, policy.NEEDS_WORDS), again)  # deterministic
         rows = policy.rejected(state, "r1", prompt, output("Hello."), "repeat")
         self.assertEqual((kinds(rows), rows[0].body["reason"]), ([("rejected", None)], "repeat"))
         self.assertEqual(policy.rejected(policy.stop(state, "mock", None)[0], "r1", prompt, "", "repeat"), ())
@@ -685,41 +648,30 @@ class Proactive(unittest.TestCase):
 class Misheard(unittest.TestCase):
     def test_short_unfinished_or_repeating_lines_are_marked_as_maybe_misheard(self):
         """Live, fragments, garbles and song lyrics were answered literally; these lines are written to match."""
-        for line in ("How do you And then", "Ornitholog", "Stop a strong planner.", "It's only a fork.",
+        for line in ("How do you And then", "Ornitholog",
                      "Ron was sure in", "Brother, brother, that's how I loved you, loved you.", "La la la la"):
             with self.subTest(line=line):
                 self.assertTrue(policy.misheard(line))
-        for line in ("Hi", "Hi there", "Thank you.", "Okay.", "What's my name?", "Can you hear me?",
+        for line in ("Hi", "Hi there", "Thank you.", "Okay.", "What's my name?", "Can you hear me?", "It's only a fork.",
                      "I think a softer voice would suit you.", "I didn't praise you. Honestly, you are worse than ever."):
             with self.subTest(line=line):
                 self.assertFalse(policy.misheard(line))
 
-    def test_a_near_miss_hearing_of_the_name_is_said_to_sage_only_as_the_whole_line_or_at_either_end(self):
-        """Owner, 11-17: "Sage" was heard as "age". The model is shown the line as heard, unmarked."""
-        for line in ("Age.", "Hey age.", "Age, come here.", "Come here age.", "Saige.", "Sayge.", "Sarge."):
-            with self.subTest(line=line):
-                self.assertFalse(policy.misheard(line))
-                self.assertEqual(policy.compile_prompt(asked(line), "reachy", MANIFEST).context[-1]["content"],
-                                 line + policy.reminder(MANIFEST))
-        for line in ("Old age home.", "The stone age was.", "Stage.", "Page.", "Cage.", "Age"):  # no end mark
-            with self.subTest(line=line):
-                self.assertTrue(policy.misheard(line))
-
     def test_a_maybe_misheard_line_is_framed_as_information_the_same_on_every_turn(self):
         state = asked("Ornitholog")
-        framed = 'heard (may be misheard): "Ornitholog"'
+        framed = 'heard (unclear): "Ornitholog"'
         self.assertEqual(policy.compile_prompt(state, "reachy", MANIFEST).context[-1]["content"],
                          framed + policy.reminder(MANIFEST))
         state, _ = answered(state)
         later = policy.compile_prompt(asked("What's my name?", turn_id="r2", state=state), "reachy", MANIFEST)
-        self.assertEqual(later.context[0]["content"], framed + policy.reminder(MANIFEST))  # byte-stable history
+        self.assertEqual(later.context[0]["content"], "Ornitholog" + policy.reminder(MANIFEST))  # only the newest is marked
         self.assertEqual(later.context[-1]["content"], "What's my name?" + policy.reminder(MANIFEST))
         greeting, _ = policy.start_proactive(Companion(), "reachy", "kernel-1", "greet")
         self.assertTrue(policy.compile_prompt(greeting, "reachy", MANIFEST).context[-1]["content"].startswith("[The"))
 
     def test_the_persona_and_examples_say_what_to_do_with_a_maybe_misheard_line(self):
-        self.assertIn("may be misheard", policy.PERSONA)
-        self.assertIn('heard (may be misheard): "', policy.EXAMPLES)
+        self.assertIn("(unclear)", policy.PERSONA)
+        self.assertIn('heard (unclear): "', policy.EXAMPLES)
 
     def test_a_greeting_uses_a_name_only_if_the_person_gave_one(self):
         """Live: the first greeting was "Hey there, Alex!" with no name ever given."""
@@ -730,7 +682,7 @@ class Input(unittest.TestCase):
     """submitted.input (v1.1): what the device knows of how the line came in replaces the 4-word guess."""
 
     def test_a_typed_or_confidently_heard_line_is_never_marked_and_without_input_the_old_rule_holds(self):
-        for line in ("Ornitholog", "It's only a fork.", "La la la la", "Call me Micah"):
+        for line in ("Ornitholog", "La la la la", "Call me Micah"):
             with self.subTest(line=line):
                 self.assertTrue(policy.misheard(line))
                 self.assertTrue(policy.misheard(line, {"medium": "speech"}))  # no confidence: the lexical rule
@@ -759,14 +711,14 @@ class Input(unittest.TestCase):
         given = {"medium": "speech", "confidence": 0.3, "alternatives": ["Call me Mika"]}
         state, rows = policy.submit(Companion(), "reachy", "r1", "Call me Micah", {}, False, given)
         self.assertEqual(rows[0].body["input"], given)
-        framed = 'heard (may be misheard): "Call me Micah" (or "Call me Mika")'
+        framed = 'heard (unclear): "Call me Micah" (or "Call me Mika")'
         self.assertEqual(policy.compile_prompt(state, "reachy", MANIFEST).context[-1]["content"],
                          framed + policy.reminder(MANIFEST))
         state, _ = answered(state)
         self.assertEqual(policy.decode(json.loads(json.dumps(policy.encode(state)))), state)
         typed, _ = policy.submit(state, "reachy", "r2", "Call me Micah", {}, False, {"medium": "text"})
         context = policy.compile_prompt(typed, "reachy", MANIFEST).context
-        self.assertEqual(context[0]["content"], framed + policy.reminder(MANIFEST))
+        self.assertEqual(context[0]["content"], context[-1]["content"])  # in history, as plain as when typed
         self.assertEqual(context[-1]["content"], "Call me Micah" + policy.reminder(MANIFEST))
         self.assertNotIn("input", policy.submit(Companion(), "reachy", "r1", "Hi", {}, False)[1][0].body)  # as in v1
 
@@ -871,10 +823,10 @@ class Persona(unittest.TestCase):
     def test_the_persona_engages_briefly_and_keeps_the_rules_that_matter(self):
         """Live run 5b: hollow replies ("Thank you.", "I'm here."), no question back, the person's name lost."""
         persona = policy.PERSONA.lower()
-        for needle in ("sage", "robot", "answer what", "ask", "their name", "brief",
+        for needle in ("sage", "robot", "companion", "answer what", "ask", "their name", "short",
                        "never claim a sense your body lacks", "never say labels, tool names or emoji aloud"):
             self.assertIn(needle, persona)
-        for primer in ("curious", "show feelings", "lives in", "silence is fine"):
+        for primer in ("show feelings", "lives in", "silence is fine", "mostly answer with a move", "emote"):
             self.assertNotIn(primer, persona)
 
 
@@ -1036,7 +988,7 @@ class Budget(unittest.TestCase):
         Ollama counted 4078 tokens for this prompt against 3804 estimated (qwen3:4b-instruct, 2026-10-26)."""
         declared = manifest.check_manifest({**VOICE, "tools": VOICE["tools"] + [BODY_PLAN], "body": "b" * 300})
         state = noted(passages=tuple(f"{i} " + "x" * (policy.MAX_PASSAGE - 2) for i in range(10)))[0]
-        line, answer = "y" * 160, output("z" * manifest.MAX_REPLY, emote={"name": "enthusiastic2"})
+        line, answer = "y" * 159 + ".", output("z" * (manifest.MAX_REPLY - 1) + ".", emote={"name": "cheerful"})
         for index in range(policy.WINDOW):
             state = asked(line, turn_id=f"r{index}", state=state)
             prompt = policy.compile_prompt(state, "reachy", declared)

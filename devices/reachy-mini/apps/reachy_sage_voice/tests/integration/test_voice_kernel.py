@@ -13,9 +13,10 @@ word), and the robot (its speaker and moves).
 Each scenario checks both sides of the wire: what the voice gave the TTS or the
 speaker played, and the kernel's journal (or the prompt it built from it).
 
-A spoken line of four words or fewer that is no question gets a move and no
-words from the kernel (sage/policy.py ``quiet_move``; the voice sends no
-confidence), so the scenarios speak in longer lines; one pins that rule itself.
+The body's gate (``sage_device.gate``) decides each heard line before the kernel hears it. With no
+conversation open, a line that names no one and asks nothing of "you" gets a look and the kernel
+never hears it, so the scenarios open with a line said to Sage; one pins the look itself, and one
+that the gate's answer reaches the kernel as ``Sage-Addressed: 1`` and nothing else does.
 """
 
 import asyncio
@@ -39,10 +40,11 @@ from pipecat.transports.base_transport import TransportParams
 from sage_device.kernel import KernelClient, Session
 
 from reachy_sage_voice import clause
+from reachy_sage_voice.expressions import INTENTS
 from reachy_sage_voice.interruption import InterruptionTracker
 from reachy_sage_voice.manifest import EMOTIONS, manifest
 from reachy_sage_voice.pipeline import report_presence
-from reachy_sage_voice.sage import BotSpeech, Playback, SageProcessor
+from reachy_sage_voice.sage import UNSURE_CLIP, BotSpeech, Playback, SageProcessor
 from reachy_sage_voice.transport import ReachyOutputTransport
 from reachy_sage_voice.tts import RATE, KokoroTTSService
 
@@ -94,7 +96,7 @@ class Rig:
 
         def answer(messages):
             question = conformance.words(messages[-1])
-            # The kernel quotes the transcript ('heard (may be misheard): "..."').
+            # The kernel quotes the transcript ('heard (unclear): "..."').
             return next((said for asked, said in self.replies.items() if asked in question),
                         None) or fallback([*messages[:-1], {
                             **messages[-1], "content": re.sub(r"\s*\[[^\]]*\]", "", question)}])
@@ -171,14 +173,17 @@ def _captioned(fake):
 def rig(request, http_server):
     """Start the kernel and the fake TTS, with the voice to run between them.
 
-    ``@pytest.mark.kernel_env(NAME="value")`` sets kernel settings beyond the suite's defaults.
+    ``@pytest.mark.kernel_env(NAME="value")`` sets kernel settings beyond the suite's defaults;
+    ``{fake}`` in a value is the fake server's base URL (the TTS's, and the hosted model's).
     """
     conformance = _conformance()
     http_server.script("POST", "/dev/captioned_speech", _captioned)
     marker = request.node.get_closest_marker("kernel_env")
     provider = conformance.Provider()
     with tempfile.TemporaryDirectory() as state:
-        process = conformance.KernelProcess(state, provider, **(marker.kwargs if marker else {}))
+        env = {name: value.replace("{fake}", http_server.url)
+               for name, value in (marker.kwargs if marker else {}).items()}
+        process = conformance.KernelProcess(state, provider, **env)
         process.start()
         try:
             yield Rig(conformance, provider, process, state, http_server)
@@ -218,12 +223,13 @@ def test_fragments_while_thinking_join_one_turn(rig):
         wait_for(lambda: len(rig.journal("submitted")) == 2)
         rig.provider.open.set()
 
-    down = rig.run([heard("What's the pin?"), SleepFrame(0.3), heard("Really important."),
+    # The first line is said to it by name (the gate answers); the scrap after it joins the turn.
+    down = rig.run([heard("Sage, what's the pin?"), SleepFrame(0.3), heard("Really important."),
                     SleepFrame(2.0)], during=release)
     (reply,) = rig.journal("reply")
-    assert reply["text"] == "Heard: What's the pin? Really important."
+    assert reply["text"] == "Heard: Sage, what's the pin? Really important."
     first, second = rig.journal("submitted")
-    assert second["text"] == "What's the pin? Really important."
+    assert second["text"] == "Sage, what's the pin? Really important."
     stopped = [r["turn_id"] for r in rig.journal("stop") if r["source"] == "reachy"]
     assert stopped == [first["turn_id"]]
     assert " ".join(rig.tts_inputs()).split() == reply["text"].split()
@@ -235,13 +241,9 @@ STORY = ("Once upon a time there was a robot. It lived on a desk and watched the
 
 
 @pytest.fixture
-def storyteller(monkeypatch):
-    """Raise the body's cap to fit the whole STORY.
-
-    The kernel cuts a reply to the body's max_chars; at the voice's own cap the story is one
-    sentence, over before anything can interrupt it.
-    """
-    monkeypatch.setattr("reachy_sage_voice.manifest.MAX_CHARS", len(STORY))
+def storyteller():
+    """Check the whole STORY fits the kernel's reply length: long enough to interrupt."""
+    assert len(STORY) <= 160
 
 
 def interrupted(rig, reply, sequence=True):
@@ -355,8 +357,10 @@ def test_a_reply_cut_at_the_cap_streams_only_what_is_journaled(rig):
 
 
 def test_an_emote_result_carries_how_long_the_move_took(rig):
-    down = rig.run([heard("Feel happy today, little robot."), SleepFrame(2.0)])
-    assert rig.robot.moves == ["cheerful1"]
+    asked = "Sage, feel happy today."
+    rig.replies = {asked: ("Yay!", {"emote": {"name": "cheerful"}})}  # a feeling: the body picks
+    down = rig.run([heard(asked), SleepFrame(2.0)])
+    assert len(rig.robot.moves) == 1 and rig.robot.moves[0] in INTENTS["cheerful"]
     (emote,) = rig.journal("emote")
     (result,) = [r for r in rig.journal("result") if r.get("sequence") == emote["sequence"]]
     assert result["status"] == "done"
@@ -364,14 +368,40 @@ def test_an_emote_result_carries_how_long_the_move_took(rig):
     assert spoken(down) == ["Yay!"]
 
 
-def test_a_short_statement_heard_without_confidence_gets_a_move_and_no_words(rig):
-    # Always on, no wake word: a few words that are no question may be the room's talk, not said
-    # to Sage. The kernel answers with a look and asks the model nothing (policy.quiet_move).
+def test_a_short_line_no_one_may_have_said_to_it_gets_a_look_and_the_kernel_never_hears_it(rig):
+    # Always on, no wake word: a few words that name no one may be the room's talk. The body's gate
+    # answers with a look (owner decision 1), and overheard words go nowhere (decision 4): no turn,
+    # no model call, nothing in the journal.
     down = rig.run([heard("Only the kettle."), SleepFrame(2.0)])
-    assert rig.robot.moves == ["attentive1"]
+    assert rig.robot.moves == [UNSURE_CLIP]
     assert rig.provider.requests == []
     assert rig.tts_inputs() == [] and spoken(down) == []
-    assert [r["text"] for r in rig.journal("reply") if r["text"]] == []
-    (emote,) = rig.journal("emote")
-    (result,) = [r for r in rig.journal("result") if r.get("sequence") == emote["sequence"]]
-    assert result["status"] == "done"
+    assert rig.journal("submitted", "reply", "emote", "result") == []
+
+
+HOSTED = b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in (
+    {"type": "content_block_delta",
+     "delta": {"type": "text_delta", "text": '{"reply": "From afar."}'}},
+    {"type": "message_stop"}))
+
+
+@pytest.mark.kernel_env(SAGE_HOSTED="anthropic", ANTHROPIC_API_KEY="sk-test-not-a-real-key",
+                        SAGE_HOSTED_URL="{fake}")
+def test_only_a_line_the_gate_answered_reaches_the_hosted_model(rig):
+    # The gate's ANSWER goes to the kernel as the header Sage-Addressed: 1 (protocol v1.5), and a
+    # kernel with a hosted model (a fake on this machine) sends that line's prompt there. A line
+    # submitted without the header stays with the local model.
+    rig.tts.script("POST", "/v1/messages", (200, HOSTED))
+    hosted = lambda: [r["body"] for r in rig.tts.requests if r["path"] == "/v1/messages"]  # noqa: E731
+    asked = "Sage, what is the tallest mountain?"
+    down = rig.run([heard(asked), SleepFrame(2.0)])
+    (request,) = hosted()
+    assert asked in request["messages"][-1]["content"]
+    assert rig.provider.requests == []  # the local model was asked nothing
+    assert spoken(down) == ["From", "afar."]
+    unmarked = {"kind": "submitted", "turn_id": "mock-1", "text": "What is the tallest mountain?"}
+    hello = {"protocols": [1], "manifest": {"senses": []}}
+    assert rig.device("POST", "/v1/hello", hello, device="mock")[0] == 200
+    assert rig.device("POST", "/v1/events", unmarked, device="mock")[0] == 200
+    wait_for(lambda: len(rig.journal("reply")) == 2)
+    assert len(hosted()) == 1 and len(rig.provider.requests) == 1

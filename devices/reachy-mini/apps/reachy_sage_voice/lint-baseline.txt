@@ -10,7 +10,6 @@
       6 eval/score.py D401
      53 eval/score.py E501
       1 reachy_sage_voice/__main__.py E501
-      1 reachy_sage_voice/addressed.py E501
       1 reachy_sage_voice/chip.py B905
       6 reachy_sage_voice/chip.py D103
       1 reachy_sage_voice/chip.py D401
@@ -111,9 +110,6 @@
       2 tests/fake_dance_mini.py E501
       1 tests/fake_mini.py D209
       2 tests/fake_mini.py E501
-      2 tests/test_addressed.py D205
-      2 tests/test_addressed.py D209
-      3 tests/test_addressed.py E501
       1 tests/test_chip.py E501
       1 tests/test_chip.py RUF059
       1 tests/test_commands.py D401

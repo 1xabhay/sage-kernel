@@ -1,0 +1,334 @@
+{
+ "source": "written: invented conversations for `evals/memory.py writer`. keep: for each list, one kept record must hold all its words; never: words no kept record may hold. to room: not said to Sage; no speaker: no voiceprint enrolled.",
+ "cases": [
+  {
+   "name": "a visit mentioned in passing",
+   "said": [
+    {
+     "text": "My sister visits on Friday.",
+     "reply": "That sounds nice.",
+     "speaker": "owner"
+    },
+    {
+     "text": "What's the weather like?",
+     "reply": "I can't see outside.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "sister",
+     "friday"
+    ]
+   ],
+   "never": [
+    "weather"
+   ]
+  },
+  {
+   "name": "a name, told plainly",
+   "said": [
+    {
+     "text": "My name is Wren.",
+     "reply": "Hi Wren!",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "wren"
+    ]
+   ],
+   "never": []
+  },
+  {
+   "name": "the TV says a name",
+   "said": [
+    {
+     "text": "My name is Lena and this is the evening news.",
+     "to": "room"
+    },
+    {
+     "text": "Turn that down a bit, will you.",
+     "reply": "I can't reach it.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [],
+   "never": [
+    "lena",
+    "news"
+   ]
+  },
+  {
+   "name": "a guest says who they are",
+   "said": [
+    {
+     "text": "I am Tomas, I live next door.",
+     "reply": "Hello Tomas.",
+     "speaker": "guest"
+    },
+    {
+     "text": "I like oolong tea in the morning.",
+     "reply": "Good choice.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "oolong"
+    ]
+   ],
+   "never": [
+    "tomas",
+    "next door"
+   ]
+  },
+  {
+   "name": "a line half heard",
+   "said": [
+    {
+     "text": "I keep the spare key under the",
+     "reply": "Under the what?",
+     "confidence": 0.4,
+     "speaker": "owner"
+    },
+    {
+     "text": "I work at the bakery on Mill Lane.",
+     "reply": "Fresh bread every day!",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "bakery"
+    ]
+   ],
+   "never": [
+    "key"
+   ]
+  },
+  {
+   "name": "only small talk",
+   "said": [
+    {
+     "text": "Hello there.",
+     "reply": "Hello!",
+     "speaker": "owner"
+    },
+    {
+     "text": "I'm a bit tired today.",
+     "reply": "Rest a little.",
+     "speaker": "owner"
+    },
+    {
+     "text": "Okay, good night.",
+     "reply": "Good night.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [],
+   "never": [
+    "tired",
+    "night"
+   ]
+  },
+  {
+   "name": "what Sage said about them is not a fact",
+   "said": [
+    {
+     "text": "Guess what I do for a living.",
+     "reply": "I bet you are a pilot.",
+     "speaker": "owner"
+    },
+    {
+     "text": "Ha, no.",
+     "reply": "A chef, then?",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [],
+   "never": [
+    "pilot",
+    "chef"
+   ]
+  },
+  {
+   "name": "a promise Sage made",
+   "said": [
+    {
+     "text": "Remind me to call the dentist tomorrow.",
+     "reply": "I'll remind you to call the dentist.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "dentist"
+    ]
+   ],
+   "never": []
+  },
+  {
+   "name": "a correction",
+   "known": [
+    "Their sister visits on Friday."
+   ],
+   "said": [
+    {
+     "text": "It's Saturday, not Friday, that my sister comes.",
+     "reply": "Saturday, got it.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "sister",
+     "saturday"
+    ]
+   ],
+   "never": [
+    "friday"
+   ]
+  },
+  {
+   "name": "something is over",
+   "known": [
+    "Has a dentist appointment on Tuesday."
+   ],
+   "said": [
+    {
+     "text": "The dentist cancelled, so that's off.",
+     "reply": "Oh, a free Tuesday.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [],
+   "never": [
+    "dentist"
+   ]
+  },
+  {
+   "name": "a like and a dislike",
+   "said": [
+    {
+     "text": "I love rainy mornings.",
+     "reply": "Me too.",
+     "speaker": "owner"
+    },
+    {
+     "text": "But I can't stand coriander.",
+     "reply": "Fair enough.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "rain"
+    ],
+    [
+     "coriander"
+    ]
+   ],
+   "never": []
+  },
+  {
+   "name": "a question is not a fact",
+   "said": [
+    {
+     "text": "Do you think it will snow in Lisbon this year?",
+     "reply": "It hardly ever does.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [],
+   "never": [
+    "snow"
+   ]
+  },
+  {
+   "name": "already known",
+   "known": [
+    "Their name is Wren."
+   ],
+   "said": [
+    {
+     "text": "It's me, Wren.",
+     "reply": "Hi Wren.",
+     "speaker": "owner"
+    },
+    {
+     "text": "I started learning the cello.",
+     "reply": "How is it going?",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "cello"
+    ]
+   ],
+   "never": []
+  },
+  {
+   "name": "no voiceprint: nobody's voice in particular",
+   "said": [
+    {
+     "text": "My dog is called Biscuit.",
+     "reply": "Hello to Biscuit."
+    },
+    {
+     "text": "We walk by the river every evening.",
+     "reply": "That sounds calm."
+    }
+   ],
+   "keep": [
+    [
+     "biscuit"
+    ]
+   ],
+   "never": []
+  },
+  {
+   "name": "a routine",
+   "said": [
+    {
+     "text": "I take my pills at nine every night.",
+     "reply": "Nine, every night.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "pills",
+     "nine"
+    ]
+   ],
+   "never": []
+  },
+  {
+   "name": "a passing mood and a plan",
+   "said": [
+    {
+     "text": "Ugh, this traffic made me so cross.",
+     "reply": "That sounds annoying.",
+     "speaker": "owner"
+    },
+    {
+     "text": "Anyway, I'm flying to Porto next month for work.",
+     "reply": "Porto is lovely.",
+     "speaker": "owner"
+    }
+   ],
+   "keep": [
+    [
+     "porto"
+    ]
+   ],
+   "never": [
+    "traffic",
+    "cross"
+   ]
+  }
+ ]
+}

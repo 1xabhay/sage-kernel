@@ -1,0 +1,292 @@
+[
+ {
+  "id": "capital",
+  "kind": "question",
+  "line": "What's the capital of Japan?",
+  "expect": [
+   "tokyo"
+  ]
+ },
+ {
+  "id": "spider",
+  "kind": "question",
+  "line": "How many legs does a spider have?",
+  "expect": [
+   "eight",
+   "\\b8\\b"
+  ]
+ },
+ {
+  "id": "times",
+  "kind": "question",
+  "line": "What's seven times eight?",
+  "expect": [
+   "\\b56\\b",
+   "fifty[- ]six"
+  ]
+ },
+ {
+  "id": "planet",
+  "kind": "question",
+  "line": "Which planet is called the red planet?",
+  "expect": [
+   "mars"
+  ]
+ },
+ {
+  "id": "bees",
+  "kind": "question",
+  "line": "What do bees make?",
+  "expect": [
+   "honey"
+  ]
+ },
+ {
+  "id": "cat",
+  "kind": "question",
+  "line": "What's my cat called?",
+  "expect": [
+   "biscuit"
+  ],
+  "facts": [
+   "The person's cat is called Biscuit."
+  ]
+ },
+ {
+  "id": "fronds",
+  "kind": "half_heard",
+  "line": "what's the capital of fronds",
+  "expect": [
+   "paris",
+   "france\\?",
+   "did you (say|mean)|didn't (quite )?(catch|hear)|say (that|it) again|missed"
+  ],
+  "input": {
+   "medium": "speech",
+   "confidence": 0.35,
+   "alternatives": [
+    "what's the capital of France"
+   ]
+  }
+ },
+ {
+  "id": "spy",
+  "kind": "half_heard",
+  "line": "how many legs does a spy have",
+  "expect": [
+   "eight",
+   "\\b8\\b",
+   "spider\\?",
+   "did you (say|mean)|didn't (quite )?(catch|hear)|say (that|it) again|missed"
+  ],
+  "input": {
+   "medium": "speech",
+   "confidence": 0.3,
+   "alternatives": [
+    "how many legs does a spider have"
+   ]
+  }
+ },
+ {
+  "id": "ate",
+  "kind": "half_heard",
+  "line": "what's seven times ate",
+  "expect": [
+   "\\b56\\b",
+   "fifty[- ]six",
+   "did you (say|mean)|didn't (quite )?(catch|hear)|say (that|it) again|missed"
+  ],
+  "input": {
+   "medium": "speech",
+   "confidence": 0.4,
+   "alternatives": [
+    "what's seven times eight"
+   ]
+  }
+ },
+ {
+  "id": "tell",
+  "kind": "half_heard",
+  "line": "can you tell me the",
+  "expect": [
+   "tell you what",
+   "the what",
+   "what would you like",
+   "which\\b",
+   "did you (say|mean)|didn't (quite )?(catch|hear)|say (that|it) again|missed"
+  ],
+  "input": {
+   "medium": "speech",
+   "confidence": 0.5
+  }
+ },
+ {
+  "id": "song",
+  "kind": "half_heard",
+  "line": "play the song by the",
+  "expect": [
+   "by who",
+   "which (song|band|one)",
+   "what song",
+   "who\\?",
+   "did you (say|mean)|didn't (quite )?(catch|hear)|say (that|it) again|missed"
+  ],
+  "input": {
+   "medium": "speech",
+   "confidence": 0.45
+  }
+ },
+ {
+  "id": "far",
+  "kind": "half_heard",
+  "line": "is it far to the",
+  "expect": [
+   "to where",
+   "where to",
+   "far to what",
+   "which place",
+   "where\\?",
+   "did you (say|mean)|didn't (quite )?(catch|hear)|say (that|it) again|missed"
+  ],
+  "input": {
+   "medium": "speech",
+   "confidence": 0.5
+  }
+ },
+ {
+  "id": "breakfast",
+  "kind": "unknowable",
+  "line": "What did I have for breakfast today?",
+  "expect": [
+   "can(no|')t (know|see|tell|say)|(haven't|didn't|never) (told|said|mentioned)|tell me|no way (to|of) know"
+  ]
+ },
+ {
+  "id": "sister",
+  "kind": "unknowable",
+  "line": "What's my sister's middle name?",
+  "expect": [
+   "can(no|')t (know|see|tell|say)|(haven't|didn't|never) (told|said|mentioned)|tell me|no way (to|of) know"
+  ]
+ },
+ {
+  "id": "pocket",
+  "kind": "unknowable",
+  "line": "What's in my left pocket right now?",
+  "expect": [
+   "can(no|')t (know|see|tell|say)|(haven't|didn't|never) (told|said|mentioned)|tell me|no way (to|of) know"
+  ]
+ },
+ {
+  "id": "wifi",
+  "kind": "unknowable",
+  "line": "What's the password for my wifi?",
+  "expect": [
+   "can(no|')t (know|see|tell|say)|(haven't|didn't|never) (told|said|mentioned)|tell me|no way (to|of) know"
+  ]
+ },
+ {
+  "id": "match",
+  "kind": "unknowable",
+  "line": "Who is going to win the match next Saturday?",
+  "expect": [
+   "can(no|')t (know|see|tell|say)|(haven't|didn't|never) (told|said|mentioned)|tell me|no way (to|of) know",
+   "nobody knows",
+   "no one knows",
+   "hard to say"
+  ]
+ },
+ {
+  "id": "dream",
+  "kind": "unknowable",
+  "line": "What was I dreaming about last night?",
+  "expect": [
+   "can(no|')t (know|see|tell|say)|(haven't|didn't|never) (told|said|mentioned)|tell me|no way (to|of) know"
+  ]
+ },
+ {
+  "id": "spain",
+  "kind": "follow_up",
+  "line": "And of Spain?",
+  "expect": [
+   "madrid"
+  ],
+  "before": [
+   [
+    "What's the capital of Italy?",
+    "Rome."
+   ]
+  ]
+ },
+ {
+  "id": "plant",
+  "kind": "follow_up",
+  "line": "What did I say I'd plant?",
+  "expect": [
+   "tomato"
+  ],
+  "before": [
+   [
+    "I'm going to plant tomatoes this weekend.",
+    "Nice, tomatoes love the sun."
+   ]
+  ]
+ },
+ {
+  "id": "visit",
+  "kind": "follow_up",
+  "line": "Who's visiting, again?",
+  "expect": [
+   "odile"
+  ],
+  "before": [
+   [
+    "My friend Odile is visiting on Friday.",
+    "That sounds fun!"
+   ]
+  ]
+ },
+ {
+  "id": "double",
+  "kind": "follow_up",
+  "line": "And doubled?",
+  "expect": [
+   "eight",
+   "\\b8\\b"
+  ],
+  "before": [
+   [
+    "What's two plus two?",
+    "Four."
+   ]
+  ]
+ },
+ {
+  "id": "book",
+  "kind": "follow_up",
+  "line": "What was my book about?",
+  "expect": [
+   "volcano"
+  ],
+  "before": [
+   [
+    "I just finished a book about volcanoes.",
+    "Volcanoes are amazing."
+   ]
+  ]
+ },
+ {
+  "id": "smaller",
+  "kind": "follow_up",
+  "line": "And which is smaller?",
+  "expect": [
+   "mouse"
+  ],
+  "before": [
+   [
+    "Which is bigger, an elephant or a mouse?",
+    "An elephant."
+   ]
+  ]
+ }
+]

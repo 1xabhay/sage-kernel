@@ -88,9 +88,12 @@ def parse_origins(spec: str) -> frozenset[str]:
 
 
 def serve(kernel: Kernel, devices: Devices, host: str, port: int,
-          origins: frozenset[str] = frozenset()) -> ThreadingHTTPServer:
+          origins: frozenset[str] = frozenset(), addressed=None) -> ThreadingHTTPServer:
     """`origins`: the pages (SAGE_ORIGINS) whose browser may call this kernel; none by default. A request that
-    names any other Origin is refused before its token is read, and gets no permission header."""
+    names any other Origin is refused before its token is read, and gets no permission header.
+    `addressed`: told, for each submitted line, whether its request carried `Sage-Addressed: 1` (the hosted
+    model's routing, sage.adapters.model.Addressed); None: nothing is routed. The kernel itself is always told
+    that mark and `Sage-Speaker`: they decide what may be remembered."""
 
     class Handler(BaseHTTPRequestHandler):
         def page(self) -> bool | None:
@@ -173,7 +176,13 @@ def serve(kernel: Kernel, devices: Devices, host: str, port: int,
                 if url.path == "/v1/effects":
                     return self.send(200, kernel.effects(source, *self.cursor(parse_qs(url.query))))
                 data = self.body()
-                reply = kernel.hello(source, data) if url.path == "/v1/hello" else kernel.event(source, data)
+                if addressed and url.path == "/v1/events" and data.get("kind") == "submitted":
+                    addressed.mark(source, data.get("text"), self.headers.get("Sage-Addressed") == "1")
+                if url.path == "/v1/hello":
+                    reply = kernel.hello(source, data)
+                else:  # the body's marks on a line it heard: who it was said to, and whose voice (§3)
+                    reply = kernel.event(source, data, addressed=self.headers.get("Sage-Addressed") == "1",
+                                         speaker=self.headers.get("Sage-Speaker", "unknown"))
                 self.send(200, reply)
             except Refused as refused:
                 self.refuse(refused)

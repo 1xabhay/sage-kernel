@@ -78,6 +78,8 @@ def content(reply: str) -> list[str]:
 class Session:
     """A throwaway kernel (fresh temp state, random port) that replays lines as the robot sent them."""
 
+    ENV: dict = {}  # more settings for the kernel under test  # noqa: RUF012 -- read, never changed
+
     @classmethod
     def boot(cls, manifest, state=None) -> int:
         """A kernel on fresh temp state, or on `state` again (a restart)."""
@@ -86,7 +88,7 @@ class Session:
             cls.port = probe.getsockname()[1]
         cls.state = state or tempfile.mkdtemp()
         env = {**os.environ, "SAGE_STATE_DIR": cls.state, "SAGE_DEVICE_PORT": str(cls.port),
-               "SAGE_DEVICES": f"reachy={TOKEN}", "SAGE_MODEL_URL": URL, "SAGE_MODEL": MODEL}
+               "SAGE_DEVICES": f"reachy={TOKEN}", "SAGE_MODEL_URL": URL, "SAGE_MODEL": MODEL, **cls.ENV}
         cls.kernel = subprocess.Popen([sys.executable, "-m", "sage"], cwd=ROOT, env=env, stderr=subprocess.DEVNULL)
         deadline = time.monotonic() + 10
         while cls.call("GET", "/v1/effects")[0] != 401 and time.monotonic() < deadline:
@@ -94,7 +96,7 @@ class Session:
         return cls.call("POST", "/v1/hello", {"protocols": [1], "manifest": manifest})[1]["sequence"]
 
     @classmethod
-    def replay(cls, manifest, lines, barge=(), greet=False, state=None, notes=None) -> list[dict]:
+    def replay(cls, manifest, lines, barge=(), greet=False, state=None, notes=None, settle_s=0.0) -> list[dict]:
         since, turns = cls.boot(manifest, state), []
         if notes:  # a song looked up, as the voice app hands it over
             since = cls.call("POST", "/v1/events", {"kind": "notes", **notes})[1]["sequence"]
@@ -104,6 +106,11 @@ class Session:
         for index, line in enumerate(lines):
             turns.append(cls.turn(f"live{cls.port}-{index}", line, since, interrupt=line in barge))
             since = cls.call("GET", "/v1/effects?since=0")[1]["sequence"]
+        quiet = time.monotonic()
+        while settle_s and time.monotonic() - quiet < settle_s:  # until the journal has stopped growing: memory is written
+            time.sleep(1)
+            head = cls.call("GET", "/v1/effects?since=0")[1]["sequence"]
+            since, quiet = head, quiet if head == since else time.monotonic()
         cls.kernel.terminate()
         cls.kernel.wait(5)
         return turns
@@ -126,7 +133,9 @@ class Session:
     @classmethod
     def call(cls, method, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
-        headers = {"Authorization": f"Bearer {TOKEN}", **({"Content-Type": "application/json"} if data else {})}
+        # Every line here is said to Sage (protocol v1.6 §3): only such a line is remembered.
+        headers = {"Authorization": f"Bearer {TOKEN}", "Sage-Addressed": "1",
+                   **({"Content-Type": "application/json"} if data else {})}
         try:
             with urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{cls.port}{path}", data, headers,
                                                                method=method), timeout=40) as response:
@@ -432,11 +441,13 @@ UNRELATED = ("I made pancakes this morning.", "The bus was late again.", "It mig
 
 
 class LiveMemory(Session, unittest.TestCase):
-    """A remembered fact outlives the window and a restart of the kernel."""
+    """A fact the writer kept after the conversation outlives the window and a restart of the kernel."""
+
+    ENV = {"SAGE_SESSION_IDLE_S": "5"}  # noqa: RUF012 -- the conversation ends 5 s after its last line
 
     @classmethod
     def setUpClass(cls):
-        cls.turns = cls.replay(RUN_5B["manifest"], ["My name is Juno.", *UNRELATED])
+        cls.turns = cls.replay(RUN_5B["manifest"], ["My name is Juno.", *UNRELATED], settle_s=30)
         cls.turns += cls.replay(RUN_5B["manifest"], ["What's my name?"], state=cls.state)
         cls.report(cls.turns)
 

@@ -1,34 +1,17 @@
-"""Whether a heard line gets words or a move alone, for any body: code chooses, not the model.
+"""Whether a heard line needs words, for any body: ``must_speak`` says why, from the words alone.
 
-The model answers what to say, never whether: left to it, 5% of statements went without words (real
-replay, 120 lines) against a target of 40%. A statement may get a move: bounded odds, at most
-``MAX_MOVES`` in a row, never once the person has gone ``SPOKEN_S`` without hearing it speak. The
-line that needs words always gets them, and a false hit here costs only a few words: questions,
-distress, its name, someone asking for something, something to remember, a line too long to
-tell the kernel whole. Which clip shows a reaction is the body's; this says no words of its own.
+A false hit costs only a few words: questions, distress, its name, someone asking for something,
+something to remember, a line too long to tell the kernel whole. ``gate.attend`` reads it to decide
+whether a line is for the body at all; whether an answer is words or a nod is the kernel's.
 
-Time pulls one way only: a long quiet means words, the same after an hour or a week, unless
-``cold``: nobody has been talking to it, so the quiet says nothing about this line, which may be
-the room's. A greeting still gets words. No mood, score or history reaches this but what it is
-handed.
-
-ponytail: lexical and English, as ``hearing``; the odds and lists tune against ``make pet``.
+ponytail: lexical and English, as ``hearing``; the lists tune against ``make pet``.
 """
 
-import math
-import random
 import re
 from collections.abc import Callable
 
-from sage_device.hearing import ASKING, COMMON, DISTRESS
+from sage_device.hearing import ASKING, DISTRESS
 
-COMFORT, AGREE = "comfort", "agree"  # the moves it answers with
-#: Odds of a move for a statement free to get one: 40% of real statements with lines close together
-#: (replay, 2026-11-05); a line needing words breaks most runs, so ``MAX_MOVES`` rarely bites.
-MOVE_ODDS = 0.42
-MAX_MOVES = 2
-#: With no spoken reply this long, in seconds, the next line gets words.
-SPOKEN_S = 60.0
 #: Longest line a move may answer: the kernel hears it as ``"heard: "`` in an acted reason of 64.
 TOLD_CHARS = 57
 
@@ -86,33 +69,18 @@ def must_speak(line: str, named: Callable[[str], bool] = lambda word: False) -> 
         return "question"
     if any(map(named, words)):
         return "name"
-    if _REQUEST.search(plain) or any(map(_ordered, re.split(r"[.!,;]", plain))):
+    if requested(plain):
         return "request"
     if _TEACHING.search(plain) or _INTRODUCED.search(line):
         return "teaching"
     return "too long" if len(line) > TOLD_CHARS else ""
 
 
-def _words(line: str) -> list[str]:
-    return re.findall(r"[\w'-]+", line.lower())
+def requested(plain: str) -> bool:
+    """Whether a lower-case line asks for something, a question or not ("Tell me a story.")."""
+    return bool(_REQUEST.search(plain)) or any(map(_ordered, re.split(r"[.!,;]", plain)))
 
 
 def _ordered(sentence: str) -> bool:
     words = re.findall(r"[\w'-]+", sentence)
     return next((word for word in words if word not in _LEADING), "") in _ORDERS
-
-
-def speak_or_move(line: str, rng: random.Random = random, *, asked: bool = False,
-                  since_spoken: float = math.inf, moves_in_row: int = 0, cold: bool = False,
-                  named: Callable[[str], bool] = lambda word: False) -> str | None:
-    """Return the reaction to answer ``line`` with, ``COMFORT`` or ``AGREE``; None means words.
-
-    For a line ``hearing.decide`` passed and no grammar took. ``asked``: it just asked something,
-    so this is the answer. ``since_spoken``: seconds since it last spoke; ``moves_in_row``: answers
-    since then that were only moves. ``cold``: no exchange lately (``floor.OPEN_S``).
-    """
-    quiet = since_spoken >= SPOKEN_S and (not cold or COMMON.issuperset(_words(line)))
-    if (asked or quiet or moves_in_row >= MAX_MOVES or must_speak(line, named)
-            or rng.random() >= MOVE_ODDS):
-        return None
-    return COMFORT if _BAD_DAY.search(line.lower()) else AGREE

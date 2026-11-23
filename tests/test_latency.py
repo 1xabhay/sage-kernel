@@ -23,7 +23,7 @@ class LatencyReport(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "kernel.sqlite3"
-        clock, queue = [1000.0], [("Hi! Nice to meet you.", 1.5), ("Hi! Nice to meet you.", 2.0),
+        clock, queue = [1000.0], [("Hi! Nice to meet you.", 1.5), ("", 2.0),
                                   ("Lisbon is lovely in spring.", 2.0)]
 
         def decide(prompt, heard):
@@ -40,7 +40,7 @@ class LatencyReport(unittest.TestCase):
         kernel.event("reachy", {"kind": "result", "sequence": reply["sequence"], "status": "done",
                                 "timing": {"ttft_ms": 900, "first_audio_ms": 1400}, "duration_ms": 2000})
         kernel.event("reachy", {"kind": "notes", "topic": "Lisbon", "passages": ["Lisbon is Portugal's capital."]})
-        self.turn(kernel, "r2", "Tell me about Lisbon", {})  # repeats r1 first: one retry
+        self.turn(kernel, "r2", "Tell me about Lisbon", {})  # silent on it first: one retry
 
     def turn(self, kernel, turn_id, text, timing):
         kernel.event("reachy", {"kind": "submitted", "turn_id": turn_id, "text": text, "timing": timing})

@@ -5,6 +5,7 @@ tools/play_emotion.py:126-168; see NOTICE), kept to the moves this body declares
 (``kernel.EMOTIONS``: never a negative one, owner), plus a few of ours (curious,
 proud, cheerful, shy, tired). Intents with nothing left (angry, disgusted,
 dying...) are dropped. The words people say ("happy", "afraid") map onto intents.
+The intents are also the feelings the model may name (``manifest.manifest``).
 """
 
 import random
@@ -47,11 +48,6 @@ WORDS = {word: intent for word, intent in WORDS.items()
 #: ponytail: the owner's eye decides; these are all under 5.7 s (reflex.GESTURE_S is 6).
 REACTIONS = {"greet": ("welcoming2", "laughing2", "dance1"),
              "praised": ("grateful1", "loving1", "serenity1"),
-             # For a statement answered by a move alone (``sage_device.choice``): 0-3 deg head lag
-             # for comfort, up to 12 for agree (nods); none droops. calming1 is 6.1 s: a body still
-             # playing means words next, by ``gesture_phase``.
-             "comfort": ("calming1", "serenity1"),
-             "agree": ("understanding1", "thoughtful1", "attentive1"),
              # A big moment while watching together (sage_device.media): a move, words rare.
              "cheer": ("cheerful1", "enthusiastic1", "surprised1", "amazed1")}
 
@@ -70,10 +66,15 @@ MOVES_LINE = ("I can show feelings, like happy, sad, surprised, curious or shy: 
               "I can look for you, follow you, look around and turn.")
 
 
-def emotion(intent: str, rng: random.Random = random) -> str | None:
-    """Pick a declared emotion for ``intent`` (or a word for one), at random among its moves."""
-    moves = INTENTS.get(WORDS.get(intent, intent))
-    return rng.choice(moves) if moves else None
+def emotion(intent: str, rng: random.Random = random, last: str | None = None) -> str | None:
+    """Pick a declared emotion for ``intent`` (or a word for one), at random among its moves.
+
+    Never ``last`` while the feeling has another clip: two clips were 72% of what the
+    body played (journal 11-20). ponytail: a feeling with one clip (loving, calming)
+    plays it again; record a second clip if that shows.
+    """
+    moves = INTENTS.get(WORDS.get(intent, intent)) if isinstance(intent, str) else None
+    return rng.choice([m for m in moves if m != last] or moves) if moves else None
 
 
 def dance(name: str, rng: random.Random = random) -> str | None:

@@ -39,26 +39,24 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.base_text_aggregator import AggregationType
-from sage_device import media, reflex, vision
-from sage_device.choice import must_speak, speak_or_move
+from sage_device import gate, media, reflex, vision
+from sage_device.choice import must_speak
 from sage_device.floor import (
     CARRY_S,
     DROP,
-    OPEN_S,
     WAIT,
     half_heard,
     hold_limit,
     media_floor,
-    overheard,
     taken,
 )
-from sage_device.hearing import PASS, UNSURE, decide, trustworthy, unfinished
+from sage_device.hearing import COOLDOWN_S, trustworthy, unfinished
 from sage_device.kernel import KernelUnavailableError, Session, acted
 from sage_device.latency import AUDIO, NO_TURN, SILENT, TURN_ID
 from sage_device.names import correct
 
 from reachy_sage_voice import health
-from reachy_sage_voice.expressions import MOVES_LINE, REACTIONS
+from reachy_sage_voice.expressions import MOVES_LINE, REACTIONS, emotion
 from reachy_sage_voice.grammar import (
     Command,
     Context,
@@ -87,8 +85,10 @@ ACKS = {"search_face": "Looking for you.", "track_face": "Following you.", "danc
 #: Said and shown when a search finds no one on its whole path (owner, 2026-10-23).
 NOT_FOUND_LINE = "Aw, I looked everywhere and couldn't find you!"
 NOT_FOUND_EMOTE = "lonely1"
-#: Shown, muted, when it did not catch a line (``sage_device.hearing``): a plain head tilt of up
-#: to 21 degrees in 2.9 s. confused1 is 7.9 s and swings the head 45 degrees: too much for noise.
+#: The look (``gate.ACK``), muted: unsure a line was for it, or what it said. A plain head tilt of
+#: up to 21 degrees in 2.9 s. confused1 is 7.9 s and swings the head 45 degrees: too much for noise.
+#: ponytail: one clip for both doubts, and a body that cannot play it shows nothing (no body has a
+#: light hook yet): split or add one when the owner's eye, or a puck, asks.
 UNSURE_CLIP = "inquiring3"
 FLOOR_POLL_S = 0.05
 #: How long after it asked a question whatever comes back is the answer, in seconds.
@@ -107,7 +107,9 @@ VOICE_WAIT_S = 10.0
 EMOTE_FINISH_S = 3.5
 #: Run states after which a turn will never deliver a reply.
 _ENDED = ("failed", "cancelled", "unknown")
-#: How a turn came in (v1.1 ``submitted.input``): the STT answers text alone, so no confidence.
+#: How a turn came in (v1.1 ``submitted.input``). No confidence, though the STT has one: the kernel
+#: reads any under 0.9 as "(unclear)" (``policy.SURE``), and nine in ten real lines are. Its
+#: input takes no other field: who it was said to and whose voice it was go as headers (§3).
 SPEECH = {"medium": "speech"}
 #: How the kernel's own turns (greetings, nudges) are named (protocol v1 §9).
 KERNEL_TURN = "kernel-"
@@ -200,14 +202,48 @@ def _stops(effect: dict, turn: _Turn) -> bool:
     return effect["kind"] == "stop" and effect.get("turn_id") in (None, turn.turn_id)
 
 
+def _signals(frame) -> dict:
+    """Return what a transcript frame carries for the gate: the STT's scores, the pipeline's face.
+
+    ponytail: the direction (``frame.doa``) is not handed on. It would switch on the gate's
+    other-voice rule with an unmeasured 45 degrees; hand it on once labelled lines carry it.
+    """
+    result = getattr(frame, "result", None)
+    confidence = getattr(result, "confidence", None) or {}
+    return {"confidence": confidence.get("mean"), "similarity": getattr(result, "similarity", None),
+            "face": getattr(frame, "face", None)}
+
+
+def _speaker(similarity: float | None) -> str:
+    """Return whose voice the STT's voiceprint says it was, for the kernel (v1.6 ``Sage-Speaker``).
+
+    "" while no voiceprint is enrolled: the kernel then remembers the line as nobody's own.
+    ponytail: the STT's own 0.5 threshold; an owner scored under it on a short line is a guest
+    here, and that line is not remembered. Measure on the labelled set (eval/noise.py).
+    """
+    if similarity is None:
+        return ""
+    return "owner" if similarity >= gate.OWNER_SIMILARITY else "guest"
+
+
+def _gate(result: str, check: str) -> None:
+    """Log what became of one transcript and which check decided: one line each, no words.
+
+    ``gate.attend``'s four, each with its rule: answer, ack, listen, overheard. And the lines it
+    never judged: command, dropped, held, echo, and the TV's turn, move or overheard (media.heard).
+    For the labelled set (eval/noise.py); the meter's lines ("unsure:", "overheard:") stay beside it.
+    """
+    logger.info("gate: %s (%s)", result, check)
+
+
 class SageProcessor(FrameProcessor):
     """Final transcripts to the kernel; its reply, emotes and results back out."""
 
     def __init__(self, session: Session, play_emote: Callable, playback: Playback,
                  now: Callable[[], float] = time.monotonic, play_sound: Callable | None = None,
                  engine: dict = ENGINES["kokoro"], song=None, names: tuple = (), executor=None,
-                 finish: frozenset = frozenset(), hold_s: float = 0.0, rng=None, see=None,
-                 scene_s: float = 0.0, **kwargs):
+                 finish: frozenset = frozenset(), hold_s: float = 0.0, see=None,
+                 scene_s: float = 0.0, low_confidence: float = gate.LOW_CONFIDENCE, **kwargs):
         """Talk through ``session``; ``play_emote(name, sound)`` performs a move, muted or not.
 
         ``play_sound(move)`` plays a move's own sound for a vocal (None: no sounds),
@@ -219,7 +255,7 @@ class SageProcessor(FrameProcessor):
         ``finish`` names the emotes short enough to finish through a new turn (``EMOTE_FINISH_S``).
         ``hold_s``: a transcript that stops mid-sentence (``hearing.unfinished``) waits until
         this long after the end of speech for the rest of the turn (0: never).
-        ``rng`` draws whether a statement gets a move alone (``sage_device.choice``; None: never).
+        ``low_confidence``: the STT confidence under which the gate steps a line down.
         ``see(question)`` returns what the camera shows now, in words (``sage_device.vision``;
         None: no sight). A sight question ("What am I holding?") looks before its turn, and every
         ``scene_s`` (0: never) a quiet body tells the kernel a changed scene.
@@ -237,16 +273,17 @@ class SageProcessor(FrameProcessor):
             owner = f"{names[0].written}, where" if names else "Where"
             executor.call_out = lambda: self._say_aside(f"{owner} are you?")
         self._gestured_at, self._last_clip = -math.inf, None
-        self._hold_s, self._rng, self._see, self._scene_s = hold_s, rng, see, scene_s
+        self._hold_s, self._see, self._scene_s = hold_s, see, scene_s
         self._watching: asyncio.Task | None = None  # the scene, now and then: not the turn's
-        self._moves_in_row = 0  # answers that were only moves, since it last spoke
+        self._attention = gate.Attention()  # the conversation: open or not (sage_device.gate)
+        self._low, self._signals = low_confidence, {}  # the gate's floor; the last transcript's signals
         self._held: tuple[str, asyncio.Task] | None = None  # an unfinished fragment, waiting
         self._cut: tuple[str, float] | None = None  # a statement doubted as cut off, and when
         self._listening: asyncio.Task | None = None  # not the turn's: a barge-in must not end it
         self._recent: deque[str] = deque(maxlen=RECENT_REPLIES)
         self._speech_ended: float | None = None
-        self._spoke_at = self._unsure_at = self._exchanged_at = -math.inf
-        self._cold = False  # the line being judged came with no exchange lately (``floor.OPEN_S``)
+        self._spoke_at = self._unsure_at = -math.inf  # it began to speak; it last showed a look
+        self._said_at = -math.inf  # its last word: the conversation closes counted from here
         self._voice_on_at = self._voice_off_at = self._begun_at = -math.inf
         self._turn: _Turn | None = None
         self._turn_id = NO_TURN  # for the log lines (latency.py); a command's too
@@ -277,19 +314,24 @@ class SageProcessor(FrameProcessor):
             self._speech_ended = self._voice_off_at - frame.stop_secs
             if self._executor is not None:
                 self._executor.resume()
-        elif isinstance(frame, TranscriptionFrame) and not is_self_echo(frame.text, self._recent):
+        elif isinstance(frame, TranscriptionFrame):
             # The mic hears the speaker late: its own closing words can lead a turn.
-            heard = correct(trim_echo(frame.text, [*self._recent, self._playback.text]), self._names)
+            heard = "" if is_self_echo(frame.text, self._recent) else correct(
+                trim_echo(frame.text, [*self._recent, self._playback.text]), self._names)
             if heard:
+                self._signals = _signals(frame)
                 await self._submit(heard)
+            else:
+                _gate("echo", "speech")
         elif isinstance(frame, BotStartedSpeakingFrame):
             logger.info(AUDIO)  # latency.py: a turn's first one ends its v2v_ms
-            self._spoke_at, self._moves_in_row = self._now(), 0
+            self._spoke_at = self._said_at = self._now()
             if self._turn and self._turn.first_audio_at is None:
                 self._turn.first_audio_at = self._now()
             if self._executor is not None:
                 self._executor.replying()
         elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._said_at = self._now()
             self._audio_done.set()
         elif isinstance(frame, InterruptionFrame):
             await self._interrupt()
@@ -327,15 +369,20 @@ class SageProcessor(FrameProcessor):
                                       gesture=phase != reflex.PASS))
         if isinstance(intent, Drop):
             logger.info("%s, not sent: %r", intent.reason, heard)
+            _gate("dropped", "route")
             return
         if isinstance(intent, Gesture):
             self._begin("reflex")
+            _gate("move" if phase == reflex.FIRE else "dropped", "route")
             if phase == reflex.FIRE:
+                self._attention = gate.opened(self._attention, self._now())  # it waved back
                 self._gesture(intent.reaction, heard)
             else:
                 logger.info("gesture skipped: a repeat, %r", heard)
             return
         if isinstance(intent, Song):
+            _gate("command", "route")
+            self._attention = gate.opened(self._attention, self._now())
             await self._interrupt()
             if not (self._listening and not self._listening.done()):
                 self._listening = self.create_task(self._listen(None, LISTENING))
@@ -345,8 +392,13 @@ class SageProcessor(FrameProcessor):
             words = re.findall(r"[\w'-]+", heard.lower())
             if self._watch.on and intent.plan[0].skill != "stop" and not any(map(is_name, words)):
                 logger.info("media: a command while watching, not run without the name: %r", heard)
+                _gate("overheard", "media.heard")
                 return  # "turn", "look", "pit stop" are commentary words (S0); stop costs nothing
             self._begin("reflex")
+            _gate("command", "route")
+            # A command is a line to it: what follows is in a conversation. A stop ends one.
+            self._attention = (gate.Attention() if intent.plan[0].skill == "stop"
+                               else gate.opened(self._attention, self._now()))
             await self._command(intent.plan)
             self._task = self.create_task(self._await_kernel())  # _interrupt ended the poll
             return
@@ -355,17 +407,20 @@ class SageProcessor(FrameProcessor):
             wait = self._hold_s - (self._now() - ended)
             if wait > 0:
                 self._held = (heard, self.create_task(self._release(heard, wait)))
+                _gate("held", "hearing.unfinished")  # its outcome is the next gate line's
                 return
         turn = self._turn
         running = turn is not None and not turn.ended
-        if running and turn.reply_seq is None and turn.first_audio_at is None:
+        joins = running and turn.reply_seq is None and turn.first_audio_at is None
+        if not (rule := self._attended(heard, joins)):
+            return  # and a turn still running runs on: talk between others does not replace it
+        if joins:
             # Nothing of the reply heard yet: the kernel forgets a turn stopped before
             # its reply, so its words lead the one that replaces it, as one message.
             # No "interrupted" result: that would keep the half-turn in memory too.
             heard = f"{turn.text} {heard}"
             turn.withdrawn = True
-        elif self._doubted(heard) or self._kept_out(heard) or self._moved(heard):
-            return
+            rule += ", replaced"
         timing = {}
         if self._speech_ended is not None:
             timing["stt_ms"] = _ms(self._now() - self._speech_ended)
@@ -374,7 +429,10 @@ class SageProcessor(FrameProcessor):
             # Its words are queued in the TTS: interrupt the voice, as barge-in does,
             # or they lead the next reply ("OhOh, a messy screen!").
             await self.push_frame(InterruptionFrame())
-        talk = self._converse(self._begin("kernel"), heard, timing, self._speech_ended)
+        turn_id = self._begin("kernel")
+        _gate(gate.ANSWER, rule)  # after the turn began: the line carries its id (latency.py)
+        talk = self._converse(turn_id, heard, timing, self._speech_ended, addressed=True,
+                              speaker=_speaker(self._signals.get("similarity")))
         looks = self._see is not None and asks_to_see(heard)
         self._task = self.create_task(self._looked(heard, talk) if looks else talk)
         if self._executor is not None and not self._playback.speaking:
@@ -392,6 +450,7 @@ class SageProcessor(FrameProcessor):
             logger.info("media: ended")  # pet.py: speech over a voice is counted apart while on
         if self._watch.on and not was_on:  # the lines before were the TV's too: their turn goes
             logger.info("media: watching %s", (media.context(self._watch) or {}).get("about"))
+            self._attention = gate.Attention()  # and the conversation they held open closes
             turn = self._turn
             if turn is not None and not turn.ended and turn.first_audio_at is None:
                 await self._interrupt()
@@ -401,6 +460,8 @@ class SageProcessor(FrameProcessor):
         logger.info("media: commentary (%s)%s", media.context(self._watch)["about"],
                     f", {react}" if react else "")
         free = not self._playback.busy and (self._turn is None or self._turn.ended)
+        _gate("turn" if react == media.SPEAK and free else
+              "move" if react and not self._playback.busy else "overheard", "media.heard")
         if react == media.SPEAK and free:
             moment = {**SPEECH, "media": {**media.context(self._watch), "moment": True}}
             self._task = self.create_task(self._converse(self._begin("kernel"), heard, {}, None,
@@ -437,7 +498,7 @@ class SageProcessor(FrameProcessor):
         while True:
             await asyncio.sleep(self._scene_s)
             busy = (self._turn and not self._turn.ended) or self._playback.speaking
-            if busy or self._since_exchange() < OPEN_S:
+            if busy or gate.is_open(self._attention, self._now(), self._said_at):
                 continue
             seen = await self._see(None)
             if seen and vision.changed(told, seen):
@@ -445,34 +506,30 @@ class SageProcessor(FrameProcessor):
                 logger.info("scene changed: %s characters", len(seen))
                 await self._tell_seen(seen)
 
-    def _since_exchange(self) -> float:
-        return self._now() - max(self._exchanged_at, self._spoke_at)
+    def _attended(self, heard: str, joins: bool = False) -> str:
+        """Ask the gate whether ``heard`` is for it, once (``gate.attend``): the rule if it answers.
 
-    def _kept_out(self, heard: str) -> bool:
-        """Whether ``heard`` is not for it (``floor.overheard``): no turn, and the kernel never hears it.
+        ``joins``: a turn of theirs has had no reply yet, so a line the gate only doubts (a look,
+        a scrap) is the rest of it, cut by a pause, and joins it; whole lines between others do not.
 
-        Other people's words stay out of its memory: only this log has them.
+        Else "": no turn, and the kernel never hears the words. A look (ACK) is a muted tilt, at
+        most one every ``COOLDOWN_S``: its motors can make the next noise. Real words it did not
+        answer lead what the person says next within ``CARRY_S``.
         """
-        if overheard(heard, self._since_exchange(), asked=self._asked(), named=is_name):
-            logger.info("overheard: quiet")
-            return True
-        # Until it has spoken at all, its first words stay the first thing the person gets.
-        self._cold = self._spoke_at > -math.inf and self._since_exchange() >= OPEN_S
-        self._exchanged_at = self._now()
-        return False
-
-    def _doubted(self, heard: str) -> bool:
-        """Whether it did not catch ``heard``: no turn then, at most a tilt (``hearing.decide``)."""
         now = self._now()
-        half = half_heard(heard, is_name)
-        outcome = decide(heard, now - self._unsure_at,
-                         busy=self._playback.busy or bool(self._executor and self._executor.busy()),
-                         asked=self._asked(), named=is_name, half=half)
-        if outcome == PASS:
-            return False
-        if half and trustworthy(heard, is_name):  # real words, cut off: keep them for what follows
+        outcome, rule, self._attention = gate.attend(heard, gate.Signals(
+            now, spoke_at=self._said_at, asked=self._asked(), low=self._low, named=is_name,
+            **self._signals), self._attention)
+        if outcome == gate.ANSWER or (joins and (outcome == gate.ACK or rule.endswith("unclear"))):
+            return rule
+        _gate(outcome, rule)
+        if outcome == gate.OVERHEARD:
+            logger.info("overheard: quiet")
+            return ""
+        if trustworthy(heard, is_name) and (outcome == gate.ACK or half_heard(heard, is_name)):
             self._cut = (heard, now)
-        if outcome == UNSURE:
+        busy = self._playback.busy or bool(self._executor and self._executor.busy())
+        if outcome == gate.ACK and not busy and now - self._unsure_at >= COOLDOWN_S:
             self._unsure_at = now
             logger.info("unsure: tilted")
             task = self.create_task(self._tilt())
@@ -480,32 +537,12 @@ class SageProcessor(FrameProcessor):
             task.add_done_callback(self._finishing.discard)
         else:
             logger.info("unsure: quiet")
-        return True
+        return ""
 
     def _asked(self) -> bool:
         """Whether it just asked something, so whatever comes back is the answer."""
         return (bool(self._recent) and self._recent[-1].rstrip().endswith("?")
                 and self._now() - self._spoke_at < ASKED_S)
-
-    def _moved(self, heard: str) -> bool:
-        """Whether it answers ``heard`` with a move alone: no turn, so no model, no reply to await.
-
-        Only a move that can show now, on a kernel that will hear the words (``acted``): else words.
-        """
-        if self._rng is None:
-            return False
-        reaction = None
-        free = self._gesture_phase() == reflex.FIRE
-        if free and "acted" in (getattr(self._session, "features", None) or ()):
-            reaction = speak_or_move(heard, self._rng, asked=self._asked(),
-                                     since_spoken=self._now() - self._spoke_at,
-                                     moves_in_row=self._moves_in_row, cold=self._cold,
-                                     named=is_name)
-        logger.info("chose: %s", "move" if reaction else "speak" if free else "speak (body not free)")
-        if reaction:
-            self._begin("reflex")
-            self._gesture(reaction, heard)
-        return bool(reaction)
 
     async def _tilt(self, clip: str = UNSURE_CLIP) -> None:
         try:
@@ -531,8 +568,13 @@ class SageProcessor(FrameProcessor):
         await self._submit(heard, hold=False)
 
     async def _converse(self, turn_id: str, heard: str, timing: dict,
-                        speech_ended: float | None = None, input: dict | None = None) -> None:
-        """Take one turn of the person's, then listen for the kernel's own."""
+                        speech_ended: float | None = None, input: dict | None = None,
+                        addressed: bool = False, speaker: str = "") -> None:
+        """Take one turn of the person's, then listen for the kernel's own.
+
+        ``addressed``: the gate answered this line; the TV's big moment is a turn it did not.
+        ``speaker``: whose voice the voiceprint says it was (``_speaker``).
+        """
         turn = self._turn = _Turn(turn_id, heard, speech_ended)
         turn.moment = bool(((input or {}).get("media") or {}).get("moment"))
         self._audio_done.clear()
@@ -540,7 +582,8 @@ class SageProcessor(FrameProcessor):
             if input is None:  # the person's line: with what is on, if anything (sage_device.media)
                 watching = media.context(self._watch)
                 input = {**SPEECH, "media": watching} if watching else SPEECH
-            admitted = await self._session.start(turn.turn_id, heard, timing, input)
+            admitted = await self._session.start(turn.turn_id, heard, timing, input,
+                                                 addressed=addressed, speaker=speaker)
             features = sorted(getattr(self._session, "features", None) or ())
             health.report("voice.kernel", True, "features: " + (", ".join(features) or "none"))
         except KernelUnavailableError as error:
@@ -574,6 +617,7 @@ class SageProcessor(FrameProcessor):
                 TURN_ID.set(turn_id)
                 self._turn_id = turn_id
                 logger.info("initiated")  # pet.py: nothing the person said began it
+                self._attention = gate.opened(self._attention, self._now())  # a reply is for it
                 turn = self._turn = _Turn(turn_id)
                 self._audio_done.clear()
                 await self._play(turn, body)
@@ -814,7 +858,7 @@ class SageProcessor(FrameProcessor):
 
     def _gesture(self, reaction: str, heard: str) -> None:
         """Answer with the body alone, muted: a clip's own sound would trip the VAD (ponytail)."""
-        self._gestured_at, self._moves_in_row = self._now(), self._moves_in_row + 1
+        self._gestured_at = self._now()
         self._last_clip = clip = reflex.pick(REACTIONS[reaction], self._last_clip)
         logger.info("gesture: %s for %s", clip, reaction)
         task = self.create_task(self._gesture_played(clip, heard))
@@ -853,8 +897,12 @@ class SageProcessor(FrameProcessor):
         if effect["kind"] == "listen_to_song" and self._song is not None and not effect.get("stale"):
             self._listening = self.create_task(self._listen(effect["sequence"]))
             return
+        # The model names a feeling; the body picks its clip, never the last one again
+        # (expressions.emotion). A clip's own name still plays.
         name = (effect.get("input") or {}).get("name")
+        name = emotion(name, last=self._last_clip) or name
         ok = effect["kind"] == "emote" and name in EMOTIONS and not effect.get("stale")
+        self._last_clip = name if ok else self._last_clip
         task = turn.emotes[effect["sequence"]] = self.create_task(
             self._emote(turn, effect["sequence"], name if ok else None))
         if ok and name in self._finish:

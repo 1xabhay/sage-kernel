@@ -114,7 +114,7 @@ class TranscriptionContract(unittest.TestCase):
 
 
 class OwnerVoice(unittest.TestCase):
-    """With a voiceprint enrolled, only the owner's voice is transcribed (reachy_sage_voice/owner.py)."""
+    """With a voiceprint enrolled, every voice is transcribed and scored; only the owner verifies."""
 
     @classmethod
     def setUpClass(cls):
@@ -147,10 +147,18 @@ class OwnerVoice(unittest.TestCase):
         r = client.post("/v1/audio/transcriptions", files={"file": ("a.wav", FIXTURE.read_bytes(), "audio/wav")})
         self.assertIn("morning", r.json()["text"].lower())
 
-    def test_any_other_sound_is_not_the_owner_and_comes_back_as_no_text(self):
+    def test_another_voice_is_not_the_owner_and_its_words_come_back_with_its_score(self):
         self.assertFalse(self.verify(wav(noise(), 16000))["owner"])
-        r = client.post("/v1/audio/transcriptions", files={"file": ("a.wav", wav(noise(), 16000), "audio/wav")})
-        self.assertEqual((r.status_code, r.json()["text"]), (200, ""))
+        result = mock.Mock(text=" Hello robot", tokens=[" Hello", " robot"],
+                           logprobs=[-0.1, -0.2])
+        fake = mock.Mock()
+        fake.with_timestamps.return_value.recognize.return_value = result
+        with mock.patch.object(app, "_model", fake):
+            r = client.post("/v1/audio/transcriptions",
+                            files={"file": ("a.wav", wav(noise(), 16000), "audio/wav")}).json()
+        self.assertEqual(r["text"], " Hello robot")  # ranked, never silenced
+        self.assertLess(r["similarity"], app.THRESHOLD)
+        self.assertEqual([w for w, _ in r["confidence"]["words"]], ["Hello", "robot"])
 
 
 if __name__ == "__main__":

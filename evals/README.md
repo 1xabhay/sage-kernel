@@ -23,4 +23,12 @@ The tests read the table: a `ci-fake` row with no test fails, a test with no row
 expected failures come from `status`. Every spoken line is invented; live speech never goes here
 (live fixtures stay in `evals/local/`, untracked).
 
-Never run `evals/` or `bench/` while Sage is live: they load a model into the same Ollama.
+`companion.py` scores the conversation design on a journal's own lines (counts only, the lines are never
+printed): `python3 evals/companion.py <journal.sqlite3> --hours 96` needs no model and may run any time;
+with `--model <name>` it answers the lines again and holds the result to the design's bars.
+
+`memory.py` scores memory: `python3 evals/memory.py sessions <journal.sqlite3>` counts the conversations
+the kernel's rule makes of a journal's lines, and the share the writer would be shown (no model, counts only);
+`python3 evals/memory.py writer --model <name>` runs the writer on the invented conversations of `memory.json`.
+
+Never run `evals/` with a model, or `bench/`, while Sage is live: they load a model into the same Ollama.

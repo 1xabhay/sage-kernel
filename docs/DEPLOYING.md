@@ -44,6 +44,9 @@ The journal is the agent's memory: the `kernel-data` volume of the compose proje
 - `make backup` writes a read-only, integrity-checked copy into the gitignored `.backups/`
   (mode 600). `make deploy` and `make sage-down` run it first, and so does the nightly
   `ai.sage.maintain` job.
+- What Sage remembers is in the journal's checkpoint, and its owner reads and fixes it while it runs:
+  `docker exec sage-kernel-kernel-1 python -m sage memory list` (then `forget ID`, `edit ID "text"`,
+  `add "text"`). Each record shows the line it came from; a change is journaled as the owner's.
 - `make restore-drill` proves the newest backup restores, without touching the live kernel: a
   throwaway kernel opens a copy and answers a new line. The nightly job runs it after the backup.
 - `make restore BACKUP=.backups/journal-<time>.sqlite3`, after `make sage-down`, puts a backup

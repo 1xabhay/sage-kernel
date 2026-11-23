@@ -1573,6 +1573,17 @@ def test_every_speech_onset_logs_what_was_heard_glance_or_not(quick, caplog):
         "doa": "72", "speech": "True", "head": "+15", "voice": "+33", "x": "+0.12"}
 
 
+def test_the_onsets_direction_is_kept_for_the_transcripts_log_line():
+    """Pipeline's ``stt:`` line reuses it: no second read of the daemon per transcript."""
+    async def main():
+        executor = alive(FakeMini(), doa=voice_at(math.radians(72)))
+        assert executor.heard_doa is None
+        executor.attend()
+        await until(lambda: executor.heard_doa is not None)
+        return executor.heard_doa
+    assert round(asyncio.run(main())) == 72
+
+
 def test_what_was_heard_says_no_face_and_that_the_direction_is_not_this_voice(caplog):
     async def main():
         executor = alive(FakeMini(), doa=voice_at(math.radians(120), False), tracking=True)

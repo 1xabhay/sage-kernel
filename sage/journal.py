@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 from sage import policy
@@ -34,6 +35,7 @@ class Journal:
             row = connection.execute("SELECT state FROM checkpoint WHERE id = 1").fetchone()
             self.head = connection.execute("SELECT coalesce(max(sequence), 0) FROM journal").fetchone()[0]
         self.state = policy.decode(json.loads(row[0])) if row else Companion()
+        self.stamp = None  # the files' sizes and times when `refresh` last looked
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -48,6 +50,72 @@ class Journal:
             connection.executemany("INSERT INTO journal VALUES (?, ?, ?, ?, ?, ?, ?)", values)
             connection.execute("INSERT OR REPLACE INTO checkpoint VALUES (1, ?)", (checkpoint,))
         self.head, self.state = self.head + len(rows), state
+
+    def refresh(self) -> None:
+        """Take in what another process committed: the owner's `python -m sage memory`, which changes the
+        records and nothing else. Without this the kernel's next row would collide with the owner's, and its
+        next checkpoint would undo the change.
+        ponytail: a change landing between this and the kernel's own next commit fails that one step (a
+        duplicate sequence; nothing is written), and the step after is right again. One lock file, or the
+        change sent through the kernel, if the owner ever edits memory by script."""
+        def changed(path) -> tuple[int, int] | None:
+            try:
+                found = os.stat(path)
+            except OSError:
+                return None
+            return found.st_mtime_ns, found.st_size
+        # Any commit, the kernel's own too, changes the database or its write-ahead log. Read before the
+        # journal is, so a commit that lands meanwhile shows at the next look; nothing is opened otherwise.
+        stamp = changed(self.path), changed(f"{self.path}-wal")
+        if stamp == self.stamp or stamp[0] is None:
+            return
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN")  # one snapshot for both reads
+            head = connection.execute("SELECT coalesce(max(sequence), 0) FROM journal").fetchone()[0]
+            row = connection.execute("SELECT state FROM checkpoint WHERE id = 1").fetchone()
+        self.stamp = stamp
+        if head != self.head:
+            self.head, self.state = head, replace(self.state, facts=policy.decode(json.loads(row[0])).facts)
+
+    def amend(self, change, now: float) -> None:
+        """Commit `change(state) -> (state, rows)` on the state as it is in the file right now, in one
+        transaction that no other writer can interleave: how a second process (the owner's CLI) edits memory
+        while the kernel runs."""
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT state FROM checkpoint WHERE id = 1").fetchone()
+            head = connection.execute("SELECT coalesce(max(sequence), 0) FROM journal").fetchone()[0]
+            state, rows = change(policy.decode(json.loads(row[0])) if row else Companion())
+            rows = policy.numbered(rows, head + 1)
+            connection.executemany("INSERT INTO journal VALUES (?, ?, ?, ?, ?, ?, ?)", [
+                (r.sequence, r.kind, r.source, r.target, r.turn_id, json.dumps(r.body), now) for r in rows])
+            connection.execute("INSERT OR REPLACE INTO checkpoint VALUES (1, ?)", (json.dumps(policy.encode(state)),))
+            connection.commit()
+        self.head, self.state = head + len(rows), state
+
+    def session(self, cursor: int) -> tuple[int | None, list[tuple[int, dict, str]]]:
+        """The first conversation closed after `cursor`: its `session` row's sequence, and each line heard in
+        it as (sequence, the submitted row's body, the reply delivered for it or ""). (None, []) when none closed.
+        ponytail: the reply as decided, not as heard: a barge-in's cut is in its result row; join it if a promise
+        Sage never finished saying is ever kept."""
+        with closing(self._connect()) as connection:
+            end = connection.execute("SELECT min(sequence) FROM journal WHERE kind = 'session' AND sequence > ?",
+                                     (cursor,)).fetchone()[0]
+            if end is None:
+                return None, []
+            rows = connection.execute("SELECT sequence, kind, turn_id, body FROM journal WHERE sequence > ? AND "
+                                      "sequence < ? AND kind IN ('submitted', 'reply') ORDER BY sequence",
+                                      (cursor, end)).fetchall()
+        said = {turn_id: json.loads(body).get("text", "") for _, kind, turn_id, body in rows if kind == "reply"}
+        return end, [(sequence, json.loads(body), said.get(turn_id, ""))
+                     for sequence, kind, turn_id, body in rows if kind == "submitted"]
+
+    def line(self, sequence) -> str:
+        """The text of the heard line at `sequence`, "" if there is none: where a record came from."""
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT body FROM journal WHERE sequence = ? AND kind = 'submitted'",
+                                     (sequence,)).fetchone()
+        return json.loads(row[0]).get("text", "") if row else ""
 
     def seen(self, source: str, turn_id: str) -> bool:
         """Whether this device already submitted this turn ID, at any time."""

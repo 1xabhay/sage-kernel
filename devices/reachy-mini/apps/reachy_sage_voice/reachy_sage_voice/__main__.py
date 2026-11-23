@@ -302,15 +302,12 @@ def live(mini, declared: Mapping, env: Mapping[str, str], run: Callable | None,
         mini.media.play_sound(str(declared[name].sound_path))
         await asyncio.sleep(declared[name].duration)
 
-    def face() -> bool:
-        return seen().detected
-
     presence = None
     if tracking or watch:
         presence = seen
 
     voice = run(media_reset.LiveMedia(mini), play_emote, declared, env, play_sound=play_sound,
-                presence=presence, observers=[], face=face, recover=recover, executor=executor)
+                presence=presence, observers=[], recover=recover, executor=executor)
     from reachy_sage_voice.pipeline import RobotLinkLostError
 
     try:

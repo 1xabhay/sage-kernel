@@ -33,9 +33,10 @@ here can reach the internet unless someone configures it to.
     SAGE_VOICE_LISTEN_CUES   0 to turn off the thinking glance before a reply, and with the
                              arbiter the antennas at a voice and the nod (executor.py);
                              default 1
-    SAGE_VOICE_ADDRESSED     1 to answer only when addressed (addressed.py); default 0
-    SAGE_VOICE_ALIASES       names besides Sage it answers to, comma-separated; default Reachy
-    SAGE_VOICE_EXCHANGE_S    seconds after it spoke that need no name or face; default 8
+    SAGE_VOICE_FACE_S        a face seen within this many seconds is in view, for the gate
+                             (sage_device.gate); default 3
+    SAGE_VOICE_LOW_CONFIDENCE  STT confidence under which the gate steps a line down;
+                             default 0.28, the lowest tenth of logged lines
     SAGE_VOICE_NAMES         names to hear and say right: written:spoken:heard|heard,...
                              (names.py); default none
     SAGE_VOICE_RESEARCH_URL  the song research service (services/research); declares
@@ -55,7 +56,6 @@ import io
 import logging
 import math
 import os
-import random
 import time
 import wave
 from collections.abc import Callable, Mapping
@@ -82,10 +82,10 @@ from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 from sage_device import names, vision
+from sage_device.gate import LOW_CONFIDENCE
 from sage_device.kernel import KernelClient, KernelUnavailableError, Session
 
 from reachy_sage_voice import clause, health, turn_end
-from reachy_sage_voice.addressed import addressed_filter
 from reachy_sage_voice.interruption import InterruptionTracker
 from reachy_sage_voice.manifest import manifest
 from reachy_sage_voice.onset import (
@@ -200,6 +200,8 @@ class MergeBacklog:
     """
 
     _cant_hear_at = -math.inf
+    executor = None  # build() sets it: it holds the last speech onset's direction
+    face_s = 3.0  # build() sets it (FACE_S)
 
     async def run_stt(self, audio: bytes):
         """Transcribe ``audio`` and every segment queued behind it, as one."""
@@ -217,7 +219,13 @@ class MergeBacklog:
             logger.info("STT behind: %d segments merged into one request", len(waiting))
         async for frame in super().run_stt(merge_segments(waiting)):
             if isinstance(frame, TranscriptionFrame):
-                _log_scores(frame.result)
+                doa = getattr(self.executor, "heard_doa", None)
+                # For the gate (sage._signals): None with no watch, or no face ever seen.
+                age = None if _face_at is None else time.monotonic() - _face_at
+                frame.face = None if age is None else age <= self.face_s
+                frame.doa = doa
+                if _log_scores(frame.result, _face_at, doa) and doa is not None:
+                    self.executor.heard_doa = None  # one onset's direction, one transcript's
             health.report("voice.stt", not isinstance(frame, ErrorFrame),
                           "down" if isinstance(frame, ErrorFrame) else "up")
             if (isinstance(frame, ErrorFrame)
@@ -227,17 +235,44 @@ class MergeBacklog:
             yield frame
 
 
-def _log_scores(result) -> None:
-    """Log the STT's word confidence and voiceprint score, for the noise trace (eval/noise.py)."""
+#: A face seen within this, in seconds, is in view when a transcript lands: the watch reads five
+#: times a second, and a transcript lands about a second after the voice stops.
+#: ponytail: a guess, no logged face yet; read it off the ``stt:`` line's face ages once labelled.
+FACE_S = 3.0
+#: When the presence watch last saw a face (``time.monotonic``), or None: never, or no watch.
+_face_at: float | None = None
+
+
+def _noting(face: Callable) -> Callable:
+    """Return ``face`` stamping ``_face_at`` at every sighting: the watch's reads, no new one."""
+    def read():
+        global _face_at
+        seen = face()
+        if seen.detected:
+            _face_at = time.monotonic()
+        return seen
+    return read
+
+
+def _log_scores(result, face_at: float | None = None, doa: float | None = None) -> bool:
+    """Log the STT's word confidence and voiceprint score, for the noise trace (eval/noise.py).
+
+    And the gate's signals as last read elsewhere, never read for this line: seconds since a
+    face was last seen (``face_at``) and the speech onset's direction, degrees (``doa``).
+    Whether a line was logged.
+    """
     conf, score = getattr(result, "confidence", None), getattr(result, "similarity", None)
     if conf is None and score is None:
-        return  # an STT that sends neither
+        return False  # an STT that sends neither
     conf = conf or {}
     def num(x):
         return "-" if x is None else f"{x:.2f}"
     words = " ".join(num(p) for _, p in conf.get("words", []))
-    logger.info("stt: confidence mean %s min %s, similarity %s, words %s",
-                num(conf.get("mean")), num(conf.get("min")), num(score), words)
+    logger.info("stt: confidence mean %s min %s, similarity %s, words %s, face %s, doa %s",
+                num(conf.get("mean")), num(conf.get("min")), num(score), words,
+                "none" if face_at is None else f"{time.monotonic() - face_at:.1f}",
+                "none" if doa is None else f"{doa:.0f}")
+    return True
 
 
 class SegmentSTTService(MergeBacklog, OpenAISTTService):
@@ -300,15 +335,14 @@ def sight(media, env: Mapping[str, str]) -> Callable | None:
 
 def build(media: ReachyMedia, play_emote: Callable, moves: Mapping,
           env: Mapping[str, str] = os.environ, play_sound: Callable | None = None,
-          face: Callable[[], bool] | None = None, owner: OwnerCheck | None = None,
+          owner: OwnerCheck | None = None,
           link_lost: Callable[[str], None] | None = None,
           recover: Callable | None = None, executor=None,
           session: Session | None = None) -> Pipeline:
     """Assemble the pipeline. Connects to nothing until it runs.
 
     ``moves`` is the declared vocabulary from the moves library (``load_moves``);
-    ``face`` reads the face tracker, for SAGE_VOICE_ADDRESSED; ``owner`` is the
-    STT's speaker check when it holds a voiceprint, so only the owner barges in.
+    ``owner`` is the STT's speaker check when it holds a voiceprint, so only the owner barges in.
     ``link_lost(reason)`` hears a mic that has gone quiet, after ``recover(attempt)`` failed.
     ``executor`` moves the body on command (``executor.py``): with it the manifest declares the
     body and body_plan, and the executor hears the mic for the dance.
@@ -369,6 +403,8 @@ def build(media: ReachyMedia, play_emote: Callable, moves: Mapping,
         trailing_silence_secs=max(0.0, 0.5 - stop_secs),
         settings=OpenAISTTService.Settings(
             model=env.get("SAGE_VOICE_STT_MODEL", "parakeet-tdt-0.6b-v2")))
+    stt.executor = executor  # for the stt: line's direction
+    stt.face_s = float(env.get("SAGE_VOICE_FACE_S", FACE_S))
 
     known = names.parse(env.get("SAGE_VOICE_NAMES", ""))
     tts = KokoroTTSService(base_url=env["SAGE_VOICE_TTS_URL"], names=known,
@@ -378,20 +414,19 @@ def build(media: ReachyMedia, play_emote: Callable, moves: Mapping,
     clause.install(tts)
 
     session = session or kernel_session(env, moves, executor)
-    gate = addressed_filter(env, face)
     return Pipeline([
         mic,
         vad,
         *([user_turns(smart_turn_analyzer(
             int(env.get("SAGE_VOICE_TURN_TIMEOUT_MS", 1500)) / 1000))] if smart else []),
         stt,
-        *([gate] if gate else []),
         SageProcessor(session, play_emote, playback, play_sound=play_sound, song=song, names=known,
                       executor=executor, finish=frozenset(
                           name for name, move in moves.items()
                           if getattr(move, "duration", math.inf) <= EMOTE_FINISH_S),
-                      hold_s=int(env.get("SAGE_VOICE_HOLD_MS", 1500)) / 1000, rng=random,
-                      see=sight(media, env), scene_s=float(env.get("SAGE_VOICE_SCENE_S", 0))),
+                      hold_s=int(env.get("SAGE_VOICE_HOLD_MS", 1500)) / 1000,
+                      see=sight(media, env), scene_s=float(env.get("SAGE_VOICE_SCENE_S", 0)),
+                      low_confidence=float(env.get("SAGE_VOICE_LOW_CONFIDENCE", LOW_CONFIDENCE))),
         tts,
         ReachyOutputTransport(media, TransportParams(
             audio_out_enabled=True, audio_out_sample_rate=media.get_output_audio_samplerate())),
@@ -432,7 +467,6 @@ async def report_presence(session, event: dict) -> None:
 async def run(media: ReachyMedia, play_emote: Callable, moves: Mapping,
               env: Mapping[str, str] = os.environ, play_sound: Callable | None = None,
               presence: Callable[[], bool] | None = None, observers: list | None = None,
-              face: Callable[[], bool] | None = None,
               recover: Callable | None = None, executor=None) -> None:
     """Run the voice until cancelled. Always on: no idle timeout.
 
@@ -465,7 +499,7 @@ async def run(media: ReachyMedia, play_emote: Callable, moves: Mapping,
     if env.get("SAGE_VOICE_MIC_RECOVERY", "1") == "0":
         recover = None
     session = kernel_session(env, moves, executor)  # the voice's and presence's: one hello
-    pipeline = build(media, play_emote, moves, env, play_sound, face, owner if enrolled else None,
+    pipeline = build(media, play_emote, moves, env, play_sound, owner if enrolled else None,
                      link_lost, recover, executor=executor, session=session)
     await runner.add_workers(PipelineWorker(pipeline, idle_timeout_secs=None,
                                                 observers=observers))
@@ -475,7 +509,7 @@ async def run(media: ReachyMedia, play_emote: Callable, moves: Mapping,
     watch = None
     if presence is not None:
         watch = asyncio.ensure_future(
-            watch_presence(presence, lambda event: report_presence(session, event),
+            watch_presence(_noting(presence), lambda event: report_presence(session, event),
                            muted=lambda: session.watching))
     work = asyncio.ensure_future(runner.run())
     try:

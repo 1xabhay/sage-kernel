@@ -26,8 +26,9 @@ def turn(state, device, turn_id, text, answer, input=None, now=1.0):
 def one_body():
     """A single device's session touching every part of the prompt: memory, a tool call that failed and one
     that finished, an interrupted reply, a maybe-misheard line, an act, notes and a proactive turn."""
-    state = turn(Companion(), "reachy", "r1", "My name's Mika.", {"reply": "Hi Mika!", "remember": "Their name is Mika."})
-    state = turn(state, "reachy", "r2", "Show me happy.", {"reply": "Like this!", "emote": {"name": "cheerful1"}})
+    state = policy.amend(Companion(), "add", 1.0, text="Their name is Mika.")[0]  # from an earlier conversation
+    state = turn(state, "reachy", "r1", "My name's Mika.", {"reply": "Hi Mika!"})
+    state = turn(state, "reachy", "r2", "Show me happy.", {"reply": "Like this!", "emote": {"name": "cheerful"}})
     effect = next(o for o in state.open if o.kind == "emote")
     state = policy.report(state, "reachy", {"kind": "emote", "target": "reachy", "sequence": effect.sequence},
                           "done", "smiling", None, {})[0]
@@ -147,7 +148,7 @@ class Output(unittest.TestCase):
                          "I counted raindrops on the window, Then I hummed the tune")  # one sentence: at a word
         self.assertEqual(said(30, "What do you see?", "I can see you."), "I can't see yet; I can only")
         self.assertEqual(said(30, "Help me", ""), "I'm here with you.")
-        self.assertEqual(said(12, "Where is it?", ""), "Hmm, I don't")
+        self.assertEqual(said(12, "Where is it?", ""), "I'm not sure")
         self.assertEqual(said(60, "Why?", "Supercalifragilisticexpialidocious" * 2), policy.QUESTION_LINE)  # no boundary
         for end in range(len(long) + 1):  # what streams never runs past the cap either
             with self.subTest(end=end):

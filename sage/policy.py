@@ -20,18 +20,10 @@ _RULES, _WORDS, _CALENDAR = (character.CHARACTER[key] for key in ("patterns", "w
 # The fixed prefix: a short character sheet, then in-character examples, then the body note. Byte for byte
 # the same on every turn of a device, so Ollama reuses its cache (bench/LEDGER.md "kernel").
 PERSONA = _PROMPT["persona"]
-# Positive examples only: small models echo what they see, including a list of phrases not to say.
-EXAMPLES = "\n".join((_PROMPT["examples_head"], *_PROMPT["examples"]))
 # A text body (manifest output): typed lines are never misheard, and no body stands in front of the person.
 TEXT_PERSONA = _PROMPT["text_persona"]
 TEXT_EXAMPLES = "\n".join((_PROMPT["examples_head"], *_PROMPT["text_examples"]))
-STAY = _PROMPT["stay"]  # on every line, as it was sent (persona drift, cache)
-# A speech body that declares moves (manifest moves): mostly a pet. Written against the body's own tools, never one
-# body's parts or clips: the examples come from what it declared. 0 of 411 turns were movement-only with the above.
-MOVING_PERSONA = _PROMPT["moving_persona"]
-MOVE_LINES = _PROMPT["move_lines"]  # the line each declared move answers, by its role (manifest.MOVE_ROLES)
-SPOKEN_EXAMPLES = "\n".join(_PROMPT["spoken_examples"])
-MOVING_STAY = _PROMPT["moving_stay"]
+STAY, TEXT_STAY = _PROMPT["stay"], _PROMPT["text_stay"]  # on every line, as it was sent (persona drift, cache)
 # The lines silence must never answer, on any body, whatever the model does (owner, 2026-11-05).
 # ponytail: patterns (the default file's are English), generous on purpose: a miss is a silent reply to someone in
 # trouble, a false hit a few words. Add a classifier only if the replay shows real misses.
@@ -40,13 +32,41 @@ QUESTION = re.compile(_RULES["question"])
 DISTRESS_LINE = _LINES["distress"]
 QUESTION_LINE = _LINES["question"]
 WATCHING_LINE = _LINES["watching"]  # the same last resort while watching along (§11)
+# The last resort right after Sage said it did not know: it moves on, never a second "don't know", never silence
+# on a question. ponytail: one fixed line (Bohus and Rudnicky 2005: moving on recovers more than asking again);
+# the owner's ear decides its wording, and evals/companion.py counts how often the kernel had to say it.
+MOVE_ON_LINE = _LINES["move_on"]
+RESORTS = (QUESTION_LINE, WATCHING_LINE, MOVE_ON_LINE)  # the kernel's words, never shown to the model as its own
 NEEDS_WORDS = _PROMPT["needs_words"]
 # Exchanges kept in the prompt: short against persona drift and prefill; facts outlive them (MEMORY). Past WINDOW
 # they are cut back to the last KEPT, in one block: the model server re-reads all that follows the first changed
 # message, so a window sliding by one re-read the whole history every turn.
 WINDOW, KEPT = 8, 5  # 8/5 beat 10/6 on the eval: 14, 14 failed checks against 16, 15; p95 first piece 2.0 s against 2.5 s
-MAX_FACTS = 20  # remembered facts kept, oldest dropped first; ponytail: no search or summary, add when 20 is too few
-MEMORY = _PROMPT["memory"]
+# Memory (design 3-memory, 2026-11-21): written after a conversation, from the lines said to Sage, never mid-turn.
+# A conversation ends SESSION_IDLE_S after the last line said to Sage, or at SESSION_TURNS such lines.
+# ponytail: both are guesses. The journal of 10-21 to 11-20 (5,428 heard lines, replayed through the body's gate
+# without its confidence, face or TV signals) shows no knee in the gaps between answered lines: 183 over 3 min,
+# 120 over 5, 72 over 10. Five minutes gives a median of 13 lines to a conversation, and 23 that pass 40.
+# Measure again with `python3 evals/memory.py sessions <journal>` once the gate's marks are in the journal;
+# SAGE_SESSION_IDLE_S overrides the first.
+SESSION_IDLE_S, SESSION_TURNS = 300.0, 40
+SPEAKERS = ("owner", "guest")  # who a body may say spoke (Sage-Speaker); anything else is unknown
+KINDS = ("person", "like", "thread", "promise")  # what the writer may add; "day" is the kernel's, one a conversation
+MAX_FACT = 120  # characters of one record
+MAX_OPS = 5  # changes the writer may make after one conversation; ponytail: a guess, count the refused in `written` rows
+# ponytail: a guess; one flat list in the checkpoint, rewritten on every commit. A table past roughly 500.
+MAX_RECORDS = 200
+RECALL_CHARS = 600  # the block at the end of the system prompt; ponytail: a guess, ~170 of the prompt's ~3k tokens
+CORE_KNOWN = 5  # person and like records in that block
+RANKED_PAST, RECALL_EXTRA = 20, 2  # past this many records, up to this many more ride on the newest line (`relevant`)
+STALE_S = 14 * 86400.0  # a day line or an open thread older than this is dropped; ponytail: a guess
+DAY_LINES = 7  # day lines kept, newest; only the last is in the block
+READ_BACK = 5  # records read aloud when asked what it remembers
+MEMORY, UNPLACED, NOTHING_YET = _PROMPT["memory"], _PROMPT["memory_unplaced"], _PROMPT["memory_none"]
+RECALLED, AS_KIND = _PROMPT["recalled"], _PROMPT["recall_kinds"]
+WRITER = {key: _PROMPT[key] for key in ("writer", "writer_known", "writer_said", "writer_answered")}
+FORGETS, ASKS_MEMORY = re.compile(_RULES["forgets"]), re.compile(_RULES["asks_memory"])
+FORGET_THAT = frozenset(_WORDS["forget_that"])  # "forget that": nothing named, so only this conversation is let go
 GRACE_S = 2.0
 REPLY_TIMEOUT_S = 30.0
 TIMING = ("stt_ms", "ttft_ms", "first_audio_ms")
@@ -57,14 +77,25 @@ FIELDS = {"submitted": {"turn_id", "text", "timing", "input"}, "stop": {"turn_id
           "notes": {"topic", "passages"}, "acted": {"act_id", "origin", "what", "input", "status", "reason", "said"}}
 RATE, BURST = 10.0, 20.0
 MAX_DURATION_MS = 600_000  # how long a device may say it spent performing one effect
-RECENT = 3  # replies to a device that a new reply must not repeat
-TEMPLATE_WORDS = 4  # a reply opening with the same words as a recent one is a template, and a repeat
-NO_REPEAT = _PROMPT["no_repeat"]
+# Replies to a device that a new reply must not repeat word for word. Only the same words are a repeat: of 373
+# rejections in 96 h (journal 11-20), 151 were exact; the other 222 were the same four opening words (87 whole
+# answers, 135 cut at the fourth word), each a second model call for a paraphrase.
+RECENT = 3
+OPENING_WORDS = 4  # words of a reply held while they could still open a claim of a missing sense (`may_claim`)
+# The loops a reply must not go round twice, each with the note that says so (the character's) and, for the two
+# it can be heard in, the sentences that are dropped if the model does it anyway (`repairs`, `moved_on`).
+REPAIRS = {name: _PROMPT[name] for name in ("unclear_again", "unknown_again", "asked_last")}
+ADMITS = re.compile(_RULES["admits"])  # "I don't know.", and the kernel's own last resort
+ASKS_AGAIN = re.compile(_RULES["asks_again"])  # "Sorry, say that again?"
+# Unclear lines in a row, the newest included, from which the answer is a move and the model is not asked.
+# ponytail: a guess (the design's "third in a row"); score replies to unclear lines in evals/companion.py.
+MAX_UNCLEAR = 3
+LISTENING = "attentive"  # the feeling of that move, when the body lists it; else the first it lists
 MAX_NOTES, MAX_PASSAGE, MAX_TOPIC = 64, 600, 200  # a song's worth of web; the body cap is the HTTP adapter's
 DONE_TEXT = 120  # characters of a done result's text told to the model
 NOTES_LINGER = 2  # turns the card stays on after notes arrive or last match: "When did it come out?" matches nothing
-SURE = 0.9  # a device's confidence at or above which a heard line is never "(may be misheard)" (lead, v1.1)
-MAX_ALTERNATIVES = 3  # other hearings of a line a device may send, shown beside a line that may be misheard
+SURE = 0.9  # a device's confidence at or above which a heard line is never "(unclear)" (lead, v1.1)
+MAX_ALTERNATIVES = 3  # other hearings of a line a device may send, shown beside an unclear line
 WHAT = ("body_plan", "aside", "saw")  # what a body may report it did on its own (acted, v1.1; saw, v1.3)
 MAX_SEEN = 200  # characters of what a body's camera saw: words only cross, never the image
 MAX_ACTS = 4  # acts per body told before its next line, newest kept: ponytail: a body acting 10 times between lines loses 6
@@ -144,6 +175,8 @@ class Turn:
     text: str = ""
     timing: dict = field(default_factory=dict)
     input: dict = field(default_factory=dict)
+    addressed: bool = False  # the body judged the line was said to Sage, or it was typed
+    speaker: str = "unknown"  # owner | guest | unknown, as the body's voiceprint has it
 
 
 @dataclass(frozen=True)
@@ -152,12 +185,16 @@ class Companion:
     exchanges: tuple[Exchange, ...] = ()
     open: tuple[Open, ...] = ()
     quiet_until: float | None = None  # asked to be quiet: no proactive turn before this, by the kernel's clock
-    facts: tuple[str, ...] = ()  # remembered about the person, in the order learned
+    facts: tuple[dict, ...] = ()  # records {id, who, kind, text, at, from}, in the order learned
     topic: str = ""  # what the notes are about; "" when there are none
     notes: tuple[str, ...] = ()  # passages a device found, most useful first
     notes_idle: int = 0  # turns since the notes arrived or last matched
     acts: tuple[Act, ...] = ()  # since each body's last exchange; its next one keeps that body's
     lanes: tuple[Turn, ...] = ()  # the other devices' turns; `turn` is the lane touched last (v1.2)
+    spoke_at: float | None = None  # when the last line was said to Sage; None: no conversation is open
+    said: int = 0  # lines said to Sage in the open conversation
+    due: int = 0  # conversations closed and not yet read by the writer
+    cursor: int = 0  # the journal sequence the writer has read through: nothing before it is read again
 
 
 @dataclass(frozen=True)
@@ -331,7 +368,9 @@ def clock_answer(line: str, dt) -> str:
 
 
 def submit(state: Companion, source: str, turn_id: str, text: str, timing: dict, seen: bool, input: dict | None = None,
-           when: str = ""):
+           when: str = "", addressed: bool = False, speaker: str = "unknown", now: float = 0.0):
+    """`addressed` and `speaker` are the body's marks on the line (PROTOCOL.md §3): a line said to Sage opens
+    or continues the conversation, and only such a line, not from a guest, is ever written to memory."""
     state = focus(state, source)
     if seen:
         return state, ()  # a retry after a lost response never starts a second turn
@@ -341,10 +380,34 @@ def submit(state: Companion, source: str, turn_id: str, text: str, timing: dict,
         raise Refused("unknown_pending", "A reply was interrupted by a restart. The device that started it "
                                          "must send acknowledged with its turn_id.")
     # `when` rides in the turn's input, so the exchange keeps it and the line is rebuilt byte for byte (cache).
-    turn = Turn(turn_id, source, "active", text, dict(timing), {**(input or {}), **({"when": when} if when else {})})
+    addressed = addressed or (input or {}).get("medium") == "text"  # typed to it: no TV types
+    speaker = speaker if speaker in SPEAKERS else "unknown"
+    closing = ()
+    if addressed:
+        if state.said >= SESSION_TURNS:  # a long conversation is written in pieces, and goes on
+            state, closing = _close(state, "cap")
+        state = replace(state, spoke_at=now, said=state.said + 1)
+    turn = Turn(turn_id, source, "active", text, dict(timing), {**(input or {}), **({"when": when} if when else {})},
+                addressed, speaker)
     kept = _unheard(input)
-    return replace(state, turn=turn), (Row("submitted", source, turn_id, {"text": text, "timing": timing,
-                                                                          **({"input": kept} if kept else {})}),)
+    marks = {**({"addressed": True} if addressed else {}), **({"speaker": speaker} if speaker != "unknown" else {})}
+    return replace(state, turn=turn), closing + (
+        Row("submitted", source, turn_id, {"text": text, "timing": timing, **({"input": kept} if kept else {}), **marks}),)
+
+
+def _close(state: Companion, reason: str):
+    """The conversation ends: the writer is owed its lines, and the window is emptied (at the cap, cut to KEPT)."""
+    return (replace(state, exchanges=state.exchanges[-KEPT:] if reason == "cap" else (), spoke_at=None, said=0,
+                    due=state.due + 1),
+            (Row("session", "kernel", None, {"turns": state.said, "reason": reason}),))
+
+
+def rest(state: Companion, now: float, idle_s: float = SESSION_IDLE_S):
+    """Close the conversation once nothing was said to Sage for `idle_s`: the next one starts from memory, not
+    from the last one's lines."""
+    if state.spoke_at is None or now - state.spoke_at <= idle_s or any(t.status == "active" for t in turns(state)):
+        return state, ()
+    return _close(state, "idle")
 
 
 def _cut(exchange: Exchange) -> list[dict]:
@@ -360,16 +423,31 @@ PROACTIVE = _PROMPT["proactive"]  # the note that starts a turn of the kernel's 
 TEXT_NOTES = {PROACTIVE[reason]: note for reason, note in _PROMPT["text_proactive"].items() if reason in PROACTIVE}
 
 
+def _fitted(example: str, tools) -> str:
+    """One of the character's examples with only the tool calls this body can perform: the character names
+    feelings ("calming") that one body lists and another does not, and a small model copies what it is shown."""
+    line, _, shown = example.partition(" -> ")
+    answer = {name: value for name, value in json.loads(shown).items()
+              if name == "reply" or not manifest.authorize(name, value, tools)}
+    return f"{line} -> {json.dumps(answer, ensure_ascii=False)}"
+
+
+def _examples(tools) -> str:
+    # Positive examples only: small models echo what they see, including a list of phrases not to say.
+    return "\n".join((_PROMPT["examples_head"], *(_fitted(example, tools) for example in _PROMPT["examples"])))
+
+
+EXAMPLES = _examples(())  # for a body with no tools; read here so a character file with a broken example stops the start
+
+
 def medium(declared: dict) -> tuple[str, str, dict | None]:
     """The wording for how the body puts out a reply (manifest output): persona, examples, and for a text body
-    how kernel notes read instead (with no lines ever misheard); None for speech, whose notes read as they are."""
+    how kernel notes read instead (with no lines ever misheard); None for speech, whose notes read as they are.
+    A speaking body is a companion whatever it can do with itself: taught "mostly a move", it answered 53% of
+    its turns with no words (journal 11-20)."""
     if declared.get("output", {}).get("medium") == "text":
         return TEXT_PERSONA, TEXT_EXAMPLES, TEXT_NOTES
-    if moves := declared.get("moves"):
-        shown = "".join(f'{line} -> {json.dumps({"reply": "", **moves[role]})}\n'
-                        for role, line in MOVE_LINES.items() if role in moves)
-        return MOVING_PERSONA, _PROMPT["examples_head"] + "\n" + shown + SPOKEN_EXAMPLES, None
-    return PERSONA, EXAMPLES, None
+    return PERSONA, _examples(declared["tools"]), None
 
 
 def start_proactive(state: Companion, device: str, turn_id: str, reason: str, when: str = ""):
@@ -395,29 +473,12 @@ def _failures(exchange: Exchange) -> list[dict]:
 COMMON = set(_WORDS["common"])
 
 
-TO_SAGE = {NAME.lower(), *_WORDS["addressed"]}
-# What a speech-to-text makes of the name (owner, 11-17: "age" for "Sage"): the name with its first sound lost, or
-# spelled as it sounds. Not "stage", "page", "cage", "say", "safe": ordinary words would make ordinary short talk count.
-NEAR_SAGE = frozenset(character.CHARACTER["name_misheard"])
-REQUESTS = set(_WORDS["requests"])  # not "come on", "look", "wait"
-HANGING = set(_WORDS["hanging"])
-
-
-def said_to_sage(said: list[str]) -> bool:
-    """Whether a short whole line reads as said to someone: it names Sage, says I or you, or starts as a request,
-    and does not end hanging ("I'm just gonna."). A near-miss hearing of the name counts only where a name is
-    called: the first or last word ("Age, come here.", "Hey age."), never the middle ("Old age home.").
-    ponytail: word lists; the addressee signal (voice direction, confidence) replaces this guess."""
-    return said[-1] not in HANGING and (
-        bool(TO_SAGE & set(said)) or said[0] in REQUESTS or bool(NEAR_SAGE & {said[0], said[-1]}))
-
-
 def misheard(line: str, input: dict | None = None) -> bool:
-    """Whether a line may be misheard. Never when typed, or heard with confidence SURE or more. Otherwise:
-    unfinished (no end mark), unsure (confidence below SURE; with no confidence, 4 words or fewer, not a
-    question, a common reply or a line said to Sage), or repeating itself as song lyrics do."""
+    """Whether a line was only partly heard. Never when typed, a note of the kernel's own, or heard with
+    confidence SURE or more. Otherwise: unsure (confidence below SURE), unfinished (no end mark), or repeating
+    itself as song lyrics do. Who a line was said to is the body's to judge, before it sends one."""
     input = input or {}
-    if input.get("medium") == "text" or input.get("confidence", 0) >= SURE:
+    if line.startswith("[") or input.get("medium") == "text" or input.get("confidence", 0) >= SURE:
         return False
     said, end = re.findall(r"[\w']+", line.lower()), line.rstrip()[-1:]
     if not said or " ".join(said) in COMMON:
@@ -425,40 +486,65 @@ def misheard(line: str, input: dict | None = None) -> bool:
     repeating = any(w[i:i + n] == w[i + n:i + 2 * n] for w in (re.findall(r"[\w']+", part)
                                                             for part in re.split(r"[.!?]", line.lower()))
                     for n in (1, 2, 3) for i in range(len(w) - 2 * n + 1))  # within a sentence
-    unsure = input["confidence"] < SURE if "confidence" in input else (
-        len(said) <= 4 and end != "?" and not said_to_sage(said))
-    return end not in ".!?" or unsure or repeating
+    return end not in ".!?" or "confidence" in input or repeating
 
 
 BACKCHANNEL = set(_WORDS["backchannel"])
 
 
-def clips(tools: list[dict]) -> tuple[str, ...]:
+def clips(tools) -> tuple[str, ...]:
     """The emote names a body declared; () when it declared none or left them open."""
     return tuple(next((t.get("inputSchema", {}).get("properties", {}).get("name", {}).get("enum", ())
                        for t in tools if t["name"] == "emote"), ()))
 
 
-def quiet_move(line: str, input: dict | None, last_replies: tuple[str, ...], tools: tuple[str, ...],
-               clips: tuple[str, ...] = ()) -> str:
-    """The kernel's own answer to a heard line no one said to Sage, as model output: a move and no words; "" to
-    ask the model. A fragment or unsure line (`misheard`), or a bare "yeah"/"no" when Sage did not just ask.
-    Replay 11-09: the 4B model put words to these despite the persona, and then "remembered" them.
-    ponytail: a list of backchannels; an addressee classifier on labelled turns if the replay shows misses."""
-    input = input or {}
-    if line.startswith("[") or input.get("medium") != "speech" or DISTRESS.search(_plain(line)):
+def unclear_streak(state: Companion, device: str) -> int:
+    """How many lines in a row were unclear, the newest included, over the turns Sage spoke in."""
+    turn = lane(state, device)
+    lines = [(turn.text, turn.input), *((x.user, x.input) for x in reversed(state.exchanges)
+                                        if x.device in (device, "") and x.reply.strip())]
+    return next((n for n, (line, input) in enumerate(lines) if not misheard(line, input)), len(lines))
+
+
+def repairs(state: Companion, device: str) -> tuple[str, ...]:
+    """What the answer to `device`'s newest line must not do again, as names in REPAIRS: ask them to say it
+    again (a second unclear line running), say it does not know (it just did), end on a question (it just did).
+    Counted from what was said, so nothing is kept for it; none for a note of the kernel's own."""
+    if lane(state, device).text.startswith("["):
+        return ()
+    last = _plain((last_replies(state, device) or ("",))[-1])
+    return tuple(name for name, on in (("unclear_again", unclear_streak(state, device) >= 2),
+                                       ("unknown_again", bool(ADMITS.search(last))),
+                                       ("asked_last", last.rstrip().endswith("?"))) if on)
+
+
+def moved_on(text: str, again, closed: bool = True) -> str:
+    """`text` without the sentences that go round a loop again, whatever the note said: a second "I don't know"
+    running, a second "say that again". While streaming (`closed` false) the sentence being written is held:
+    it could still become one. ponytail: patterns (the character's); a miss is one more "I don't know"."""
+    dropped = [loop for name, loop in (("unclear_again", ASKS_AGAIN), ("unknown_again", ADMITS)) if name in again]
+    if not dropped:
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    return " ".join(sentence for sentence in (sentences if closed else sentences[:-1])
+                    if not any(loop.search(_plain(sentence).strip()) for loop in dropped))
+
+
+def move_only(state: Companion, device: str, tools) -> str:
+    """The kernel's own answer to `device`'s newest heard line, as model output: a move and no words; "" to
+    ask the model. A bare "yeah"/"okay" when Sage did not just ask, or one more unclear line after MAX_UNCLEAR - 1
+    running: by then it has asked and guessed, and waits for a clear line. Never to distress.
+    ponytail: a list of backchannels; the body's gate decides who a line was for before it is sent."""
+    turn = lane(state, device)
+    if turn.text.startswith("[") or turn.input.get("medium") != "speech" or DISTRESS.search(_plain(turn.text)):
         return ""
-    if line.rstrip()[-1:] in ".!?" and needs_words(line, input):  # a whole question; "How" alone is a fragment
+    words = set(_normal(turn.text).split())
+    asked = (last_replies(state, device) or ("",))[-1].rstrip().endswith("?")  # "Yeah." to its question is an answer
+    if not (words and words <= BACKCHANNEL and not asked or unclear_streak(state, device) >= MAX_UNCLEAR):
         return ""
-    words = set(_normal(line).split())
-    asked = bool(last_replies) and last_replies[-1].rstrip().endswith("?")
-    if (words <= BACKCHANNEL and asked) if words else True:  # "Yeah." to Sage's own question is an answer
-        return ""
-    guessed = "confidence" not in input and misheard(line, input)  # a scored line, alternatives too, is the model's
-    if not (guessed or words <= BACKCHANNEL):
-        return ""
-    clip = "attentive1" if not clips or "attentive1" in clips else clips[0]  # the body's own, when it listed them
-    return json.dumps({"reply": "", **({"emote": {"name": clip}} if "emote" in tools else {})})
+    names, listed = [tool["name"] for tool in tools], clips(tools)
+    feeling = LISTENING if not listed or LISTENING in listed else listed[0]
+    return json.dumps({"reply": "", **({"emote": {"name": feeling}} if "emote" in names else {})})
 
 
 def last_replies(state: Companion, device: str) -> tuple[str, ...]:
@@ -476,8 +562,8 @@ def needs_words(line: str, input: dict | None = None) -> str:
         return ""
     if DISTRESS.search(plain):
         return DISTRESS_LINE
-    if (input or {}).get("medium") == "speech" and plain[-1:] not in ".!?":  # "How do you": cut off, not asked
-        return ""
+    if (input or {}).get("medium") == "speech" and misheard(line, input):  # "How do you": cut off, not asked;
+        return ""  # a garbled question is the model's to ask about, never the last resort's to wave away
     asked = "?" in plain or any(QUESTION.match(sentence.strip()) for sentence in re.split(r"[.!]", plain))
     return (WATCHING_LINE if (input or {}).get("media") else QUESTION_LINE) if asked else ""
 
@@ -493,7 +579,7 @@ WHO_IS = re.compile(_RULES["who_is"])  # a name: "Who is Taylor Swift?"
 ABOUT_SAGE = re.compile(_RULES["about_self"], re.IGNORECASE)
 
 
-def needs_search(line: str, input: dict | None, facts: tuple[str, ...]) -> str:
+def needs_search(line: str, input: dict | None, facts: tuple[str, ...]) -> str:  # `facts`: the records' texts
     """The query to ask the web for `line`, or "" when its answer needs no web. Never for a line that may be
     misheard: noise does not leave the Mac. Names the person told Sage (capitalized in a fact) are dropped:
     the line alone leaves, never memory or history."""
@@ -511,12 +597,12 @@ def needs_search(line: str, input: dict | None, facts: tuple[str, ...]) -> str:
 
 
 def _heard(line: str, input: dict | None = None) -> str:
-    """The person's line as the model sees it: information, framed with what else it may have been when
-    it may be misheard."""
-    if line.startswith("[") or not misheard(line, input):  # [a kernel note]
+    """The newest line as the model sees it: information, framed with what else it may have been when it
+    was only partly heard. Only the newest: a history of "(unclear)" lines taught the model that all are."""
+    if not misheard(line, input):
         return line
     others = ", ".join(f'"{other}"' for other in (input or {}).get("alternatives", ()))
-    return f'heard (may be misheard): "{line}"' + (f" (or {others})" if others else "")
+    return f'heard (unclear): "{line}"' + (f" (or {others})" if others else "")
 
 
 def act(state: Companion, source: str, data: dict):
@@ -634,6 +720,10 @@ def _unheard(input: dict | None) -> dict | None:
 
 
 def windowed(exchanges: tuple[Exchange, ...], exchange: Exchange) -> tuple[Exchange, ...]:
+    """`exchanges` with one more, if Sage spoke in it: a turn it answered with no words is not conversation,
+    and 53% of its own past turns in the prompt were empty replies it then copied (journal 11-20)."""
+    if not exchange.reply.strip():
+        return exchanges
     exchanges += (exchange,)
     return exchanges if len(exchanges) <= WINDOW else exchanges[-KEPT:]
 
@@ -644,18 +734,22 @@ def compile_prompt(state: Companion, device: str, declared: dict) -> CompiledPro
     The body's senses and tools follow the persona, the same on every turn of that device. Another
     body's exchanges are one narrated line each. This body's past answers appear as the JSON the model gave, cut to what was heard, each followed by what its
     body could not do, if anything. Every message is rebuilt byte for byte as it was sent, reminder and
-    the model's own answer included, so the model server's prompt cache holds (bench/LEDGER.md "kernel";
-    a line's notes are not kept, so the turn after them re-reads from that line).
+    the model's own answer included, so the model server's prompt cache holds (bench/LEDGER.md "kernel").
+    What is said of the newest line alone is not kept, so the turn after re-reads from that line: its notes,
+    its "(unclear)" mark and what its answer must not do again (`repairs`). An exchange the kernel's last
+    resort answered is left out: those are not the model's words, and it would say them again as its own.
     """
     persona, examples, typed = medium(declared)
 
-    def framed(line: str, input: dict | None = None) -> str:
+    def framed(line: str, input: dict | None = None, newest: bool = False) -> str:
         when = f"[{input['when']}]\n" if input and input.get("when") else ""
         if (input or {}).get("media", {}).get("moment"):
             return when + MOMENT.format(line=line)
-        return when + (_heard(line, input) if typed is None else typed.get(line, line))
+        return when + ((_heard(line, input) if newest else line) if typed is None else typed.get(line, line))
     context = []
     for exchange in state.exchanges:
+        if exchange.reply in RESORTS:
+            continue
         if exchange.device not in (device, ""):  # older checkpoints name no device: one body's, in full
             context += [*_acts(exchange.acts, device), _narrated(exchange)]
             continue
@@ -663,11 +757,11 @@ def compile_prompt(state: Companion, device: str, declared: dict) -> CompiledPro
                     {"role": "user", "content": framed(exchange.user, exchange.input) + reminder(declared)},
                     {"role": "assistant", "content": _answer(exchange)}, *_cut(exchange), *_failures(exchange)]
     context += _acts(state.acts, device)
-    context.append({"role": "user", "content": framed(state.turn.text, state.turn.input) + _watching(state.turn.input)
-                    + _notes(state)
-                    + reminder(declared)})
-    known = "".join(f"\n- {fact}" for fact in state.facts)  # last: a new fact leaves the rest of the prefix cached
-    system = persona + "\n\n" + examples + "\n\n" + manifest.describe(device, declared) + "\n\n" + MEMORY + known
+    context.append({"role": "user", "content": framed(state.turn.text, state.turn.input, True) + _watching(state.turn.input)
+                    + _notes(state) + _recalled(state)
+                    + reminder(declared) + "".join("\n\n" + REPAIRS[name] for name in repairs(state, device))})
+    # Memory last: it changes only between conversations, and then the rest of the prefix stays cached.
+    system = persona + "\n\n" + examples + "\n\n" + manifest.describe(device, declared) + "\n\n" + recall(state.facts)
     return CompiledPrompt(system, tuple(context), manifest.format_schema(declared["tools"], manifest.max_chars(declared)))
 
 
@@ -688,7 +782,7 @@ def reminder(declared: dict) -> str:
     names = [tool["name"] for tool in declared["tools"]]
     # About the JSON, not about speech: "(You may add emote.)" was copied aloud as "(emote: )" and
     # "You may also use your emote tool." was said as the whole reply (live run 3; bench/LEDGER.md).
-    stay = MOVING_STAY if medium(declared)[0] is MOVING_PERSONA else STAY
+    stay = TEXT_STAY if declared.get("output", {}).get("medium") == "text" else STAY
     return "\n\n" + stay + ("\n" + _NOTES["fields"].format(names=", ".join(names)) if names else "")
 
 
@@ -704,14 +798,6 @@ def recent_replies(state: Companion, device: str) -> tuple[str, ...]:
     return tuple(heard[-RECENT:])
 
 
-def _template(said: str, reply: str) -> bool:
-    """The same opening or closing of TEMPLATE_WORDS or more words: one template filled in twice."""
-    said, reply = said.split(), reply.split()
-    if min(len(said), len(reply)) < TEMPLATE_WORDS:
-        return False
-    return said[:TEMPLATE_WORDS] == reply[:TEMPLATE_WORDS] or said[-TEMPLATE_WORDS:] == reply[-TEMPLATE_WORDS:]
-
-
 ASKS_TO_REPEAT = re.compile(_RULES["asks_to_repeat"])
 
 
@@ -721,24 +807,24 @@ def asks_to_repeat(line: str) -> bool:
 
 
 def repeats(recent, text: str) -> bool:
-    said = _normal(text)
-    return bool(said) and any(said == reply or _template(said, reply) for reply in recent)
+    """Whether `text` says one of `recent` again, word for word."""
+    return bool(said := _normal(text)) and said in recent
 
 
 def may_repeat(recent, text: str) -> bool:
     """Whether a reply still streaming could turn out to repeat one of `recent` (so it is held back)."""
     said = _normal(text)
-    return bool(said) and any(reply.startswith(said) or _template(said, reply) for reply in recent)
+    return bool(said) and any(reply.startswith(said) for reply in recent)
 
 
-def opens_like(recent, text: str) -> bool:
-    """Whether `text` opens with the same TEMPLATE_WORDS words as one of `recent`: a repeat whatever follows."""
-    said = _normal(text).split()[:TEMPLATE_WORDS]
-    return len(said) == TEMPLATE_WORDS and any(reply.split()[:TEMPLATE_WORDS] == said for reply in recent)
+def wordless(output: str) -> str:
+    """The model's answer with its moves and no words, as model output: what a repeat becomes on a line
+    that needs no words, instead of a second call that paraphrased the first."""
+    return json.dumps({"reply": "", **dict(speech.parse_output(output)[1])})
 
 
-def retry_prompt(prompt: CompiledPrompt, note: str = NO_REPEAT) -> CompiledPrompt:
-    """The same prompt, with a note on the newest message (by default, not to repeat)."""
+def retry_prompt(prompt: CompiledPrompt, note: str) -> CompiledPrompt:
+    """The same prompt, with a note on the newest message."""
     *rest, newest = prompt.context
     return replace(prompt, context=(*rest, {**newest, "content": newest["content"] + "\n\n" + note}))
 
@@ -757,11 +843,6 @@ def _plain(text: str) -> str:
 def false_senses(text: str, senses) -> list[str]:
     """The senses the body did not declare that `text` claims, in a fixed order."""
     return [sense for sense, claim in CLAIMS.items() if sense not in senses and claim.search(_plain(text))]
-
-
-def repeat_note(reply: str) -> str:
-    """The retry note for a repeat, quoting it, so a small model knows exactly what not to say again."""
-    return _NOTES["repeat"].format(reply=reply)
 
 
 def sense_note(claimed) -> str:
@@ -811,7 +892,7 @@ def may_claim(text: str, senses) -> bool:
     said = re.findall(r"[a-z']+", _plain(text))
     if not said or said[0] not in _WORDS["claim_openers"]:
         return bool(false_senses(text, senses))
-    return len(said) < TEMPLATE_WORDS or bool(false_senses(text, senses))
+    return len(said) < OPENING_WORDS or bool(false_senses(text, senses))
 
 
 def rejected(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str, reason: str):
@@ -833,22 +914,20 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
     text = speech.speakable(speech.whole_sentences(reply, prompt.max_reply), manifest.labels(tools), True, tuple(tool["name"] for tool in tools))
     if senses is not None:  # the last resort, after the guard's retry
         text = speech.whole_sentences(honest(text, senses), prompt.max_reply)  # the kernel's line may be the longer
+    again = repairs(state, turn.source or "")
+    text = moved_on(text, again)
     if not text.startswith(streamed):  # a last-resort fix would unsay what the device already played
         text = streamed  # ponytail: what was heard wins; the guards' streaming holds keep this rare
     record = Row("decided", "kernel", turn_id, {"prompt": asdict(prompt), "output": output, "problem": problem,
                                                 **({"model_timing": model_timing} if model_timing else {})})
     if turn.turn_id != turn_id or turn.status != "active":
         return state, (record,)  # stopped or interrupted meanwhile: nothing more is delivered
-    text = text or speech.whole_sentences(needs_words(turn.text, turn.input), prompt.max_reply)  # the last resort, after `_think`'s retry
-    rows, opened, recorded, facts = [record], [], [], state.facts
+    if not text:  # the last resort, after `_think`'s retry; itself a "don't know", so right after one it moves on
+        resort = needs_words(turn.text, turn.input)
+        resort = MOVE_ON_LINE if resort in RESORTS and "unknown_again" in again else resort
+        text = speech.whole_sentences(resort, prompt.max_reply)
+    rows, opened, recorded = [record], [], []
     for name, value in calls:
-        if name in manifest.MEMORY and name not in (tool["name"] for tool in tools):
-            fact = " ".join(value.split())[:manifest.MAX_FACT] if isinstance(value, str) else ""
-            if fact:
-                facts = remember(facts, fact) if name == "remember" else forget(facts, fact)
-                rows.append(Row(name, "kernel", turn_id, {"fact": fact}))
-            recorded.append(Call(name, value))
-            continue
         if error := manifest.authorize(name, value, tools):
             recorded.append(Call(name, value, None, error))
             continue
@@ -867,18 +946,231 @@ def decided(state: Companion, turn_id: str, prompt: CompiledPrompt, output: str,
     exchange = Exchange(turn.text, text, reply_sequence, tuple(recorded), turn.source, input=_unheard(turn.input), acts=mine,
                         output=output)
     idle = 0 if state.topic and _notes_match(state)[1] else state.notes_idle + 1  # judged before the turn is added
-    return replace(state, turn=replace(turn, status="completed", text=""), open=state.open + tuple(opened), facts=facts, acts=rest,
-                   exchanges=windowed(state.exchanges, exchange), notes_idle=idle), tuple(rows)
+    # What the body did on its own is told with the next line Sage speaks to: an unkept exchange leaves it waiting.
+    return replace(state, turn=replace(turn, status="completed", text=""), open=state.open + tuple(opened),
+                   acts=rest if text else state.acts, exchanges=windowed(state.exchanges, exchange), notes_idle=idle), tuple(rows)
 
 
-def remember(facts: tuple[str, ...], fact: str) -> tuple[str, ...]:
-    """`facts` with `fact` last, at most MAX_FACTS; one already known (ignoring case) keeps its place."""
-    return facts if fact.lower() in (known.lower() for known in facts) else (facts + (fact,))[-MAX_FACTS:]
+# Memory ------------------------------------------------------------------------------------
+
+def _ranked(facts) -> tuple[list[dict], list[dict]]:
+    """Records, most worth saying first, as (core, rest). Core: who they are and what they like (the owner's
+    first, CORE_KNOWN at most), the last day line, and what is still open; newest first within each."""
+    newest = sorted(facts, key=lambda r: -r["at"])
+    known = sorted((r for r in newest if r["kind"] in ("person", "like")), key=lambda r: r["who"] != "owner")
+    days = [r for r in newest if r["kind"] == "day"]
+    held = [r for r in newest if r["kind"] in ("thread", "promise")]
+    return known[:CORE_KNOWN] + days[:1] + held, known[CORE_KNOWN:] + days[1:]
 
 
-def forget(facts: tuple[str, ...], words: str) -> tuple[str, ...]:
-    """`facts` without each one holding `words`, ignoring case (Pollen's forget takes only the first)."""
-    return tuple(known for known in facts if words.lower() not in known.lower())
+def _core(facts) -> list[dict]:
+    """The records in the system prompt's block: as much of the core as fits RECALL_CHARS, heads included."""
+    used, shown = len(MEMORY) + (len(UNPLACED) + 1 if any(r["who"] != "owner" for r in facts) else 0), []
+    for record in _ranked(facts)[0]:
+        used += len(_told(record)) + 3
+        if used > RECALL_CHARS:
+            break
+        shown.append(record)
+    return shown
+
+
+def _told(record: dict) -> str:
+    return AS_KIND.get(record["kind"], "{text}").replace("{text}", record["text"])
+
+
+def recall(facts) -> str:
+    """What Sage remembers, for the end of the system prompt: at most RECALL_CHARS. It is a function of the
+    records alone, and they change only between conversations (the writer), or when the owner forgets or fixes
+    one. What a voice it could not place said is listed apart: it is used, and nobody is greeted by name from it."""
+    shown = _core(facts)
+    mine = "".join(f"\n- {_told(r)}" for r in shown if r["who"] == "owner")
+    other = "".join(f"\n- {_told(r)}" for r in shown if r["who"] != "owner")
+    return MEMORY + (mine or ("" if other else "\n" + NOTHING_YET)) + (f"\n{UNPLACED}{other}" if other else "")
+
+
+def _recalled(state: Companion) -> str:
+    """Past RANKED_PAST records, up to RECALL_EXTRA that match the newest line and are not in the block, on that
+    line only (like notes)."""
+    if len(state.facts) <= RANKED_PAST or state.turn.text.startswith("["):
+        return ""
+    shown = [r["id"] for r in _core(state.facts)]
+    found = relevant(tuple(_told(r) for r in state.facts if r["id"] not in shown), state.turn.text, RECALL_EXTRA)
+    return "\n\n" + RECALLED + "".join(f"\n- {text}" for text in found) if found else ""
+
+
+def _record(facts, who: str, kind: str, text: str, at: float, source: int | None) -> dict:
+    # ponytail: the id after the highest in use, so the id of a dropped newest record is given again; a counter
+    # in the checkpoint if `memory forget 7` ever hits a record made after the list was read.
+    return {"id": max((r["id"] for r in facts), default=0) + 1, "who": who, "kind": kind, "text": text, "at": at,
+            "from": source}
+
+
+def _kept(facts, record: dict | None, now: float) -> tuple[dict, ...]:
+    """`facts` with `record`, if there is one, added or put in place of the one with its id; then without day
+    lines and open threads past STALE_S, day lines past the newest DAY_LINES, and whatever is over MAX_RECORDS
+    (never who the person is while anything else is left; oldest first)."""
+    known = record and any(r["id"] == record["id"] for r in facts)
+    facts = [record if r["id"] == record["id"] else r for r in facts] if known else [*facts, *([record] if record else ())]
+    days = [r["id"] for r in facts if r["kind"] == "day"][:-DAY_LINES]
+    facts = [r for r in facts if r["id"] not in days and not (r["kind"] in ("day", "thread") and now - r["at"] > STALE_S)]
+    while len(facts) > MAX_RECORDS:
+        facts.remove(next((r for r in facts if r["kind"] != "person"), facts[0]))
+    return tuple(facts)
+
+
+def records(facts) -> tuple[dict, ...]:
+    """`facts` as records. Before records a fact was its text alone, about nobody in particular and from no
+    line (an earlier checkpoint, a bench scenario): each is kept, as an unknown voice's."""
+    return tuple(fact if isinstance(fact, dict) else
+                 {"id": n, "who": "unknown", "kind": "person", "text": fact, "at": 0.0, "from": None}
+                 for n, fact in enumerate(facts, 1))
+
+
+def _clean(text) -> str:
+    return " ".join(text.split())[:MAX_FACT] if isinstance(text, str) else ""
+
+
+def memorable(body: dict) -> str:
+    """Who a journaled `submitted` line may be remembered from: "owner", or "unknown" when the body could not
+    tell (no voiceprint enrolled); "" for a line never written to memory: one not said to Sage, a guest's
+    (owner, 2026-11-21: a guest lasts one conversation, overheard speech never), the TV's, or one maybe misheard."""
+    input = body.get("input") or {}
+    if (not body.get("addressed") or body.get("speaker") == "guest" or input.get("media", {}).get("moment")
+            or misheard(body["text"], input)):
+        return ""
+    return "owner" if body.get("speaker") == "owner" else "unknown"
+
+
+WRITER_FORMAT = {"type": "object", "required": ["operations", "day"], "additionalProperties": False, "properties": {
+    "operations": {"type": "array", "maxItems": MAX_OPS, "items": {
+        "type": "object", "required": ["op", "from"], "additionalProperties": False, "properties": {
+            "op": {"enum": ["add", "update", "drop"]}, "id": {"type": "integer"}, "kind": {"enum": list(KINDS)},
+            "text": {"type": "string", "maxLength": MAX_FACT}, "from": {"type": "integer"}}}},
+    "day": {"type": "string", "maxLength": MAX_FACT}}}
+
+
+# What one writer call may hold, so it fits the model's context beside its instructions (num_ctx 5120, about
+# 3.5 characters a token): the records most likely to be changed, and each line and reply cut.
+# ponytail: guesses; a spoken line is ~60 characters. `evals/memory.py writer` shows answers cut short.
+WRITER_KNOWN, WRITER_LINE, WRITER_REPLY = 20, 160, 100
+
+
+def writer_prompt(facts, lines) -> CompiledPrompt:
+    """What the writer is asked after a conversation: the records the block shows and those that match what was
+    said (WRITER_KNOWN at most), then `lines`, each (sequence, who, text, Sage's reply): only the lines
+    `memorable` let through, so it cannot cite, or see, any other."""
+    core = [r["id"] for r in _core(facts)]
+    rest = tuple(r for r in facts if r["id"] not in core)
+    near = relevant(tuple(r["text"] for r in rest), " ".join(text for _, _, text, _ in lines), WRITER_KNOWN - len(core))
+    shown = [r for r in facts if r["id"] in core or r["text"] in near]
+    known = "".join(f"\n[{r['id']}] {r['kind']}: {r['text']}" for r in shown) or "\n" + NOTHING_YET
+    said = "".join(f"\n[{sequence}] {text[:WRITER_LINE]}"
+                   + (f"\n  {WRITER['writer_answered']} {reply[:WRITER_REPLY]}" if reply else "")
+                   for sequence, _, text, reply in lines)
+    return CompiledPrompt(WRITER["writer"], ({"role": "user", "content": WRITER["writer_known"] + known + "\n\n"
+                                              + WRITER["writer_said"] + said},), WRITER_FORMAT)
+
+
+def written(state: Companion, end: int | None, lines, output: str | None, now: float):
+    """Apply what the writer answered for the conversation that closed at journal sequence `end`. `lines` are
+    the ones it was shown, (sequence, who, text, reply); `output` None: there were none, and it was not asked.
+    An operation is refused unless it cites one of those lines, and a line from a voice the body could not place
+    never changes what the owner said. Whatever the answer, the cursor moves past the conversation: it is never
+    read again, so a dropped memory cannot grow back."""
+    if end is None:  # nothing closed after the cursor: the count was stale (a spoken forget jumps the cursor)
+        return replace(state, due=0), ()
+    who_said = {sequence: who for sequence, who, _, _ in lines}
+    try:
+        answer = json.loads(output) if output else {}
+    except ValueError:
+        answer = {}
+    answer = answer if isinstance(answer, dict) else {}
+    operations = answer.get("operations") if isinstance(answer.get("operations"), list) else []
+    facts, rows, refused = state.facts, [], []
+    for n, op in enumerate(operations):
+        op = op if isinstance(op, dict) else {}
+        who, text = who_said.get(op.get("from")), _clean(op.get("text"))
+        old = next((r for r in facts if r["id"] == op.get("id") and type(op.get("id")) is int), None)
+        if n >= MAX_OPS:
+            why = f"over {MAX_OPS} operations"
+        elif who is None:
+            why = "cites no line said to Sage in this conversation"
+        elif op.get("op") == "add":
+            why = ("needs a kind and a text" if op.get("kind") not in KINDS or not text
+                   else "already known" if text.lower() in (r["text"].lower() for r in facts) else "")
+        elif op.get("op") in ("update", "drop"):
+            why = ("no such record" if old is None
+                   else "not the owner's voice" if old["who"] == "owner" and who != "owner"
+                   else "needs a text" if op["op"] == "update" and not text else "")
+        else:
+            why = "not add, update or drop"
+        if why:
+            refused.append({"operation": op, "why": why})
+        elif op["op"] == "drop":
+            facts = tuple(r for r in facts if r is not old)
+            rows.append(Row("forget", "writer", None, {"id": old["id"], "from": op["from"]}))
+        else:
+            record = ({**old, "who": who if who == "owner" else old["who"], "text": text, "at": now, "from": op["from"]}
+                      if op["op"] == "update" else _record(facts, who, op["kind"], text, now, op["from"]))
+            facts = _kept(facts, record, now)
+            rows.append(Row("remember", "writer", None, record))
+    if lines and (day := _clean(answer.get("day"))):
+        record = _record(facts, "owner" if all(who == "owner" for who in who_said.values()) else "unknown", "day",
+                         day, now, lines[0][0])
+        facts = _kept(facts, record, now)
+        rows.append(Row("remember", "writer", None, record))
+    rows.append(Row("written", "kernel", None, {"through": end, "output": output, "refused": refused}))
+    return replace(state, facts=_kept(facts, None, now), cursor=max(state.cursor, end), due=max(0, state.due - 1)), tuple(rows)
+
+
+def remembering(state: Companion, device: str, head: int, cap: int = manifest.MAX_REPLY):
+    """The kernel's own answer when `device`'s newest line asks it to forget, or what it remembers: (state,
+    rows, words), no model asked; words "" for any other line. Only for a line said to Sage, clearly heard, and
+    not by a guest. Forgetting drops every record that holds all the words named, and lets go of everything said
+    up to now (`head`, the journal's newest row): the writer never reads it, so what was just said cannot come
+    back as a memory. ponytail: patterns (the character's), English in the default file; "forget it" meaning
+    "never mind" costs this conversation's memories, on the side of forgetting."""
+    turn = lane(state, device)
+    if not turn.addressed or turn.speaker == "guest" or turn.text.startswith("[") or misheard(turn.text, turn.input):
+        return state, (), ""
+    plain = " ".join(re.sub(r"[^\w\s']", " ", _plain(turn.text)).split())
+    if found := FORGETS.search(plain):
+        named = set(_terms(" ".join(w for w in (found["what"] or "").split() if w not in FORGET_THAT)))
+        gone = [r for r in state.facts if named and named <= set(_terms(r["text"]))]
+        rows = tuple(Row("forget", "kernel", turn.turn_id, {"id": r["id"]}) for r in gone) + (
+            Row("forget", "kernel", turn.turn_id, {"through": head}),)
+        state = replace(state, facts=tuple(r for r in state.facts if r not in gone), cursor=max(state.cursor, head), due=0)
+        return state, rows, _NOTES["forgot"].format(count=len(gone)) if gone else _LINES["forgot_none"]
+    if not ASKS_MEMORY.search(plain):
+        return state, (), ""
+    texts = [r["text"] + ("" if r["text"][-1:] in ".!?" else ".") for part in _ranked(state.facts) for r in part]
+    if not texts:
+        return state, (), _LINES["remembers_none"]
+
+    def aloud(said) -> str:
+        more = len(texts) - len(said)
+        return " ".join((_LINES["remembers"], *said, *([_NOTES["remembers_more"].format(count=more)] if more else ())))
+    said = []
+    for text in texts[:READ_BACK]:
+        if len(aloud([*said, text])) > cap:
+            break
+        said.append(text)
+    return state, (), aloud(said)
+
+
+def amend(state: Companion, op: str, now: float, id: int | None = None, text: str = ""):
+    """The owner's own change, from `python -m sage memory`: add a record, edit one's text, or forget one.
+    ValueError, saying why, when it cannot be done."""
+    old = next((r for r in state.facts if r["id"] == id), None)
+    text = _clean(text)
+    if op != "add" and old is None:
+        raise ValueError(f"no record {id}")
+    if op != "forget" and not text:
+        raise ValueError("it needs some text")
+    if op == "forget":
+        return replace(state, facts=tuple(r for r in state.facts if r is not old)), (Row("forget", "owner", None, {"id": id}),)
+    record = {**old, "text": text, "at": now} if op == "edit" else _record(state.facts, "owner", "person", text, now, None)
+    return replace(state, facts=_kept(state.facts, record, now)), (Row("remember", "owner", None, record),)
 
 
 def failed(state: Companion, turn_id: str, prompt: CompiledPrompt, reason: str):
@@ -995,7 +1287,7 @@ def report_turn(state: Companion, source: str, turn_id: str, reply: dict | None,
     if turn.turn_id == turn_id and turn.status == "active":
         heard = (text or "") if status == "interrupted" else ""
         mine, rest = _own(state.acts, turn.source)
-        state = replace(state, turn=replace(turn, status="interrupted", text=""), acts=rest,
+        state = replace(state, turn=replace(turn, status="interrupted", text=""), acts=rest if heard else state.acts,
                         exchanges=windowed(state.exchanges, Exchange(turn.text, heard, device=turn.source,
                                                                      interrupted=status == "interrupted",
                                                                      input=_unheard(turn.input), acts=mine)))
@@ -1042,8 +1334,10 @@ def decode(data: dict) -> Companion:
         turn=Turn(**data["turn"]),
         exchanges=tuple(Exchange(**{**{k: v for k, v in x.items() if k != "repeat"},
                                     "calls": tuple(map(_call, x["calls"])),
-                                    "acts": tuple(Act(**a) for a in x.get("acts", ()))}) for x in data["exchanges"]),
+                                    "acts": tuple(Act(**a) for a in x.get("acts", ()))}) for x in data["exchanges"]
+                        if x["reply"].strip()),  # once, a turn answered with no words was kept
         open=tuple(Open(**o) for o in data["open"]), quiet_until=data.get("quiet_until"),
-        facts=tuple(data.get("facts", ())), topic=data.get("topic", ""), notes=tuple(data.get("notes", ())),
+        facts=records(data.get("facts", ())), topic=data.get("topic", ""), notes=tuple(data.get("notes", ())),
         notes_idle=data.get("notes_idle", 0), acts=tuple(Act(**a) for a in data.get("acts", ())),
-        lanes=tuple(Turn(**t) for t in data.get("lanes", ())))  # none before v1.2: one lane, `turn`
+        lanes=tuple(Turn(**t) for t in data.get("lanes", ())),  # none before v1.2: one lane, `turn`
+        spoke_at=data.get("spoke_at"), said=data.get("said", 0), due=data.get("due", 0), cursor=data.get("cursor", 0))

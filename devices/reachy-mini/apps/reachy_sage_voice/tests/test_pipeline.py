@@ -1,10 +1,11 @@
 """The assembled pipeline, the bot-speech wiring, and the Reachy transport, with no robot."""
 
 import asyncio
-import random
+import re
 import threading
 import time
 import wave
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -26,12 +27,12 @@ from pipecat.frames.frames import (
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.audio.vad_processor import VADProcessor
-from pipecat.processors.filters.function_filter import FunctionFilter
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.tests.utils import SleepFrame, run_test
 from pipecat.transports.base_transport import TransportParams
 from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.utils.text.base_text_aggregator import AggregationType
+from sage_device.gate import LOW_CONFIDENCE
 
 from reachy_sage_voice import pipeline as voice_pipeline
 from reachy_sage_voice import transport as voice_transport
@@ -163,14 +164,6 @@ def test_the_vad_reports_onset_for_barge_in():
     vad = next(p for p in pipeline.processors if isinstance(p, VADProcessor))
     assert vad._vad_controller._vad_analyzer._on_detected is not None
     assert vad._vad_controller._vad_analyzer._on_cleared is not None
-
-
-def test_only_addressed_speech_reaches_the_kernel_when_asked_for():
-    pipeline = build(FakeMedia(), no_emote, MOVES, {**ENV, "SAGE_VOICE_ADDRESSED": "1"},
-                     face=lambda: True)
-    kinds = [type(p) for p in pipeline.processors[1:-1]]
-    assert kinds[2:5] == [voice_pipeline.SegmentSTTService, FunctionFilter, SageProcessor]
-    assert pipeline.processors[4]._filter._face() is True
 
 
 @pytest.mark.parametrize("missing", sorted(ENV))
@@ -600,9 +593,16 @@ def test_barge_in_needs_speech_that_lasts_and_the_hold_comes_from_the_environmen
     assert parts({**ENV, "SAGE_VOICE_BARGE_IN_MS": "0", "SAGE_VOICE_HOLD_MS": "2000"}) == (0, 2.0)
 
 
-def test_the_live_body_chooses_a_move_for_some_statements():
-    processors = build(FakeMedia(), no_emote, MOVES, ENV).processors
-    assert next(p for p in processors if isinstance(p, SageProcessor))._rng is random
+def test_the_gates_floor_and_how_fresh_a_face_must_be_come_from_the_settings():
+    def parts(env):
+        processors = build(FakeMedia(), no_emote, MOVES, env).processors
+        sage = next(p for p in processors if isinstance(p, SageProcessor))
+        stt = next(p for p in processors if isinstance(p, voice_pipeline.SegmentSTTService))
+        return sage._low, stt.face_s
+    assert parts(ENV) == (LOW_CONFIDENCE, voice_pipeline.FACE_S)
+    env = {**ENV, "SAGE_VOICE_LOW_CONFIDENCE": "0.4", "SAGE_VOICE_FACE_S": "5"}
+    assert parts(env) == (0.4, 5.0)
+    assert not hasattr(voice_pipeline, "addressed_filter")  # the gate took its place (1-gate)
 
 
 def pcm_wav(values) -> bytes:
@@ -650,7 +650,7 @@ def test_segments_waiting_for_the_stt_go_with_the_one_it_takes_as_one_request():
     assert stt._segment_queue.get_nowait() is None and stt._segment_queue.empty()
 
 
-def test_the_stts_confidence_and_voiceprint_score_are_logged_for_the_noise_trace(caplog):
+def test_the_stts_confidence_and_voiceprint_score_are_logged_for_the_trace(caplog, monkeypatch):
     # eval/noise.py reads this line; an older STT without the fields logs nothing extra.
     from openai.types.audio import Transcription
 
@@ -673,7 +673,48 @@ def test_the_stts_confidence_and_voiceprint_score_are_logged_for_the_noise_trace
         "mean": 0.95, "min": 0.8, "words": [["Hi", 0.97], ["there", 0.8]]})))
     asyncio.run(go(Transcription.construct(text="Hi there")))
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("stt:")]
-    assert lines == ["stt: confidence mean 0.95 min 0.80, similarity 0.71, words 0.97 0.80"]
+    assert lines == ["stt: confidence mean 0.95 min 0.80, similarity 0.71, words 0.97 0.80, "
+                     "face none, doa none"]
+    # The gate's signals, as already read elsewhere: no read of the robot for this line.
+    caplog.clear()
+    monkeypatch.setattr(voice_pipeline, "_face_at", time.monotonic() - 3.2)
+    STT.executor = SimpleNamespace(heard_doa=72.4)
+    asyncio.run(go(Transcription.construct(text="Hi there", confidence={"mean": 0.5, "min": 0.5})))
+    asyncio.run(go(Transcription.construct(text="Hi there", confidence={"mean": 0.5, "min": 0.5})))
+    first, second = (r.getMessage() for r in caplog.records)
+    assert re.fullmatch(r"stt: confidence mean 0.50 min 0.50, similarity -, words , "
+                        r"face 3\.\d, doa 72", first)
+    assert second.endswith(", doa none")  # that onset's direction was the first transcript's alone
+
+
+def test_a_transcript_carries_the_face_and_the_direction_to_the_gate(monkeypatch):
+    class Serial:
+        _segment_queue = asyncio.Queue()
+
+        async def run_stt(self, audio):
+            yield TranscriptionFrame("Hi there", "u", "t")
+
+    class STT(voice_pipeline.MergeBacklog, Serial):
+        executor = SimpleNamespace(heard_doa=72.4)
+
+    def frame(face_at):
+        monkeypatch.setattr(voice_pipeline, "_face_at", face_at)
+
+        async def go():
+            return [f async for f in STT().run_stt(pcm_wav([1] * 4))]
+        return asyncio.run(go())[0]
+    fresh = frame(time.monotonic() - 1.0)
+    assert (fresh.face, fresh.doa) == (True, 72.4)
+    assert frame(time.monotonic() - voice_pipeline.FACE_S - 1.0).face is False
+    assert frame(None).face is None  # no watch, or no face yet: the gate has no such sense
+
+
+def test_the_presence_watch_stamps_when_a_face_was_last_seen(monkeypatch):
+    monkeypatch.setattr(voice_pipeline, "_face_at", None)
+    seen = [SimpleNamespace(detected=False), SimpleNamespace(detected=True)]
+    read = voice_pipeline._noting(lambda: seen.pop(0))
+    assert read().detected is False and voice_pipeline._face_at is None
+    assert read().detected is True and voice_pipeline._face_at is not None
 
 
 def io_bytes(data):

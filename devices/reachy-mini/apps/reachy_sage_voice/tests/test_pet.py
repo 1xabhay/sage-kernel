@@ -84,23 +84,6 @@ def test_a_turn_that_only_moves_logs_its_emote_and_empty_reply_and_no_speech(cap
     assert not any("long day" in line for line in lines)
 
 
-def test_a_chosen_move_is_a_movement_only_turn_and_its_words_stay_out_of_the_log(caplog, stamped):  # noqa: F811
-    caplog.set_level(logging.INFO, logger="reachy_sage_voice.sage")
-    _, stream = stamped("reachy_sage_voice.sage")
-    emotes = []
-    session, processor = choosing(emotes)
-    run(processor, [BotStartedSpeakingFrame(), SleepFrame(0.01),
-                    VADUserStoppedSpeakingFrame(stop_secs=0.2), SleepFrame(0.01),
-                    heard("I had a big lunch."), SleepFrame(0.05)])
-    lines = stream.getvalue().splitlines()
-    got = table(lines)
-    assert len(emotes) == 1 and session.started == []
-    assert got["movement_only"] == "100% (1/1)"
-    assert got["reaction"].endswith("(1/1)")
-    assert any("chose: move" in line for line in lines)
-    assert not any("big lunch" in line for line in lines)
-
-
 def test_a_greeting_answered_by_the_body_is_movement_only_too(caplog, stamped):  # noqa: F811
     caplog.set_level(logging.INFO, logger="reachy_sage_voice.sage")
     _, stream = stamped("reachy_sage_voice.sage")
@@ -185,7 +168,8 @@ def test_the_meter_runs_with_the_voice_unimported(tmp_path):
 def test_the_voices_overheard_line_is_the_one_the_meter_counts(caplog, stamped):  # noqa: F811
     caplog.set_level(logging.INFO, logger="reachy_sage_voice.sage")
     _, stream = stamped("reachy_sage_voice.sage")
-    run(choosing([])[1], [heard("And then the whole team came along."), SleepFrame(0.05)])
+    run(choosing([])[1], [heard("And then the whole team came along.", face=False),
+                          SleepFrame(0.05)])
     assert any(meter.PATTERNS["overheard"].match(line) for line in said(stream))
 
 
